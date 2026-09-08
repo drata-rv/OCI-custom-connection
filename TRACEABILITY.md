@@ -151,6 +151,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Never call OCI mutation ops | `security.py::FORBIDDEN_OPERATION_PREFIXES`, enforced by `test_operation_allowlist.py` |
 | Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same test |
 | Never retrieve unrestricted instance metadata | No `get_windows_instance_initial_credentials` or metadata-service call anywhere in `collection/` |
+| Signer repr never leaks account metadata | `oci_auth.py::TenancySigner.__repr__` allowlists `authentication_type`/`region` only (previously blocklisted only `pass_phrase`, leaking tenancy/user OCIDs, key fingerprint, and the private key's filesystem path into any log line or exception traceback that formatted the object) | `tests/unit/test_oci_auth.py` |
 
 ## 5. Assumptions and simplifications
 
