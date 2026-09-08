@@ -1,0 +1,1015 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://drata.example/schemas/oci-snapshot-1.0.0.json",
+  "title": "OCI evidence snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "displayName",
+    "schemaVersion",
+    "collectorVersion",
+    "collectedAt",
+    "snapshotStatus",
+    "snapshotFresh",
+    "tenancy",
+    "scope",
+    "manifest",
+    "metrics",
+    "resources",
+    "findings",
+    "warnings"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "collectorVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "collectedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "snapshotStatus": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete",
+        "failed"
+      ]
+    },
+    "snapshotFresh": {
+      "type": "boolean"
+    },
+    "tenancy": {
+      "$ref": "#/definitions/tenancy"
+    },
+    "scope": {
+      "$ref": "#/definitions/scope"
+    },
+    "manifest": {
+      "$ref": "#/definitions/manifest"
+    },
+    "metrics": {
+      "$ref": "#/definitions/metrics"
+    },
+    "resources": {
+      "$ref": "#/definitions/resources"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/finding"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/message"
+      }
+    }
+  },
+  "definitions": {
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "tenancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "homeRegionKey"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "homeRegionKey": {
+          "type": "string"
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expectedRegions",
+        "collectedRegions",
+        "compartmentIds",
+        "excludedCompartmentIds"
+      ],
+      "properties": {
+        "expectedRegions": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "collectedRegions": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "compartmentIds": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "excludedCompartmentIds": {
+          "$ref": "#/definitions/stringArray"
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startedAt",
+        "completedAt",
+        "derivationVersion",
+        "operations",
+        "unresolvedRelationships"
+      ],
+      "properties": {
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "derivationVersion": {
+          "type": "string"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/operation"
+          }
+        },
+        "unresolvedRelationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/unresolvedRelationship"
+          }
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "operation",
+        "region",
+        "status",
+        "pageCount",
+        "itemCount",
+        "requestIds"
+      ],
+      "properties": {
+        "service": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compartmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "success",
+            "failed",
+            "unsupported",
+            "skipped"
+          ]
+        },
+        "pageCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "itemCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requestIds": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "unresolvedRelationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceType",
+        "sourceId",
+        "targetType",
+        "targetId",
+        "reason"
+      ],
+      "properties": {
+        "sourceType": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "targetType": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collectionErrorCount",
+        "unsupportedResourceCount",
+        "windowsVmCount",
+        "windowsClassificationUnknownCount",
+        "publiclyAddressedWindowsVmCount",
+        "internetExposedWindowsVmCount",
+        "unknownExposureWindowsVmCount",
+        "attachedVolumeUnknownEncryptionCount",
+        "attachedVolumeWithoutCustomerManagedKeyCount",
+        "baseDatabaseCount",
+        "autonomousDatabaseCount",
+        "databasePublicEndpointCount",
+        "databaseBackupUnknownCount",
+        "exadataDetectedCount",
+        "ipsecConnectionCount",
+        "ipsecTunnelDownCount",
+        "ipsecTunnelUnknownCount",
+        "nonRedundantIpsecConnectionCount"
+      ],
+      "properties": {
+        "collectionErrorCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsupportedResourceCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "windowsVmCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "windowsClassificationUnknownCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "publiclyAddressedWindowsVmCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "internetExposedWindowsVmCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknownExposureWindowsVmCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attachedVolumeUnknownEncryptionCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attachedVolumeWithoutCustomerManagedKeyCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "baseDatabaseCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "autonomousDatabaseCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "databasePublicEndpointCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "databaseBackupUnknownCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exadataDetectedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ipsecConnectionCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ipsecTunnelDownCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ipsecTunnelUnknownCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nonRedundantIpsecConnectionCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "commonResource": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "sourceType",
+        "region",
+        "compartmentId",
+        "displayName",
+        "lifecycleState"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sourceType": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "compartmentId": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lifecycleState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeCreated": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "definedTags": {
+          "$ref": "#/definitions/tags"
+        },
+        "freeformTags": {
+          "$ref": "#/definitions/tags"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compartments",
+        "images",
+        "instances",
+        "vnics",
+        "privateIps",
+        "publicIps",
+        "bootVolumes",
+        "blockVolumes",
+        "bootVolumeAttachments",
+        "volumeAttachments",
+        "vcns",
+        "subnets",
+        "routeTables",
+        "internetGateways",
+        "securityLists",
+        "networkSecurityGroups",
+        "dbSystems",
+        "dbHomes",
+        "databases",
+        "autonomousDatabases",
+        "backups",
+        "dataGuardAssociations",
+        "cpes",
+        "drgs",
+        "drgAttachments",
+        "ipsecConnections",
+        "ipsecTunnels"
+      ],
+      "properties": {
+        "compartments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/instance"
+          }
+        },
+        "vnics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/vnic"
+          }
+        },
+        "privateIps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "publicIps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "bootVolumes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/volume"
+          }
+        },
+        "blockVolumes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/volume"
+          }
+        },
+        "bootVolumeAttachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "volumeAttachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "vcns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "subnets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "routeTables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "internetGateways": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "securityLists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "networkSecurityGroups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "dbSystems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/databaseResource"
+          }
+        },
+        "dbHomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/databaseResource"
+          }
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/databaseResource"
+          }
+        },
+        "autonomousDatabases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/databaseResource"
+          }
+        },
+        "backups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/databaseResource"
+          }
+        },
+        "dataGuardAssociations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/databaseResource"
+          }
+        },
+        "cpes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "drgs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "drgAttachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/commonResource"
+          }
+        },
+        "ipsecConnections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ipsecConnection"
+          }
+        },
+        "ipsecTunnels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ipsecTunnel"
+          }
+        }
+      }
+    },
+    "instance": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/commonResource"
+        },
+        {
+          "type": "object",
+          "required": [
+            "imageId",
+            "osClassification",
+            "hasPublicAddress",
+            "effectiveIngressExposure",
+            "vnicIds",
+            "volumeIds"
+          ],
+          "properties": {
+            "imageId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "osClassification": {
+              "type": "string",
+              "enum": [
+                "windows",
+                "non_windows",
+                "unknown"
+              ]
+            },
+            "hasPublicAddress": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "effectiveIngressExposure": {
+              "type": "string",
+              "enum": [
+                "exposed",
+                "not_exposed",
+                "unknown"
+              ]
+            },
+            "exposedAdministrativePorts": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              }
+            },
+            "vnicIds": {
+              "$ref": "#/definitions/stringArray"
+            },
+            "volumeIds": {
+              "$ref": "#/definitions/stringArray"
+            }
+          }
+        }
+      ]
+    },
+    "vnic": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/commonResource"
+        },
+        {
+          "type": "object",
+          "required": [
+            "instanceId",
+            "subnetId",
+            "nsgIds",
+            "privateAddresses",
+            "publicAddresses"
+          ],
+          "properties": {
+            "instanceId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "subnetId": {
+              "type": "string"
+            },
+            "nsgIds": {
+              "$ref": "#/definitions/stringArray"
+            },
+            "privateAddresses": {
+              "$ref": "#/definitions/stringArray"
+            },
+            "publicAddresses": {
+              "$ref": "#/definitions/stringArray"
+            }
+          }
+        }
+      ]
+    },
+    "volume": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/commonResource"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kmsKeyId",
+            "customerManagedKeyPresent",
+            "attachedInstanceIds"
+          ],
+          "properties": {
+            "kmsKeyId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "customerManagedKeyPresent": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "attachedInstanceIds": {
+              "$ref": "#/definitions/stringArray"
+            }
+          }
+        }
+      ]
+    },
+    "databaseResource": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/commonResource"
+        },
+        {
+          "type": "object",
+          "required": [
+            "databaseType",
+            "publicEndpoint",
+            "backupStatus",
+            "kmsKeyId",
+            "relatedResourceIds"
+          ],
+          "properties": {
+            "databaseType": {
+              "type": "string",
+              "enum": [
+                "base_db_system",
+                "db_home",
+                "base_database",
+                "autonomous_database",
+                "backup",
+                "data_guard"
+              ]
+            },
+            "publicEndpoint": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "backupStatus": {
+              "type": "string",
+              "enum": [
+                "enabled",
+                "disabled",
+                "unknown",
+                "not_applicable"
+              ]
+            },
+            "kmsKeyId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "relatedResourceIds": {
+              "$ref": "#/definitions/stringArray"
+            }
+          }
+        }
+      ]
+    },
+    "ipsecConnection": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/commonResource"
+        },
+        {
+          "type": "object",
+          "required": [
+            "cpeId",
+            "drgId",
+            "tunnelIds",
+            "tunnelCount",
+            "upTunnelCount",
+            "redundancyStatus"
+          ],
+          "properties": {
+            "cpeId": {
+              "type": "string"
+            },
+            "drgId": {
+              "type": "string"
+            },
+            "tunnelIds": {
+              "$ref": "#/definitions/stringArray"
+            },
+            "tunnelCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "upTunnelCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "redundancyStatus": {
+              "type": "string",
+              "enum": [
+                "redundant",
+                "not_redundant",
+                "unknown"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ipsecTunnel": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/commonResource"
+        },
+        {
+          "type": "object",
+          "required": [
+            "ipsecConnectionId",
+            "status",
+            "routing",
+            "ikeVersion",
+            "bgpState"
+          ],
+          "properties": {
+            "ipsecConnectionId": {
+              "type": "string"
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "routing": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ikeVersion": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "bgpState": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertionId",
+        "status",
+        "resourceType",
+        "resourceId",
+        "resourceName",
+        "region",
+        "compartmentId",
+        "observed",
+        "expected",
+        "reason",
+        "sourceIds",
+        "derivationVersion"
+      ],
+      "properties": {
+        "assertionId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "resourceType": {
+          "type": "string"
+        },
+        "resourceId": {
+          "type": "string"
+        },
+        "resourceName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compartmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "expected": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "sourceIds": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "derivationVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "severity"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        },
+        "resourceIds": {
+          "$ref": "#/definitions/stringArray"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "collectedAt": "2026-09-08T20:00:00Z",
+  "collectorVersion": "0.1.0",
+  "displayName": "Example production OCI snapshot",
+  "findings": [],
+  "id": "oci-snapshot-0123456789abcdef01234567",
+  "manifest": {
+    "completedAt": "2026-09-08T20:00:00Z",
+    "derivationVersion": "1.0.0",
+    "operations": [],
+    "startedAt": "2026-09-08T19:55:00Z",
+    "unresolvedRelationships": []
+  },
+  "metrics": {
+    "attachedVolumeUnknownEncryptionCount": 0,
+    "attachedVolumeWithoutCustomerManagedKeyCount": 0,
+    "autonomousDatabaseCount": 0,
+    "baseDatabaseCount": 0,
+    "collectionErrorCount": 0,
+    "databaseBackupUnknownCount": 0,
+    "databasePublicEndpointCount": 0,
+    "exadataDetectedCount": 0,
+    "internetExposedWindowsVmCount": 0,
+    "ipsecConnectionCount": 0,
+    "ipsecTunnelDownCount": 0,
+    "ipsecTunnelUnknownCount": 0,
+    "nonRedundantIpsecConnectionCount": 0,
+    "publiclyAddressedWindowsVmCount": 0,
+    "unknownExposureWindowsVmCount": 0,
+    "unsupportedResourceCount": 0,
+    "windowsClassificationUnknownCount": 0,
+    "windowsVmCount": 0
+  },
+  "resources": {
+    "autonomousDatabases": [],
+    "backups": [],
+    "blockVolumes": [],
+    "bootVolumeAttachments": [],
+    "bootVolumes": [],
+    "compartments": [],
+    "cpes": [],
+    "dataGuardAssociations": [],
+    "databases": [],
+    "dbHomes": [],
+    "dbSystems": [],
+    "drgAttachments": [],
+    "drgs": [],
+    "images": [],
+    "instances": [],
+    "internetGateways": [],
+    "ipsecConnections": [],
+    "ipsecTunnels": [],
+    "networkSecurityGroups": [],
+    "privateIps": [],
+    "publicIps": [],
+    "routeTables": [],
+    "securityLists": [],
+    "subnets": [],
+    "vcns": [],
+    "vnics": [],
+    "volumeAttachments": []
+  },
+  "schemaVersion": "1.0.0",
+  "scope": {
+    "collectedRegions": [
+      "us-ashburn-1",
+      "us-phoenix-1"
+    ],
+    "compartmentIds": [
+      "ocid1.compartment.oc1..example"
+    ],
+    "excludedCompartmentIds": [],
+    "expectedRegions": [
+      "us-ashburn-1",
+      "us-phoenix-1"
+    ]
+  },
+  "snapshotFresh": true,
+  "snapshotStatus": "complete",
+  "tenancy": {
+    "homeRegionKey": "IAD",
+    "id": "ocid1.tenancy.oc1..example",
+    "name": "Example Tenancy"
+  },
+  "warnings": []
+}

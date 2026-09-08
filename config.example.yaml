@@ -1,0 +1,53 @@
+deployment:
+  name: example-production
+  snapshotDisplayName: Example production OCI snapshot
+
+oci:
+  authentication:
+    type: api_signing_user
+    configFile: ~/.oci/config
+    profile: DEFAULT
+    privateKeyPassphraseSecretRef: null
+  expectedTenancyOcid: ocid1.tenancy.oc1..replace-me
+  regions:
+    allow:
+      - us-ashburn-1
+      - us-phoenix-1
+  compartments:
+    roots:
+      - tenancy
+    excludeOcids: []
+  services:
+    compute: true
+    networkExposure: true
+    blockStorage: true
+    baseDatabase: true
+    autonomousDatabase: true
+    exadataDetection: true
+    siteToSiteVpn: true
+
+decisions:
+  administrativePorts: [22, 3389]
+  publicSourceCidrs:
+    - 0.0.0.0/0
+    - ::/0
+  minimumVpnTunnelCount: 2
+  minimumUpVpnTunnelCount: 1
+  freshnessHours: 26
+  requireCustomerManagedVolumeKeys: false
+  requireCustomerManagedDatabaseKeys: false
+
+drata:
+  baseUrl: https://public-api.drata.com/public/v2
+  connectionId: 0
+  resourceId: 0
+  recordId: oci-snapshot-replace-with-derived-id
+  apiTokenSecretRef:
+    provider: env
+    name: DRATA_API_TOKEN
+
+runtime:
+  maxPayloadBytes: 4500000
+  maxConcurrency: 8
+  logLevel: INFO
+  dryRun: true
