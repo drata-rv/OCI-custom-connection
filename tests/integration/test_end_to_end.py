@@ -114,13 +114,23 @@ def _exposed_windows_compute() -> ComputeCollectionResult:
         id="ocid1.instance.oc1..vm1", compartment_id=COMPARTMENT_OCID, display_name="win-vm-1",
         lifecycle_state="RUNNING", image_id="ocid1.image.oc1..img1",
     ))
+    # P1-3: a terminated instance (with its own attachment) must be excluded from evidence,
+    # and must not surface as an unresolved relationship via its own now-dropped attachment.
+    terminated_instance = _stamp(oci.core.models.Instance(
+        id="ocid1.instance.oc1..vmold", compartment_id=COMPARTMENT_OCID, display_name="old-vm",
+        lifecycle_state="TERMINATED", image_id="ocid1.image.oc1..img1",
+    ))
     image = _stamp(oci.core.models.Image(id="ocid1.image.oc1..img1", compartment_id=COMPARTMENT_OCID, operating_system="Windows Server"))
     attachment = oci.core.models.VnicAttachment(id="ocid1.vnicattachment.oc1..att1", instance_id=instance.id, vnic_id="ocid1.vnic.oc1..v1")
+    terminated_attachment = oci.core.models.VnicAttachment(
+        id="ocid1.vnicattachment.oc1..attold", instance_id=terminated_instance.id, vnic_id="ocid1.vnic.oc1..vold"
+    )
     vnic = _stamp(oci.core.models.Vnic(id="ocid1.vnic.oc1..v1", compartment_id=COMPARTMENT_OCID, subnet_id="ocid1.subnet.oc1..sub1", nsg_ids=["ocid1.networksecuritygroup.oc1..nsg1"]))
     private_ip = _stamp(oci.core.models.PrivateIp(id="ocid1.privateip.oc1..pip1", compartment_id=COMPARTMENT_OCID, vnic_id=vnic.id, ip_address="10.0.0.5"))
     public_ip = _stamp(oci.core.models.PublicIp(id="ocid1.publicip.oc1..pub1", compartment_id=COMPARTMENT_OCID, ip_address="203.0.113.9"))
     return ComputeCollectionResult(
-        instances=[instance], images={image.id: image}, vnic_attachments=[attachment],
+        instances=[instance, terminated_instance], images={image.id: image},
+        vnic_attachments=[attachment, terminated_attachment],
         vnics={vnic.id: vnic}, private_ips=[private_ip],
         public_ips_by_private_ip_id={private_ip.id: public_ip},
         operations=[_empty_ok("compute")],
@@ -274,11 +284,17 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert decision.should_upload is True
 
     instances = result.record["resources"]["instances"]
-    assert len(instances) == 1
+    assert len(instances) == 1  # terminated instance excluded, not just filtered from this count
     assert instances[0]["osClassification"] == "windows"
     assert instances[0]["effectiveIngressExposure"] == "exposed"
     assert instances[0]["exposedAdministrativePorts"] == [3389]
     assert result.record["metrics"]["internetExposedWindowsVmCount"] == 1
+
+    lifecycle_warning = next(
+        w for w in result.record["warnings"]
+        if w["code"] == "LIFECYCLE_EXCLUDED" and "instance" in w["message"]
+    )
+    assert lifecycle_warning["resourceIds"] == ["ocid1.instance.oc1..vmold"]
 
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1

@@ -253,6 +253,15 @@ See the cited module docstrings for detail.
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
   "unless explicitly noncritical" escape hatch isn't implemented.
+* **Lifecycle-state exclusion (TERMINATED/TERMINATING) is implemented
+  only for compute instances and boot/block volumes**
+  (`transform/lifecycle.py`). DB systems/databases/autonomous
+  databases/VPN resources still retain every lifecycle state returned
+  by OCI — extending exclusion there needs the same correlated
+  attachment/relationship filtering (see `lifecycle.py`'s own
+  docstring) applied to each resource's parent/child chain, not done
+  yet. Excluded resources are never silently dropped: a
+  `LIFECYCLE_EXCLUDED` entry in `warnings` reports the count and ids.
 * **Operations within an enabled domain have no required/optional
   distinction** (`pagination.py::operations_complete`) — any operation
   failure (even a non-essential enrichment call) blocks that entire
