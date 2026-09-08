@@ -1,0 +1,478 @@
+"""Build exactly one aggregate record (spec 7.1 steps 6-10, 7.3): calls
+normalize -> relationships -> exposure/vpn_posture -> findings in order,
+computes metrics, and serializes with deterministic ordering (every
+resource/finding/warning array sorted by id/assertionId so the same
+collection run always produces byte-identical output).
+
+This module does not decide whether to upload -- that's
+:mod:`oci_drata.validation.completeness`, which needs the schema-validation
+and payload-size results this module's caller computes afterward.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime
+import hashlib
+from typing import Any, Sequence
+
+from oci_drata.collection.compute import ComputeCollectionResult
+from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
+from oci_drata.collection.database_base import DatabaseBaseCollectionResult
+from oci_drata.collection.discovery import DiscoveryResult
+from oci_drata.collection.exadata_detection import ExadataDetectionResult
+from oci_drata.collection.networking import NetworkingCollectionResult
+from oci_drata.collection.storage import StorageCollectionResult
+from oci_drata.collection.vpn import VpnCollectionResult
+from oci_drata.config import AppConfig
+from oci_drata.models import (
+    METRIC_KEYS,
+    RESOURCE_COLLECTION_KEYS,
+    CommonResource,
+    DatabaseResource,
+    Finding,
+    Message,
+    OperationRecord,
+    UnresolvedRelationship,
+    Volume,
+)
+from oci_drata.pagination import OperationResult
+from oci_drata.transform import findings as findings_mod
+from oci_drata.transform import normalize, relationships
+from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposure
+from oci_drata.transform.vpn_posture import derive_vpn_posture
+
+DERIVATION_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.0.0"
+COLLECTOR_VERSION = "0.1.0"
+
+
+def derive_record_id(tenancy_ocid: str, deployment_name: str) -> str:
+    """Spec 4.2 recommendation: oci-snapshot- + first 24 hex chars of
+    SHA-256(tenancy_ocid + deployment_name). Provided for operators setting
+    up `drata.recordId` in their deployment config -- build_snapshot()
+    always uses the configured value directly, never recomputes it, so the
+    record id stays stable between runs even if this derivation changes."""
+
+    digest = hashlib.sha256(f"{tenancy_ocid}{deployment_name}".encode("utf-8")).hexdigest()
+    return f"oci-snapshot-{digest[:24]}"
+
+
+@dataclasses.dataclass(frozen=True)
+class AggregateResult:
+    record: dict[str, Any]
+    unresolved_relationship_count: int
+    exadata_detected: bool
+    domain_complete: dict[str, bool]
+    discovery_complete: bool
+
+
+def _sorted_dicts(resources: Sequence[CommonResource]) -> list[dict[str, Any]]:
+    return [r.to_dict() for r in sorted(resources, key=lambda r: r.id)]
+
+
+def build_snapshot(
+    app_config: AppConfig,
+    *,
+    discovery: DiscoveryResult,
+    compute: ComputeCollectionResult,
+    storage: StorageCollectionResult,
+    networking: NetworkingCollectionResult,
+    database_base: DatabaseBaseCollectionResult,
+    autonomous_database: AutonomousDatabaseCollectionResult,
+    exadata: ExadataDetectionResult,
+    vpn: VpnCollectionResult,
+    started_at: datetime.datetime,
+    completed_at: datetime.datetime,
+) -> AggregateResult:
+    all_operations: list[OperationResult] = [
+        *discovery.operations,
+        *compute.operations,
+        *storage.operations,
+        *networking.operations,
+        *database_base.operations,
+        *autonomous_database.operations,
+        *exadata.operations,
+        *vpn.operations,
+    ]
+    all_unresolved: list[UnresolvedRelationship] = []
+
+    # -- Compute + storage + networking -----------------------------------
+    compartments = [
+        normalize.normalize_common(c, source_type="compartment")
+        for c in discovery.all_compartments
+        if c.id in discovery.approved_compartment_ids
+    ]
+    images = [
+        normalize.normalize_common(img, source_type="image") for img in compute.images.values()
+    ]
+    instances = [normalize.normalize_instance(i) for i in compute.instances]
+    instances = relationships.classify_windows(instances, compute.images)
+    instances, unresolved = relationships.resolve_instance_network_and_storage(
+        instances,
+        vnic_attachments=compute.vnic_attachments,
+        boot_volume_attachments=storage.boot_volume_attachments,
+        volume_attachments=storage.volume_attachments,
+    )
+    all_unresolved.extend(unresolved)
+
+    vnics = [normalize.normalize_vnic(v) for v in compute.vnics.values()]
+    vnics, unresolved = relationships.resolve_vnic_addresses(
+        vnics,
+        vnic_attachments=compute.vnic_attachments,
+        private_ips=compute.private_ips,
+        public_ips_by_private_ip_id=compute.public_ips_by_private_ip_id,
+    )
+    all_unresolved.extend(unresolved)
+
+    boot_volumes = [normalize.normalize_volume(v, source_type="boot_volume") for v in storage.boot_volumes]
+    boot_volumes = relationships.resolve_volume_attachments(
+        boot_volumes, attachments=storage.boot_volume_attachments, attachment_volume_id_field="boot_volume_id"
+    )
+    block_volumes = [normalize.normalize_volume(v, source_type="block_volume") for v in storage.block_volumes]
+    block_volumes = relationships.resolve_volume_attachments(
+        block_volumes, attachments=storage.volume_attachments, attachment_volume_id_field="volume_id"
+    )
+
+    private_ips = [normalize.normalize_common(p, source_type="private_ip") for p in compute.private_ips]
+    public_ips = [
+        normalize.normalize_common(p, source_type="public_ip")
+        for p in compute.public_ips_by_private_ip_id.values()
+    ]
+    vcns = [normalize.normalize_common(v, source_type="vcn") for v in networking.vcns]
+    subnets = [normalize.normalize_common(s, source_type="subnet") for s in networking.subnets]
+    route_tables = [normalize.normalize_common(r, source_type="route_table") for r in networking.route_tables]
+    internet_gateways = [
+        normalize.normalize_common(g, source_type="internet_gateway") for g in networking.internet_gateways
+    ]
+    security_lists = [
+        normalize.normalize_common(s, source_type="security_list") for s in networking.security_lists
+    ]
+    network_security_groups = [
+        normalize.normalize_common(n, source_type="network_security_group")
+        for n in networking.network_security_groups
+    ]
+    boot_volume_attachments = [
+        normalize.normalize_common(a, source_type="boot_volume_attachment")
+        for a in storage.boot_volume_attachments
+    ]
+    volume_attachments = [
+        normalize.normalize_common(a, source_type="volume_attachment") for a in storage.volume_attachments
+    ]
+
+    exposure_config = ExposureConfig(
+        administrative_ports=app_config.decisions.administrative_ports,
+        public_source_cidrs=app_config.decisions.public_source_cidrs,
+    )
+    instances = derive_instance_exposure(
+        instances,
+        vnics_by_id={v.id: v for v in vnics},
+        subnets_by_id={s.id: s for s in networking.subnets},
+        route_tables_by_id={r.id: r for r in networking.route_tables},
+        security_lists_by_id={s.id: s for s in networking.security_lists},
+        nsg_security_rules_by_nsg_id=networking.nsg_security_rules_by_nsg_id,
+        internet_gateway_ids={g.id for g in internet_gateways},
+        config=exposure_config,
+    )
+
+    # -- Base + Autonomous Database ----------------------------------------
+    db_systems = [
+        normalize.normalize_database_resource(s, database_type="base_db_system", source_type="db_system")
+        for s in database_base.db_systems
+    ]
+    db_homes = [
+        normalize.normalize_database_resource(h, database_type="db_home", source_type="db_home")
+        for h in database_base.db_homes
+    ]
+    base_databases = [
+        normalize.normalize_database_resource(
+            d, database_type="base_database", source_type="database",
+            backup_status=normalize.normalize_db_backup_status(d),
+        )
+        for d in database_base.databases
+    ]
+    base_backups = [
+        normalize.normalize_database_resource(b, database_type="backup", source_type="backup")
+        for b in database_base.backups
+    ]
+    base_dg = [
+        normalize.normalize_database_resource(
+            g, database_type="data_guard", source_type="data_guard_association",
+            compartment_id="",  # backfilled by resolve_base_database_relationships
+        )
+        for g in database_base.data_guard_associations
+    ]
+    (db_systems, db_homes, base_databases, base_backups, base_dg, unresolved) = (
+        relationships.resolve_base_database_relationships(
+            raw_db_systems=database_base.db_systems, db_systems=db_systems,
+            raw_db_homes=database_base.db_homes, db_homes=db_homes,
+            raw_databases=database_base.databases, databases=base_databases,
+            raw_backups=database_base.backups, backups=base_backups,
+            raw_data_guard_associations=database_base.data_guard_associations,
+            data_guard_associations=base_dg,
+        )
+    )
+    all_unresolved.extend(unresolved)
+
+    autonomous_databases = [
+        normalize.normalize_database_resource(
+            a, database_type="autonomous_database", source_type="autonomous_database",
+            backup_status=normalize.normalize_autonomous_backup_status(a),
+            public_endpoint=getattr(a, "public_endpoint", None),
+        )
+        for a in autonomous_database.autonomous_databases
+    ]
+    autonomous_backups = [
+        normalize.normalize_database_resource(b, database_type="backup", source_type="backup")
+        for b in autonomous_database.autonomous_database_backups
+    ]
+    autonomous_dg = [
+        normalize.normalize_database_resource(
+            g, database_type="data_guard", source_type="data_guard_association", compartment_id=""
+        )
+        for g in autonomous_database.autonomous_database_dataguard_associations
+    ]
+    (autonomous_databases, autonomous_backups, autonomous_dg, unresolved) = (
+        relationships.resolve_autonomous_database_relationships(
+            autonomous_databases=autonomous_databases,
+            raw_autonomous_database_backups=autonomous_database.autonomous_database_backups,
+            autonomous_database_backups=autonomous_backups,
+            raw_autonomous_database_dataguard_associations=(
+                autonomous_database.autonomous_database_dataguard_associations
+            ),
+            autonomous_database_dataguard_associations=autonomous_dg,
+            autonomous_database_peers_by_adb_id=autonomous_database.autonomous_database_peers_by_adb_id,
+        )
+    )
+    all_unresolved.extend(unresolved)
+
+    backups = base_backups + autonomous_backups
+    data_guard_associations = base_dg + autonomous_dg
+
+    # -- VPN -----------------------------------------------------------
+    ipsec_connections = [normalize.normalize_ipsec_connection(c) for c in vpn.ip_sec_connections]
+    ipsec_tunnels: list[Any] = []
+    tunnels_by_connection_id_normalized: dict[str, list[Any]] = {}
+    for connection_id, raw_tunnels in vpn.tunnels_by_connection_id.items():
+        fallback_compartment_id = next(
+            (c.compartment_id for c in ipsec_connections if c.id == connection_id), ""
+        )
+        normalized_tunnels = [
+            normalize.normalize_ipsec_tunnel(
+                t, ipsec_connection_id=connection_id, fallback_compartment_id=fallback_compartment_id
+            )
+            for t in raw_tunnels
+        ]
+        tunnels_by_connection_id_normalized[connection_id] = normalized_tunnels
+        ipsec_tunnels.extend(normalized_tunnels)
+
+    ipsec_connections = derive_vpn_posture(
+        ipsec_connections,
+        tunnels_by_connection_id=tunnels_by_connection_id_normalized,
+        minimum_tunnel_count=app_config.decisions.minimum_vpn_tunnel_count,
+        minimum_up_tunnel_count=app_config.decisions.minimum_up_vpn_tunnel_count,
+    )
+    cpes = [normalize.normalize_common(c, source_type="cpe") for c in vpn.cpes]
+    drgs = [normalize.normalize_common(d, source_type="drg") for d in vpn.drgs]
+    drg_attachments = [
+        normalize.normalize_common(a, source_type="drg_attachment") for a in vpn.drg_attachments
+    ]
+
+    # -- Findings --------------------------------------------------------
+    all_findings: list[Finding] = [
+        *findings_mod.compute_exposure_findings(instances),
+        *findings_mod.volume_customer_managed_key_findings(
+            [v for v in (*boot_volumes, *block_volumes) if v.attached_instance_ids],
+            required=app_config.decisions.require_customer_managed_volume_keys,
+        ),
+        *findings_mod.database_customer_managed_key_findings(
+            base_databases + autonomous_databases,
+            required=app_config.decisions.require_customer_managed_database_keys,
+        ),
+        *findings_mod.database_public_endpoint_findings(autonomous_databases),
+        *findings_mod.vpn_redundancy_findings(ipsec_connections),
+    ]
+
+    # -- Warnings ----------------------------------------------------------
+    warnings: list[Message] = []
+    if exadata.detected:
+        warnings.append(
+            Message(
+                code="UNSUPPORTED_EXADATA_DETECTED",
+                message="Exadata or Exadata-backed resources were detected; database domain "
+                "coverage is incomplete. " + "; ".join(exadata.reasons),
+                severity="warning",
+                resource_ids=tuple(
+                    (*exadata.affected_db_system_ids, *exadata.affected_autonomous_database_ids)
+                ),
+            )
+        )
+    for region in discovery.unready_regions:
+        warnings.append(
+            Message(
+                code="REGION_NOT_READY",
+                message=f"configured region {region!r} is not subscribed/READY",
+                severity="error",
+            )
+        )
+    for compartment_id in discovery.inaccessible_compartment_ids:
+        warnings.append(
+            Message(
+                code="COMPARTMENT_INACCESSIBLE",
+                message="compartment was not accessible during discovery",
+                severity="warning",
+                resource_ids=(compartment_id,),
+            )
+        )
+
+    # -- Metrics -----------------------------------------------------------
+    windows_instances = [i for i in instances if i.os_classification == "windows"]
+    attached_volumes = [v for v in (*boot_volumes, *block_volumes) if v.attached_instance_ids]
+    exadata_evidence_count = (
+        len(exadata.affected_db_system_ids)
+        + len(exadata.affected_autonomous_database_ids)
+        + len(exadata.cloud_vm_clusters)
+        + len(exadata.exadata_infrastructures)
+        + len(exadata.cloud_exadata_infrastructures)
+        + len(exadata.autonomous_exadata_infrastructures)
+    )
+    metrics = {
+        "collectionErrorCount": sum(1 for op in all_operations if op.status == "failed"),
+        "unsupportedResourceCount": exadata_evidence_count,
+        "windowsVmCount": len(windows_instances),
+        "windowsClassificationUnknownCount": sum(
+            1 for i in instances if i.os_classification == "unknown"
+        ),
+        "publiclyAddressedWindowsVmCount": sum(
+            1 for i in windows_instances if i.has_public_address is True
+        ),
+        "internetExposedWindowsVmCount": sum(
+            1 for i in windows_instances if i.effective_ingress_exposure == "exposed"
+        ),
+        "unknownExposureWindowsVmCount": sum(
+            1 for i in windows_instances if i.effective_ingress_exposure == "unknown"
+        ),
+        "attachedVolumeUnknownEncryptionCount": sum(
+            1 for v in attached_volumes if v.customer_managed_key_present is None
+        ),
+        "attachedVolumeWithoutCustomerManagedKeyCount": sum(
+            1 for v in attached_volumes if v.customer_managed_key_present is False
+        ),
+        "baseDatabaseCount": len(base_databases),
+        "autonomousDatabaseCount": len(autonomous_databases),
+        "databasePublicEndpointCount": sum(
+            1 for a in autonomous_databases if a.public_endpoint is True
+        ),
+        "databaseBackupUnknownCount": sum(
+            1 for d in (*base_databases, *autonomous_databases) if d.backup_status == "unknown"
+        ),
+        "exadataDetectedCount": exadata_evidence_count,
+        "ipsecConnectionCount": len(ipsec_connections),
+        "ipsecTunnelDownCount": sum(
+            1 for t in ipsec_tunnels if t.status is not None and t.status != "UP"
+        ),
+        "ipsecTunnelUnknownCount": sum(1 for t in ipsec_tunnels if t.status is None),
+        "nonRedundantIpsecConnectionCount": sum(
+            1 for c in ipsec_connections if c.redundancy_status != "redundant"
+        ),
+    }
+    assert set(metrics.keys()) == set(METRIC_KEYS)
+
+    # -- Resources -----------------------------------------------------
+    resources = {
+        "compartments": _sorted_dicts(compartments),
+        "images": _sorted_dicts(images),
+        "instances": _sorted_dicts(instances),
+        "vnics": _sorted_dicts(vnics),
+        "privateIps": _sorted_dicts(private_ips),
+        "publicIps": _sorted_dicts(public_ips),
+        "bootVolumes": _sorted_dicts(boot_volumes),
+        "blockVolumes": _sorted_dicts(block_volumes),
+        "bootVolumeAttachments": _sorted_dicts(boot_volume_attachments),
+        "volumeAttachments": _sorted_dicts(volume_attachments),
+        "vcns": _sorted_dicts(vcns),
+        "subnets": _sorted_dicts(subnets),
+        "routeTables": _sorted_dicts(route_tables),
+        "internetGateways": _sorted_dicts(internet_gateways),
+        "securityLists": _sorted_dicts(security_lists),
+        "networkSecurityGroups": _sorted_dicts(network_security_groups),
+        "dbSystems": _sorted_dicts(db_systems),
+        "dbHomes": _sorted_dicts(db_homes),
+        "databases": _sorted_dicts(base_databases),
+        "autonomousDatabases": _sorted_dicts(autonomous_databases),
+        "backups": _sorted_dicts(backups),
+        "dataGuardAssociations": _sorted_dicts(data_guard_associations),
+        "cpes": _sorted_dicts(cpes),
+        "drgs": _sorted_dicts(drgs),
+        "drgAttachments": _sorted_dicts(drg_attachments),
+        "ipsecConnections": _sorted_dicts(ipsec_connections),
+        "ipsecTunnels": _sorted_dicts(ipsec_tunnels),
+    }
+    assert set(resources.keys()) == set(RESOURCE_COLLECTION_KEYS)
+
+    domain_complete = {
+        "compute": compute.complete,
+        "storage": storage.complete,
+        "networking": networking.complete,
+        "databaseBase": database_base.complete,
+        "autonomousDatabase": autonomous_database.complete,
+        "exadataDetection": exadata.complete,
+        "vpn": vpn.complete,
+    }
+
+    operation_records = [
+        OperationRecord(
+            service=op.service, operation=op.operation, region=op.region,
+            compartment_id=op.compartment_id, status=op.status, page_count=op.page_count,
+            item_count=op.item_count, request_ids=tuple(op.request_ids),
+            error_code=op.error_code, error_message=op.error_message,
+        )
+        for op in all_operations
+    ]
+    operation_records.sort(key=lambda o: (o.service, o.operation, o.region or "", o.compartment_id or ""))
+
+    tenancy_dict = {
+        "id": app_config.oci.expected_tenancy_ocid,
+        "name": getattr(discovery.tenancy, "name", None) or "unknown",
+        "homeRegionKey": getattr(discovery.tenancy, "home_region_key", None) or "unknown",
+    }
+
+    record = {
+        "id": app_config.drata.record_id,
+        "displayName": app_config.deployment.snapshot_display_name,
+        "schemaVersion": SCHEMA_VERSION,
+        "collectorVersion": COLLECTOR_VERSION,
+        "collectedAt": normalize.normalize_timestamp(completed_at),
+        "snapshotStatus": "complete",  # overwritten by the caller once completeness is decided
+        "snapshotFresh": True,
+        "tenancy": tenancy_dict,
+        "scope": {
+            "expectedRegions": list(app_config.oci.regions.allow),
+            "collectedRegions": list(discovery.approved_regions),
+            "compartmentIds": list(discovery.approved_compartment_ids),
+            "excludedCompartmentIds": list(discovery.excluded_compartment_ids),
+        },
+        "manifest": {
+            "startedAt": normalize.normalize_timestamp(started_at),
+            "completedAt": normalize.normalize_timestamp(completed_at),
+            "derivationVersion": DERIVATION_VERSION,
+            "operations": [o.to_dict() for o in operation_records],
+            "unresolvedRelationships": [
+                u.to_dict() for u in sorted(all_unresolved, key=lambda u: (u.source_type, u.source_id))
+            ],
+        },
+        "metrics": metrics,
+        "resources": resources,
+        "findings": [
+            f.to_dict() for f in sorted(all_findings, key=lambda f: (f.assertion_id, f.resource_id))
+        ],
+        "warnings": [w.to_dict() for w in sorted(warnings, key=lambda w: (w.code, w.message))],
+    }
+
+    return AggregateResult(
+        record=record,
+        unresolved_relationship_count=len(all_unresolved),
+        exadata_detected=exadata.detected,
+        domain_complete=domain_complete,
+        discovery_complete=discovery.complete,
+    )
