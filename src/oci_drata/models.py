@@ -1,4 +1,4 @@
-"""Source-fact and derived-fact models mirroring schemas/oci-snapshot-1.0.0.json.
+"""Source-fact and derived-fact models mirroring src/oci_drata/schemas/oci-snapshot-1.0.0.json.
 
 to_dict() emits every schema-declared key (schema sets additionalProperties: false).
 Derivation logic lives in oci_drata.transform, not here.

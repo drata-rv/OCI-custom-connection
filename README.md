@@ -202,7 +202,7 @@ Windows VM scenario.
 | `snapshotStatus: incomplete`, reason mentions Exadata | Exadata (or Exadata-backed dedicated Autonomous) was detected. Per spec, this MVP never claims complete database coverage when Exadata is present — see [§9](#9-known-mvp-limitations). |
 | `snapshotStatus: failed`, reason mentions schema | The record itself didn't validate — this should not happen against unmodified collector code; check `collection-report.json`'s `schemaErrors` and file an issue rather than working around it. |
 | Drata upload returns `error_class: auth` | Bearer token invalid/expired, or wrong `connectionId`/`resourceId`. The local snapshot is still `complete`; only delivery failed — nothing was overwritten in Drata. |
-| Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `schemas/oci-snapshot-1.0.0.json`. |
+| Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
 
 ## 8. Deployment acceptance checklist
 
