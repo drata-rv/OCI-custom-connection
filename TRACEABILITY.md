@@ -133,7 +133,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Preserve unknown enum values | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum`) | — |
 | Normalize timestamps to UTC RFC3339 | `transform/normalize.py::normalize_timestamp` | `test_normalize_and_relationships.py` (4 cases incl. non-UTC conversion, naive-datetime rejection) |
 | Deterministic output ordering | `transform/aggregate.py::_sorted_dicts` (every array sorted by id/assertionId) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (same-input-same-output assertion) |
-| Block upload on failure/unresolved/schema/oversize/Exadata | `validation/completeness.py` | `test_end_to_end.py` (3 blocking scenarios), `test_cli.py` |
+| Block upload on failure/unsupported/unresolved/schema/oversize/Exadata | `validation/completeness.py`, `pagination.py::operations_complete` (`unsupported` blocks like `failed`; `skipped` — a disabled service — does not) | `test_end_to_end.py` (3 blocking scenarios), `test_cli.py`, `test_pagination.py::test_operations_complete_ignores_skipped_but_blocks_on_unsupported` |
 | Distinguish empty inventory from failure | `pagination.py::OperationResult.status` (`success` + 0 items ≠ `failed`) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (empty `dbSystems`/`databases` arrays, still `snapshotStatus: complete`) |
 | Mock OCI + Drata in tests, no live credentials | all of `tests/` | `pytest` run with no `~/.oci/config` or `DRATA_API_TOKEN` required |
 | Do not create Drata Custom Tests | — (no code path exists that could) | — |

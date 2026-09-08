@@ -253,6 +253,22 @@ See the cited module docstrings for detail.
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
   "unless explicitly noncritical" escape hatch isn't implemented.
+* **Operations within an enabled domain have no required/optional
+  distinction** (`pagination.py::operations_complete`) — any operation
+  failure (even a non-essential enrichment call) blocks that entire
+  domain's upload; there's no per-operation criticality registry that
+  would let a genuinely optional lookup degrade to an `unknown` finding
+  instead. `unsupported` is treated as a blocking gap, the same as
+  `failed`.
+* **This record cannot self-report current freshness.** `collectedAt`
+  and `freshnessThresholdHours` (from `decisions.freshnessHours`) are
+  written at collection time; nothing re-evaluates them afterward. If
+  the collector stops running, the last successfully uploaded record
+  stays in Drata untouched (upsert-on-success preserves last known-good
+  evidence by design) — it does not become visibly stale on its own.
+  Evaluate `now - collectedAt > freshnessThresholdHours` yourself: in a
+  Custom Test authored in the Drata UI (this tool creates none), or in
+  separate monitoring on the collector's own run cadence.
 * **Exadata detection is existence-only, no drill-down**, per spec §5.7 —
   a tenancy with Exadata will show `snapshotStatus: incomplete`
   indefinitely for the database domain until a phase-two decision is made

@@ -437,7 +437,7 @@ def build_snapshot(
         "collectorVersion": COLLECTOR_VERSION,
         "collectedAt": normalize.normalize_timestamp(completed_at),
         "snapshotStatus": "complete",  # overwritten by the caller once completeness is decided
-        "snapshotFresh": True,
+        "freshnessThresholdHours": app_config.decisions.freshness_hours,
         "tenancy": tenancy_dict,
         "scope": {
             "expectedRegions": list(app_config.oci.regions.allow),

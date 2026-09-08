@@ -11,7 +11,7 @@
     "collectorVersion",
     "collectedAt",
     "snapshotStatus",
-    "snapshotFresh",
+    "freshnessThresholdHours",
     "tenancy",
     "scope",
     "manifest",
@@ -52,8 +52,10 @@
         "failed"
       ]
     },
-    "snapshotFresh": {
-      "type": "boolean"
+    "freshnessThresholdHours": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Configured decisions.freshnessHours at collection time. This record is not re-evaluated after upload -- Drata always displays whatever was last written, including after a later collector run fails and the prior record is left untouched by upsert-on-success. A reader (human, or a Custom Test authored in the Drata UI) must independently compute staleness as now - collectedAt > freshnessThresholdHours; no field in this record can self-report current freshness."
     },
     "tenancy": {
       "$ref": "#/definitions/tenancy"

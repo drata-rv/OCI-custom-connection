@@ -75,7 +75,7 @@
       "us-phoenix-1"
     ]
   },
-  "snapshotFresh": true,
+  "freshnessThresholdHours": 26,
   "snapshotStatus": "complete",
   "tenancy": {
     "homeRegionKey": "IAD",

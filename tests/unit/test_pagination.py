@@ -111,17 +111,25 @@ def test_call_once_does_not_auto_forward_compartment_id() -> None:
     assert call.call_args.kwargs["instance_id"] == "ocid1.instance.oc1..y"
 
 
-def test_operations_complete_ignores_skipped_and_unsupported() -> None:
+def test_operations_complete_ignores_skipped_but_blocks_on_unsupported() -> None:
+    """skipped (whole service disabled by config) is not a gap. unsupported (OCI/SDK didn't
+    return what an assertion needs) is fail-closed, same as failed -- it must not silently
+    count as complete."""
+
     from oci_drata.pagination import OperationResult
 
     ops = [
         OperationResult(service="s", operation="a", region=None, compartment_id=None, status="success"),
         OperationResult(service="s", operation="b", region=None, compartment_id=None, status="skipped"),
-        OperationResult(service="s", operation="c", region=None, compartment_id=None, status="unsupported"),
     ]
     assert operations_complete(ops) is True
 
     ops.append(
-        OperationResult(service="s", operation="d", region=None, compartment_id=None, status="failed")
+        OperationResult(service="s", operation="c", region=None, compartment_id=None, status="unsupported")
+    )
+    assert operations_complete(ops) is False
+
+    ops[-1] = OperationResult(
+        service="s", operation="c", region=None, compartment_id=None, status="failed"
     )
     assert operations_complete(ops) is False
