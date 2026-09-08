@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import stat
 from pathlib import Path
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 import oci
 
@@ -99,7 +99,7 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
     return TenancySigner(base_config=raw_config)
 
 
-def regional_client(client_cls: type[T], signer: TenancySigner, *, region: str) -> T:
+def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySigner, *, region: str) -> T:
     """Construct an OCI SDK client bound to one region, built dynamically
     from the caller-supplied region rather than a hard-coded value."""
 

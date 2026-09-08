@@ -21,6 +21,8 @@ dev = [
     "pytest-cov>=5.0,<6",
     "responses>=0.25,<1",
     "mypy>=1.10,<2",
+    "types-PyYAML",
+    "types-jsonschema",
 ]
 
 [project.scripts]
@@ -35,3 +37,8 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.12"
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# The official OCI SDK ships no py.typed marker / stub package.
+module = "oci.*"
+ignore_missing_imports = true

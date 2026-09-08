@@ -386,18 +386,20 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
     )
 
     drata_raw = _require(raw, "drata", context="$")
+    api_token_secret_ref = _parse_secret_ref(
+        _require(drata_raw, "apiTokenSecretRef", context="drata"),
+        context="drata.apiTokenSecretRef",
+    )
+    if api_token_secret_ref is None:
+        raise ConfigError("drata.apiTokenSecretRef is required")
+
     drata = DrataConfig(
         base_url=_require(drata_raw, "baseUrl", context="drata"),
         connection_id=int(_require(drata_raw, "connectionId", context="drata")),
         resource_id=int(_require(drata_raw, "resourceId", context="drata")),
         record_id=_require(drata_raw, "recordId", context="drata"),
-        api_token_secret_ref=_parse_secret_ref(
-            _require(drata_raw, "apiTokenSecretRef", context="drata"),
-            context="drata.apiTokenSecretRef",
-        ),
+        api_token_secret_ref=api_token_secret_ref,
     )
-    if drata.api_token_secret_ref is None:
-        raise ConfigError("drata.apiTokenSecretRef is required")
 
     runtime_raw = _require(raw, "runtime", context="$")
     runtime = RuntimeConfig(
