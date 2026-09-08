@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from oci_drata.models import DatabaseResource, Finding, Instance, IpsecConnection, Volume
 
-DERIVATION_VERSION = "1.1.0"
+DERIVATION_VERSION = "1.2.0"
 
 
 def compute_exposure_findings(instances: list[Instance]) -> list[Finding]:

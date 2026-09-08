@@ -39,7 +39,7 @@ from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposur
 from oci_drata.transform.lifecycle import exclude_referencing, split_by_lifecycle
 from oci_drata.transform.vpn_posture import derive_vpn_posture
 
-DERIVATION_VERSION = "1.1.0"
+DERIVATION_VERSION = "1.2.0"
 SCHEMA_VERSION = "1.0.0"
 COLLECTOR_VERSION = "0.1.0"
 
@@ -160,12 +160,13 @@ def build_snapshot(
         )
         for n in networking.network_security_groups
     ]
-    boot_volume_attachments = [
+    boot_volume_attachment_resources = [
         normalize.normalize_common(a, source_type="boot_volume_attachment")
-        for a in storage.boot_volume_attachments
+        for a in boot_volume_attachments  # already excludes attachments to lifecycle-excluded instances
     ]
-    volume_attachments = [
-        normalize.normalize_common(a, source_type="volume_attachment") for a in storage.volume_attachments
+    volume_attachment_resources = [
+        normalize.normalize_common(a, source_type="volume_attachment")
+        for a in volume_attachments  # already excludes attachments to lifecycle-excluded instances
     ]
 
     exposure_config = ExposureConfig(
@@ -419,8 +420,8 @@ def build_snapshot(
         "publicIps": _sorted_dicts(public_ips),
         "bootVolumes": _sorted_dicts(boot_volumes),
         "blockVolumes": _sorted_dicts(block_volumes),
-        "bootVolumeAttachments": _sorted_dicts(boot_volume_attachments),
-        "volumeAttachments": _sorted_dicts(volume_attachments),
+        "bootVolumeAttachments": _sorted_dicts(boot_volume_attachment_resources),
+        "volumeAttachments": _sorted_dicts(volume_attachment_resources),
         "vcns": _sorted_dicts(vcns),
         "subnets": _sorted_dicts(subnets),
         "routeTables": _sorted_dicts(route_tables),

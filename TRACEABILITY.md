@@ -206,3 +206,9 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   (`normalize_data_guard_detail`). `networkSecurityGroupIds` is shared
   with the Autonomous Database posture fields above (same meaning:
   attached NSG ids), populated for whichever `databaseType` it applies to.
+* `Volume.customer_managed_key_present` is always a definite `bool`, never
+  `None` (`normalize.py::normalize_volume`) — `list_volumes`/
+  `list_boot_volumes` return the full `Volume`/`BootVolume` type (there
+  is no separate lighter-weight summary shape in the OCI SDK for either),
+  so `kms_key_id` is authoritative; a null `kms_key_id` is a known fact
+  (no customer-managed key), not an unresolvable unknown.

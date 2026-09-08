@@ -68,6 +68,10 @@ def test_normalize_vnic_requires_subnet_id() -> None:
 
 
 def test_normalize_volume_customer_managed_key_present() -> None:
+    """P1-4: list_volumes/list_boot_volumes return the full Volume/BootVolume type, not a
+    lighter-weight summary -- kms_key_id is authoritative, so absent must resolve to a
+    definite False (no CMK), never None/unknown."""
+
     with_key = _stamp(
         oci.core.models.Volume(
             id="vol1", compartment_id="c1", lifecycle_state="AVAILABLE", kms_key_id="key1"
@@ -77,7 +81,7 @@ def test_normalize_volume_customer_managed_key_present() -> None:
         oci.core.models.Volume(id="vol2", compartment_id="c1", lifecycle_state="AVAILABLE")
     )
     assert normalize.normalize_volume(with_key, source_type="block_volume").customer_managed_key_present is True
-    assert normalize.normalize_volume(without_key, source_type="block_volume").customer_managed_key_present is None
+    assert normalize.normalize_volume(without_key, source_type="block_volume").customer_managed_key_present is False
 
 
 def test_normalize_db_backup_status_variants() -> None:

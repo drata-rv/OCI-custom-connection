@@ -189,11 +189,18 @@ def normalize_internet_gateway(raw: Any) -> InternetGateway:
 
 
 def normalize_volume(raw: Any, *, source_type: str) -> Volume:
+    """list_volumes/list_boot_volumes return the full Volume/BootVolume type (there is no
+    separate lighter-weight VolumeSummary in the OCI SDK) -- kms_key_id is returned
+    authoritatively, so null means "no customer-managed key", a known fact, not an
+    unresolvable unknown. customer_managed_key_present is therefore always a definite
+    bool, never None -- P1-4: a prior version treated absent-key as unknown, conflating it
+    with a genuinely unavailable field on a summary-shaped response, which this isn't."""
+
     kms_key_id = getattr(raw, "kms_key_id", None)
     return Volume(
         **_common_fields(raw, source_type=source_type),
         kms_key_id=kms_key_id,
-        customer_managed_key_present=(kms_key_id is not None) if kms_key_id is not None else None,
+        customer_managed_key_present=kms_key_id is not None,
     )
 
 

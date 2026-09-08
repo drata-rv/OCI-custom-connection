@@ -171,8 +171,15 @@ def _storage() -> StorageCollectionResult:
         id="ocid1.bootvolumeattachment.oc1..bva1", compartment_id=COMPARTMENT_OCID,
         instance_id="ocid1.instance.oc1..vm1", boot_volume_id=boot_volume.id
     ))
+    # P1-3/P1-4 regression: an attachment to the terminated instance (see
+    # _exposed_windows_compute) must not leak into resources.bootVolumeAttachments.
+    old_attachment = _stamp(oci.core.models.BootVolumeAttachment(
+        id="ocid1.bootvolumeattachment.oc1..bvaold", compartment_id=COMPARTMENT_OCID,
+        instance_id="ocid1.instance.oc1..vmold", boot_volume_id=boot_volume.id
+    ))
     return StorageCollectionResult(
-        boot_volumes=[boot_volume], block_volumes=[], boot_volume_attachments=[attachment],
+        boot_volumes=[boot_volume], block_volumes=[],
+        boot_volume_attachments=[attachment, old_attachment],
         volume_attachments=[], operations=[_empty_ok("blockstorage")],
     )
 
@@ -295,6 +302,9 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
         if w["code"] == "LIFECYCLE_EXCLUDED" and "instance" in w["message"]
     )
     assert lifecycle_warning["resourceIds"] == ["ocid1.instance.oc1..vmold"]
+
+    boot_volume_attachment_ids = {a["id"] for a in result.record["resources"]["bootVolumeAttachments"]}
+    assert boot_volume_attachment_ids == {"ocid1.bootvolumeattachment.oc1..bva1"}
 
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
