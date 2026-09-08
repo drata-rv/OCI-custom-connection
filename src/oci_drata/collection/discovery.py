@@ -43,9 +43,17 @@ class DiscoveryResult:
         return not self.unready_regions and operations_complete(self.operations)
 
 
-def _discovery_region(app_config: AppConfig) -> str:
-    # Identity calls work from any region; use first allowed region to stay within allowlist before subscriptions are confirmed.
-    return app_config.oci.regions.allow[0]
+def _discovery_region(signer: TenancySigner) -> str:
+    """Identity calls (get_tenancy/list_region_subscriptions/list_compartments) work from
+    any subscribed region and return tenancy-wide data. Bootstrapping from the first
+    *configured* region (oci.regions.allow[0]) fails before producing a useful diagnostic
+    when that entry is misspelled or unsubscribed -- the region hasn't been validated yet
+    at that point, that's what this call is for. The OCI SDK config file's own `region` is
+    already validated by oci.config.validate_config() (required, pattern-checked) before a
+    TenancySigner exists at all, so it's a safe, always-known-good bootstrap point,
+    independent of the allow-list this call is validating."""
+
+    return signer.base_config["region"]
 
 
 def discover(
@@ -54,7 +62,7 @@ def discover(
     *,
     retry_policy: RetryPolicy | None = None,
 ) -> DiscoveryResult:
-    region = _discovery_region(app_config)
+    region = _discovery_region(signer)
     identity = regional_client(oci.identity.IdentityClient, signer, region=region)
     tenancy_ocid = app_config.oci.expected_tenancy_ocid
     operations: list[OperationResult] = []
