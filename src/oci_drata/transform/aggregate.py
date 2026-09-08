@@ -38,7 +38,7 @@ from oci_drata.transform import normalize, relationships
 from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposure
 from oci_drata.transform.vpn_posture import derive_vpn_posture
 
-DERIVATION_VERSION = "1.0.0"
+DERIVATION_VERSION = "1.1.0"
 SCHEMA_VERSION = "1.0.0"
 COLLECTOR_VERSION = "0.1.0"
 

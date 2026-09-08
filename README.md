@@ -240,10 +240,11 @@ From spec §13, adapted as a literal checklist:
 
 See the cited module docstrings for detail.
 
-* **Exposure CIDR matching is exact-string, not real CIDR-superset
-  containment** (`transform/exposure.py`). A permissive rule for
-  `0.0.0.0/1` would not be flagged even though it covers half the public
-  internet.
+* **Exposure NSG-to-NSG source chains are not resolved** (`transform/exposure.py`).
+  A rule whose source is another network security group (not a CIDR) marks
+  that VNIC's ingress evidence `unknown` rather than resolving the
+  referenced NSG's membership. CIDR sources are evaluated by real
+  containment/overlap (`ipaddress`), not string equality.
 * **`findings[]` is a small, spec-anchored set** (`transform/findings.py`)
   — public exposure, customer-managed-key (when required by config),
   database public endpoint, VPN redundancy — not an exhaustive control
