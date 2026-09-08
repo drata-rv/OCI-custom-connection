@@ -16,36 +16,20 @@ from __future__ import annotations
 
 import dataclasses
 import os
-import re
 import stat
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
 import yaml
 
-ENV_OVERRIDE_PREFIX = "OCI_DRATA__"
-
-# Field names that must never carry an inline literal value in the YAML file.
-# A dict under one of these keys is only legal when it is itself a secretRef
-# object (provider + name/path) -- see _looks_like_secret_ref below.
-_FORBIDDEN_INLINE_KEYS = {
-    "token",
-    "apitoken",
-    "password",
-    "passphrase",
-    "privatekey",
-    "private_key",
-    "secret",
-    "bearer",
-}
-
-_PEM_PATTERN = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
-# Loose JWT/bearer-token shape: three dot-separated base64url segments.
-# Deliberately conservative (min segment lengths) to avoid flagging OCIDs,
-# URLs, or file paths, which never take this shape.
-_BEARER_SHAPE_PATTERN = re.compile(
-    r"^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$"
+from oci_drata.redaction import (
+    BEARER_SHAPE_PATTERN,
+    PEM_PATTERN,
+    REDACTED_MARKER,
+    is_forbidden_key,
 )
+
+ENV_OVERRIDE_PREFIX = "OCI_DRATA__"
 
 
 class ConfigError(Exception):
@@ -130,9 +114,8 @@ def _scan_for_inline_secrets(node: Any, *, path: str = "$") -> None:
 
     if isinstance(node, Mapping):
         for key, value in node.items():
-            key_norm = str(key).lower().replace("-", "").replace("_", "")
             child_path = f"{path}.{key}"
-            if key_norm in _FORBIDDEN_INLINE_KEYS or key_norm.endswith("secretref"):
+            if is_forbidden_key(key):
                 # Keys that are explicitly secret references must resolve to
                 # a well-formed secretRef object (or null); anything else is
                 # an inline credential.
@@ -146,9 +129,9 @@ def _scan_for_inline_secrets(node: Any, *, path: str = "$") -> None:
         for index, item in enumerate(node):
             _scan_for_inline_secrets(item, path=f"{path}[{index}]")
     elif isinstance(node, str):
-        if _PEM_PATTERN.search(node):
+        if PEM_PATTERN.search(node):
             raise ConfigError(f"{path}: inline PEM private-key material is not permitted")
-        if _BEARER_SHAPE_PATTERN.match(node.strip()):
+        if BEARER_SHAPE_PATTERN.fullmatch(node.strip()):
             raise ConfigError(
                 f"{path}: value has the shape of a bearer token; use a secretRef instead"
             )
@@ -200,8 +183,7 @@ def _apply_single_override(
             f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} targets an unknown key "
             f"{leaf_segment!r}; overrides may only touch existing config keys"
         )
-    key_norm = matched_key.lower().replace("-", "").replace("_", "")
-    if key_norm in _FORBIDDEN_INLINE_KEYS or key_norm.endswith("secretref"):
+    if is_forbidden_key(matched_key):
         raise ConfigError(
             f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} targets a credential "
             f"field; secrets must use their documented secretRef, never a plain override"
@@ -470,8 +452,6 @@ def load_config(
 # Redaction helpers for logging (spec: never print resolved secrets)
 # --------------------------------------------------------------------------
 
-_REDACTED = "<redacted>"
-
 
 def redact_config_for_display(raw: Mapping[str, Any]) -> Any:
     """Return a copy of a raw config mapping safe to log: secretRef targets
@@ -480,9 +460,8 @@ def redact_config_for_display(raw: Mapping[str, Any]) -> Any:
     if isinstance(raw, Mapping):
         out: dict[str, Any] = {}
         for key, value in raw.items():
-            key_norm = str(key).lower().replace("-", "").replace("_", "")
-            if key_norm in _FORBIDDEN_INLINE_KEYS or key_norm.endswith("secretref"):
-                out[key] = _REDACTED if value is not None else None
+            if is_forbidden_key(key):
+                out[key] = REDACTED_MARKER if value is not None else None
             else:
                 out[key] = redact_config_for_display(value)
         return out
