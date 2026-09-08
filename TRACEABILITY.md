@@ -157,6 +157,21 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 
 See `README.md §9` for the user-facing version. Implementation-level detail:
 
+* Every resource definition in `schemas/oci-snapshot-1.0.0.json` (`instance`,
+  `vnic`, `volume`, `routeTable`, `securityList`, `networkSecurityGroup`,
+  `internetGateway`, `databaseResource`, `ipsecConnection`, `ipsecTunnel`) is
+  a single flat object with its own `additionalProperties: false`, not an
+  `allOf`/`$ref` composition over `commonResource`. `additionalProperties`
+  only reliably rejects unexpected fields within one schema's own local
+  `properties` — a type-specific branch composed via `allOf` can accept a
+  field outside its own declared set regardless of a sibling branch's
+  restriction, and `commonResource` itself had to stay
+  `additionalProperties: true` for the composition to validate at all,
+  making every resource type permissive to drift/typo'd fields. `commonResource`
+  is still `additionalProperties: false` and still used directly (not via
+  `allOf`) for resource types with no fields beyond it (compartments, images,
+  private/public IPs, VCNs, subnets, attachments, CPEs, DRGs, DRG
+  attachments).
 * `paginate()`/`call_once()` are the single point where `compartment_id` is
   forwarded into the actual OCI call — several operations
   (`list_data_guard_associations`, `list_autonomous_database_peers`,
