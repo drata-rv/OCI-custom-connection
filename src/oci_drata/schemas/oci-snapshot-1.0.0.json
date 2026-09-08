@@ -886,7 +886,22 @@
             "networkSecurityGroupIds",
             "backupRetentionDays",
             "backupRetentionLocked",
-            "longTermBackupScheduleConfigured"
+            "longTermBackupScheduleConfigured",
+            "shape",
+            "version",
+            "osVersion",
+            "nodeCount",
+            "diskRedundancy",
+            "subnetId",
+            "lastBackupTimestamp",
+            "lastFailedBackupTimestamp",
+            "patchVersion",
+            "recoveryWindowDays",
+            "databaseManagementStatus",
+            "dataGuardRole",
+            "dataGuardPeerRole",
+            "dataGuardProtectionMode",
+            "dataGuardTransportType"
           ],
           "properties": {
             "databaseType": {
@@ -962,7 +977,7 @@
             },
             "networkSecurityGroupIds": {
               "$ref": "#/definitions/stringArray",
-              "description": "Autonomous Database only. Empty array if not applicable."
+              "description": "Autonomous Database and base_db_system. Empty array if not applicable."
             },
             "backupRetentionDays": {
               "type": [
@@ -984,6 +999,66 @@
                 "null"
               ],
               "description": "Autonomous Database only. True if long_term_backup_schedule is present; null if not applicable/unknown."
+            },
+            "shape": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw shape."
+            },
+            "version": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw Grid Infrastructure/DB version."
+            },
+            "osVersion": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw os_version."
+            },
+            "nodeCount": {
+              "type": ["integer", "null"],
+              "description": "base_db_system only. Raw node_count."
+            },
+            "diskRedundancy": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw disk_redundancy."
+            },
+            "subnetId": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw subnet_id."
+            },
+            "lastBackupTimestamp": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw last_backup_timestamp, RFC3339 UTC."
+            },
+            "lastFailedBackupTimestamp": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw last_failed_backup_timestamp, RFC3339 UTC."
+            },
+            "patchVersion": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw patch_version."
+            },
+            "recoveryWindowDays": {
+              "type": ["integer", "null"],
+              "description": "base_database only. Raw db_backup_config.recovery_window_in_days."
+            },
+            "databaseManagementStatus": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw database_management_config.database_management_status."
+            },
+            "dataGuardRole": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw role."
+            },
+            "dataGuardPeerRole": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw peer_role."
+            },
+            "dataGuardProtectionMode": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw protection_mode."
+            },
+            "dataGuardTransportType": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw transport_type."
             }
           }
         }

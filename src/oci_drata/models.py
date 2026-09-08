@@ -230,6 +230,24 @@ class DatabaseResource(CommonResource):
     backup_retention_days: int | None = None
     backup_retention_locked: bool | None = None
     long_term_backup_schedule_configured: bool | None = None
+    # Base DB System detail. None on non-db_system rows.
+    shape: str | None = None
+    version: str | None = None
+    os_version: str | None = None
+    node_count: int | None = None
+    disk_redundancy: str | None = None
+    subnet_id: str | None = None
+    # Base Database detail. None on non-database rows.
+    last_backup_timestamp: str | None = None
+    last_failed_backup_timestamp: str | None = None
+    patch_version: str | None = None
+    recovery_window_days: int | None = None
+    database_management_status: str | None = None
+    # Data Guard association detail. None on non-data_guard rows.
+    data_guard_role: str | None = None
+    data_guard_peer_role: str | None = None
+    data_guard_protection_mode: str | None = None
+    data_guard_transport_type: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         base = super().to_dict()
@@ -249,6 +267,21 @@ class DatabaseResource(CommonResource):
                 "backupRetentionDays": self.backup_retention_days,
                 "backupRetentionLocked": self.backup_retention_locked,
                 "longTermBackupScheduleConfigured": self.long_term_backup_schedule_configured,
+                "shape": self.shape,
+                "version": self.version,
+                "osVersion": self.os_version,
+                "nodeCount": self.node_count,
+                "diskRedundancy": self.disk_redundancy,
+                "subnetId": self.subnet_id,
+                "lastBackupTimestamp": self.last_backup_timestamp,
+                "lastFailedBackupTimestamp": self.last_failed_backup_timestamp,
+                "patchVersion": self.patch_version,
+                "recoveryWindowDays": self.recovery_window_days,
+                "databaseManagementStatus": self.database_management_status,
+                "dataGuardRole": self.data_guard_role,
+                "dataGuardPeerRole": self.data_guard_peer_role,
+                "dataGuardProtectionMode": self.data_guard_protection_mode,
+                "dataGuardTransportType": self.data_guard_transport_type,
             }
         )
         return base

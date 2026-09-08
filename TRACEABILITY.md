@@ -185,3 +185,23 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   reachability — an ADB with a public endpoint can still be access-
   restricted by an ACL or a private endpoint; this MVP surfaces that
   context in the finding's `reason` but doesn't fold it into the verdict.
+* Route tables, security lists, NSGs, and internet gateways carry their
+  full rule/state detail (`routeRules`, `ingressRules`/`egressRules`,
+  `securityRules`, `isEnabled`/`vcnId`) instead of the generic
+  `commonResource` shape — see `models.py::RouteTable`/`SecurityList`/
+  `NetworkSecurityGroup`/`InternetGateway` and
+  `normalize.py::normalize_route_table`/`normalize_security_list`/
+  `normalize_network_security_group`/`normalize_internet_gateway`. NSG
+  rules are joined at normalize time from
+  `networking.nsg_security_rules_by_nsg_id` (a separate
+  `list_network_security_group_security_rules` call per NSG, not embedded
+  on the NSG object itself).
+* `base_db_system`/`base_database`/`data_guard` rows carry the same
+  kind of detail beyond the generic identity fields — shape/version/
+  node count/redundancy/subnet/NSGs for db systems
+  (`normalize.py::normalize_db_system_detail`), backup/patch/management
+  status for databases (`normalize_database_detail`), and role/peer
+  role/protection mode/transport type for Data Guard associations
+  (`normalize_data_guard_detail`). `networkSecurityGroupIds` is shared
+  with the Autonomous Database posture fields above (same meaning:
+  attached NSG ids), populated for whichever `databaseType` it applies to.

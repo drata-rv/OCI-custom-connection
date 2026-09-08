@@ -147,6 +147,61 @@ def test_normalize_autonomous_database_posture_public_endpoint_string_not_coerce
     assert isinstance(posture["public_endpoint_present"], bool)
 
 
+def test_normalize_db_system_detail_preserves_shape_version_redundancy() -> None:
+    raw = oci.database.models.DbSystemSummary(
+        id="sys1", shape="VM.Standard2.4", version="19.0.0.0", os_version="7.9",
+        node_count=2, disk_redundancy="HIGH", subnet_id="sub1", nsg_ids=["nsg1", "nsg2"],
+    )
+    detail = normalize.normalize_db_system_detail(raw)
+    assert detail == {
+        "shape": "VM.Standard2.4",
+        "version": "19.0.0.0",
+        "os_version": "7.9",
+        "node_count": 2,
+        "disk_redundancy": "HIGH",
+        "subnet_id": "sub1",
+        "network_security_group_ids": ("nsg1", "nsg2"),
+    }
+
+
+def test_normalize_database_detail_preserves_backup_and_patch_fields() -> None:
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    raw = oci.database.models.DatabaseSummary(
+        id="db1", last_backup_timestamp=now, patch_version="OCT2025",
+        db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True, recovery_window_in_days=14),
+        database_management_config=oci.database.models.DatabaseManagementConfig(
+            database_management_status="ENABLED"
+        ),
+    )
+    detail = normalize.normalize_database_detail(raw)
+    assert detail["last_backup_timestamp"] == "2026-09-08T20:00:00Z"
+    assert detail["last_failed_backup_timestamp"] is None
+    assert detail["patch_version"] == "OCT2025"
+    assert detail["recovery_window_days"] == 14
+    assert detail["database_management_status"] == "ENABLED"
+
+
+def test_normalize_database_detail_no_backup_config_is_null_not_error() -> None:
+    raw = oci.database.models.DatabaseSummary(id="db2")
+    detail = normalize.normalize_database_detail(raw)
+    assert detail["recovery_window_days"] is None
+    assert detail["database_management_status"] is None
+
+
+def test_normalize_data_guard_detail_preserves_role_and_protection_mode() -> None:
+    raw = oci.database.models.DataGuardAssociation(
+        id="dg1", database_id="db1", role="PRIMARY", peer_role="STANDBY",
+        protection_mode="MAXIMUM_AVAILABILITY", transport_type="SYNC",
+    )
+    detail = normalize.normalize_data_guard_detail(raw)
+    assert detail == {
+        "data_guard_role": "PRIMARY",
+        "data_guard_peer_role": "STANDBY",
+        "data_guard_protection_mode": "MAXIMUM_AVAILABILITY",
+        "data_guard_transport_type": "SYNC",
+    }
+
+
 def test_normalize_route_table_preserves_route_rules() -> None:
     raw = _stamp(
         oci.core.models.RouteTable(

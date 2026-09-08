@@ -168,7 +168,10 @@ def build_snapshot(
 
     # -- Base + Autonomous Database ----------------------------------------
     db_systems = [
-        normalize.normalize_database_resource(s, database_type="base_db_system", source_type="db_system")
+        normalize.normalize_database_resource(
+            s, database_type="base_db_system", source_type="db_system",
+            detail_fields=normalize.normalize_db_system_detail(s),
+        )
         for s in database_base.db_systems
     ]
     db_homes = [
@@ -179,6 +182,7 @@ def build_snapshot(
         normalize.normalize_database_resource(
             d, database_type="base_database", source_type="database",
             backup_status=normalize.normalize_db_backup_status(d),
+            detail_fields=normalize.normalize_database_detail(d),
         )
         for d in database_base.databases
     ]
@@ -190,6 +194,7 @@ def build_snapshot(
         normalize.normalize_database_resource(
             g, database_type="data_guard", source_type="data_guard_association",
             compartment_id="",  # backfilled by resolve_base_database_relationships
+            detail_fields=normalize.normalize_data_guard_detail(g),
         )
         for g in database_base.data_guard_associations
     ]
@@ -209,7 +214,7 @@ def build_snapshot(
         normalize.normalize_database_resource(
             a, database_type="autonomous_database", source_type="autonomous_database",
             backup_status="not_applicable",  # no reliable enabled/disabled signal -- see posture fields
-            autonomous_posture=normalize.normalize_autonomous_database_posture(a),
+            detail_fields=normalize.normalize_autonomous_database_posture(a),
         )
         for a in autonomous_database.autonomous_databases
     ]
@@ -219,7 +224,8 @@ def build_snapshot(
     ]
     autonomous_dg = [
         normalize.normalize_database_resource(
-            g, database_type="data_guard", source_type="data_guard_association", compartment_id=""
+            g, database_type="data_guard", source_type="data_guard_association", compartment_id="",
+            detail_fields=normalize.normalize_data_guard_detail(g),
         )
         for g in autonomous_database.autonomous_database_dataguard_associations
     ]

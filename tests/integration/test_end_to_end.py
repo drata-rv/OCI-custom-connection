@@ -174,6 +174,28 @@ def _database_base_empty() -> DatabaseBaseCollectionResult:
     )
 
 
+def _database_base_populated() -> DatabaseBaseCollectionResult:
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    db_system = _stamp(oci.database.models.DbSystemSummary(
+        id="ocid1.dbsystem.oc1..sys1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
+        shape="VM.Standard2.4", version="19.0.0.0", os_version="7.9", node_count=2,
+        disk_redundancy="HIGH", subnet_id="ocid1.subnet.oc1..sub1", nsg_ids=["ocid1.nsg.oc1..nsg1"],
+    ))
+    database = _stamp(oci.database.models.DatabaseSummary(
+        id="ocid1.database.oc1..db1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
+        last_backup_timestamp=now, patch_version="OCT2025",
+        db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True, recovery_window_in_days=14),
+    ))
+    dg = _stamp(oci.database.models.DataGuardAssociation(
+        id="ocid1.dgassociation.oc1..dg1", database_id="ocid1.database.oc1..db1",
+        role="PRIMARY", peer_role="STANDBY", protection_mode="MAXIMUM_AVAILABILITY", transport_type="SYNC",
+    ))
+    return DatabaseBaseCollectionResult(
+        db_systems=[db_system], db_homes=[], databases=[database], backups=[],
+        data_guard_associations=[dg], operations=[_empty_ok("database")],
+    )
+
+
 def _autonomous_database() -> AutonomousDatabaseCollectionResult:
     # public_endpoint is a hostname string on the real SDK model, never a bool -- exercises
     # the fix for the P0-4 defect where a raw string was stored into a boolean schema field.
@@ -224,7 +246,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
         compute=_exposed_windows_compute(),
         storage=_storage(),
         networking=_networking_allowing_rdp(),
-        database_base=_database_base_empty(),
+        database_base=_database_base_populated(),
         autonomous_database=_autonomous_database(),
         exadata=_exadata_not_detected(),
         vpn=_vpn_non_redundant(),
@@ -276,6 +298,22 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert nsg["securityRules"][0]["source"] == "0.0.0.0/0"
     assert nsg["securityRules"][0]["tcpPortRange"] == {"min": 3389, "max": 3389}
 
+    db_system = result.record["resources"]["dbSystems"][0]
+    assert db_system["shape"] == "VM.Standard2.4"
+    assert db_system["nodeCount"] == 2
+    assert db_system["diskRedundancy"] == "HIGH"
+    assert db_system["networkSecurityGroupIds"] == ["ocid1.nsg.oc1..nsg1"]
+
+    database = result.record["resources"]["databases"][0]
+    assert database["patchVersion"] == "OCT2025"
+    assert database["recoveryWindowDays"] == 14
+    assert database["lastBackupTimestamp"] == "2026-09-08T20:00:00Z"
+    assert database["backupStatus"] == "enabled"
+
+    data_guard = result.record["resources"]["dataGuardAssociations"][0]
+    assert data_guard["dataGuardRole"] == "PRIMARY"
+    assert data_guard["dataGuardProtectionMode"] == "MAXIMUM_AVAILABILITY"
+
     adb = result.record["resources"]["autonomousDatabases"][0]
     assert adb["backupStatus"] == "not_applicable"
     assert adb["publicEndpointHostname"] == "adb1.adb.us-ashburn-1.oraclecloudapps.com"
@@ -294,7 +332,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     # deterministic: same input produces same output
     result2 = build_snapshot(
         app_config, discovery=_discovery(), compute=_exposed_windows_compute(), storage=_storage(),
-        networking=_networking_allowing_rdp(), database_base=_database_base_empty(),
+        networking=_networking_allowing_rdp(), database_base=_database_base_populated(),
         autonomous_database=_autonomous_database(), exadata=_exadata_not_detected(),
         vpn=_vpn_non_redundant(), started_at=now, completed_at=now,
     )

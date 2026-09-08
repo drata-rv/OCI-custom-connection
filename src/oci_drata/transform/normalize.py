@@ -274,6 +274,55 @@ def normalize_autonomous_database_posture(raw_adb: Any) -> dict[str, Any]:
     }
 
 
+def normalize_db_system_detail(raw_db_system: Any) -> dict[str, Any]:
+    """Raw base_db_system fields the review calls out as lost by generic normalization:
+    shape, version, OS patch level, node count, redundancy, subnet, NSGs."""
+
+    return {
+        "shape": getattr(raw_db_system, "shape", None),
+        "version": getattr(raw_db_system, "version", None),
+        "os_version": getattr(raw_db_system, "os_version", None),
+        "node_count": getattr(raw_db_system, "node_count", None),
+        "disk_redundancy": getattr(raw_db_system, "disk_redundancy", None),
+        "subnet_id": getattr(raw_db_system, "subnet_id", None),
+        "network_security_group_ids": tuple(getattr(raw_db_system, "nsg_ids", None) or ()),
+    }
+
+
+def normalize_database_detail(raw_database: Any) -> dict[str, Any]:
+    """Raw base_database fields the review calls out as lost: backup config detail beyond
+    the compressed enabled/disabled status, last/failed backup timestamps, patch version,
+    management config."""
+
+    backup_config = getattr(raw_database, "db_backup_config", None)
+    management_config = getattr(raw_database, "database_management_config", None)
+    return {
+        "last_backup_timestamp": normalize_timestamp(getattr(raw_database, "last_backup_timestamp", None)),
+        "last_failed_backup_timestamp": normalize_timestamp(
+            getattr(raw_database, "last_failed_backup_timestamp", None)
+        ),
+        "patch_version": getattr(raw_database, "patch_version", None),
+        "recovery_window_days": (
+            getattr(backup_config, "recovery_window_in_days", None) if backup_config else None
+        ),
+        "database_management_status": (
+            getattr(management_config, "database_management_status", None) if management_config else None
+        ),
+    }
+
+
+def normalize_data_guard_detail(raw_dg: Any) -> dict[str, Any]:
+    """Raw data_guard fields the review calls out as lost: role, peer role, protection
+    mode, transport type -- previously only the bare bidirectional link survived."""
+
+    return {
+        "data_guard_role": getattr(raw_dg, "role", None),
+        "data_guard_peer_role": getattr(raw_dg, "peer_role", None),
+        "data_guard_protection_mode": getattr(raw_dg, "protection_mode", None),
+        "data_guard_transport_type": getattr(raw_dg, "transport_type", None),
+    }
+
+
 def normalize_database_resource(
     raw: Any,
     *,
@@ -281,7 +330,7 @@ def normalize_database_resource(
     source_type: str,
     backup_status: str = "not_applicable",
     compartment_id: str | None = None,
-    autonomous_posture: Mapping[str, Any] | None = None,
+    detail_fields: Mapping[str, Any] | None = None,
 ) -> DatabaseResource:
     fields = _common_fields(raw, source_type=source_type)
     if compartment_id is not None:
@@ -292,5 +341,5 @@ def normalize_database_resource(
         backup_status=backup_status,
         kms_key_id=getattr(raw, "kms_key_id", None),
         # related_resource_ids filled in by transform.relationships.
-        **(autonomous_posture or {}),
+        **(detail_fields or {}),
     )
