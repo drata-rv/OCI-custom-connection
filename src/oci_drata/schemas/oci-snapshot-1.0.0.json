@@ -766,10 +766,19 @@
           "type": "object",
           "required": [
             "databaseType",
-            "publicEndpoint",
             "backupStatus",
             "kmsKeyId",
-            "relatedResourceIds"
+            "relatedResourceIds",
+            "publicEndpointHostname",
+            "privateEndpointConfigured",
+            "publicEndpointPresent",
+            "accessControlEnabled",
+            "allowedSourceCount",
+            "mtlsRequired",
+            "networkSecurityGroupIds",
+            "backupRetentionDays",
+            "backupRetentionLocked",
+            "longTermBackupScheduleConfigured"
           ],
           "properties": {
             "databaseType": {
@@ -781,12 +790,6 @@
                 "autonomous_database",
                 "backup",
                 "data_guard"
-              ]
-            },
-            "publicEndpoint": {
-              "type": [
-                "boolean",
-                "null"
               ]
             },
             "backupStatus": {
@@ -806,6 +809,73 @@
             },
             "relatedResourceIds": {
               "$ref": "#/definitions/stringArray"
+            },
+            "publicEndpointHostname": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw public_endpoint hostname/URL, null if not applicable or not configured."
+            },
+            "privateEndpointConfigured": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if a private_endpoint is configured; null if not applicable/unknown."
+            },
+            "publicEndpointPresent": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if publicEndpointHostname is non-empty; null if not applicable/unknown."
+            },
+            "accessControlEnabled": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if an allowed-source (whitelisted IP) ACL is configured; null if not applicable/unknown."
+            },
+            "allowedSourceCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Autonomous Database only. Count of configured allowed-source entries (whitelisted IPs); not the raw IP list."
+            },
+            "mtlsRequired": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw is_mtls_connection_required; null if not applicable/unknown."
+            },
+            "networkSecurityGroupIds": {
+              "$ref": "#/definitions/stringArray",
+              "description": "Autonomous Database only. Empty array if not applicable."
+            },
+            "backupRetentionDays": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw backup_retention_period_in_days; null if not applicable/unknown."
+            },
+            "backupRetentionLocked": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw is_backup_retention_locked; null if not applicable/unknown."
+            },
+            "longTermBackupScheduleConfigured": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if long_term_backup_schedule is present; null if not applicable/unknown."
             }
           }
         }

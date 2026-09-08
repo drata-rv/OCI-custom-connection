@@ -170,3 +170,18 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   between Base DB and Autonomous DB — the schema has no separate
   `autonomousDatabaseBackups` array, and `databaseType`'s enum has no
   distinct `autonomous_*` values for these two.
+* Autonomous Database `backupStatus` is always `not_applicable`
+  (`transform/normalize.py::normalize_autonomous_database_posture`).
+  Unlike Base DB's `DbBackupConfig.auto_backup_enabled`, ADB has no
+  enabled/disabled boolean on `AutonomousDatabaseSummary` —
+  `backup_retention_period_in_days` is a retention window, not a toggle.
+  Posture is instead exposed as separate raw/derived fields
+  (`backupRetentionDays`, `backupRetentionLocked`,
+  `longTermBackupScheduleConfigured`, `publicEndpointPresent`,
+  `privateEndpointConfigured`, `accessControlEnabled`,
+  `allowedSourceCount`, `mtlsRequired`, `networkSecurityGroupIds`) rather
+  than compressed into one guessed verdict. `OCI-DATABASE-PUBLIC-ENDPOINT`
+  findings key off `publicEndpointPresent` only, not effective
+  reachability — an ADB with a public endpoint can still be access-
+  restricted by an ACL or a private endpoint; this MVP surfaces that
+  context in the finding's `reason` but doesn't fold it into the verdict.

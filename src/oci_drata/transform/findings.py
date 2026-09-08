@@ -96,12 +96,18 @@ def database_customer_managed_key_findings(
 
 
 def database_public_endpoint_findings(autonomous_databases: list[DatabaseResource]) -> list[Finding]:
+    """Flags on publicEndpointPresent only (does a public endpoint hostname exist), not on
+    effective reachability -- an ADB can carry a public_endpoint hostname while access is
+    still restricted by an allow-list ACL or a private endpoint. accessControlEnabled and
+    privateEndpointConfigured are included in the reason for the reviewer to weigh, not
+    folded into the pass/fail verdict; this MVP doesn't resolve effective reachability."""
+
     findings = []
     for adb in autonomous_databases:
-        if adb.public_endpoint is None:
+        if adb.public_endpoint_present is None:
             status = "unknown"
         else:
-            status = "fail" if adb.public_endpoint else "pass"
+            status = "fail" if adb.public_endpoint_present else "pass"
         findings.append(
             Finding(
                 assertion_id="OCI-DATABASE-PUBLIC-ENDPOINT",
@@ -111,9 +117,13 @@ def database_public_endpoint_findings(autonomous_databases: list[DatabaseResourc
                 resource_name=adb.display_name,
                 region=adb.region,
                 compartment_id=adb.compartment_id,
-                observed=adb.public_endpoint,
+                observed=adb.public_endpoint_present,
                 expected=False,
-                reason=f"publicEndpoint={adb.public_endpoint!r}",
+                reason=(
+                    f"publicEndpointPresent={adb.public_endpoint_present!r} "
+                    f"accessControlEnabled={adb.access_control_enabled!r} "
+                    f"privateEndpointConfigured={adb.private_endpoint_configured!r}"
+                ),
                 source_ids=(adb.id,),
                 derivation_version=DERIVATION_VERSION,
             )

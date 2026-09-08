@@ -175,9 +175,13 @@ def _database_base_empty() -> DatabaseBaseCollectionResult:
 
 
 def _autonomous_database() -> AutonomousDatabaseCollectionResult:
+    # public_endpoint is a hostname string on the real SDK model, never a bool -- exercises
+    # the fix for the P0-4 defect where a raw string was stored into a boolean schema field.
     adb = _stamp(oci.database.models.AutonomousDatabaseSummary(
         id="ocid1.autonomousdatabase.oc1..adb1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
-        public_endpoint=True, is_dedicated=False, backup_retention_period_in_days=7,
+        public_endpoint="adb1.adb.us-ashburn-1.oraclecloudapps.com", is_dedicated=False,
+        backup_retention_period_in_days=7, is_backup_retention_locked=False,
+        whitelisted_ips=["203.0.113.0/24"], is_mtls_connection_required=True,
         kms_key_id="ocid1.key.oc1..key2",
     ))
     return AutonomousDatabaseCollectionResult(
@@ -256,6 +260,21 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
 
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
+
+    adb = result.record["resources"]["autonomousDatabases"][0]
+    assert adb["backupStatus"] == "not_applicable"
+    assert adb["publicEndpointHostname"] == "adb1.adb.us-ashburn-1.oraclecloudapps.com"
+    assert adb["publicEndpointPresent"] is True
+    assert adb["accessControlEnabled"] is True
+    assert adb["allowedSourceCount"] == 1
+    assert adb["mtlsRequired"] is True
+    assert adb["backupRetentionDays"] == 7
+    assert adb["backupRetentionLocked"] is False
+    assert result.record["metrics"]["databasePublicEndpointCount"] == 1
+    public_endpoint_finding = next(
+        f for f in result.record["findings"] if f["assertionId"] == "OCI-DATABASE-PUBLIC-ENDPOINT"
+    )
+    assert public_endpoint_finding["status"] == "fail"
 
     # deterministic: same input produces same output
     result2 = build_snapshot(

@@ -166,15 +166,35 @@ def normalize_db_backup_status(raw_database: Any) -> str:
     return "enabled" if enabled else "disabled"
 
 
-def normalize_autonomous_backup_status(raw_adb: Any) -> str:
-    """Autonomous DB has no explicit enable/disable flag; derives
-    enabled/disabled from backup_retention_period_in_days (>0 = enabled,
-    0 = disabled), unknown if absent."""
+def normalize_autonomous_database_posture(raw_adb: Any) -> dict[str, Any]:
+    """Autonomous Database has no auto_backup_enabled-style boolean (unlike Base DB's
+    DbBackupConfig) and public_endpoint is a hostname string, not a boolean -- deriving a
+    single compressed enabled/disabled or public/private verdict from either would guess.
+    Retains raw fields and derives only presence facts (public/private endpoint present,
+    access control configured, long-term schedule configured) rather than a status.
 
-    retention_days = getattr(raw_adb, "backup_retention_period_in_days", None)
-    if retention_days is None:
-        return "unknown"
-    return "enabled" if retention_days > 0 else "disabled"
+    AutonomousDatabaseSummary always declares these attributes; None means Oracle returned
+    no value for an existing resource (e.g. no public endpoint), not that the field is
+    unreachable -- so the presence facts below resolve to a definite bool, never unknown.
+    Raw non-presence fields (mtls_required, backup retention) pass through None as-is."""
+
+    public_endpoint_hostname = getattr(raw_adb, "public_endpoint", None) or None
+    private_endpoint = getattr(raw_adb, "private_endpoint", None)
+    whitelisted_ips = getattr(raw_adb, "whitelisted_ips", None) or ()
+    long_term_backup_schedule = getattr(raw_adb, "long_term_backup_schedule", None)
+
+    return {
+        "public_endpoint_hostname": public_endpoint_hostname,
+        "private_endpoint_configured": bool(private_endpoint),
+        "public_endpoint_present": bool(public_endpoint_hostname),
+        "access_control_enabled": bool(whitelisted_ips),
+        "allowed_source_count": len(whitelisted_ips),
+        "mtls_required": getattr(raw_adb, "is_mtls_connection_required", None),
+        "network_security_group_ids": tuple(getattr(raw_adb, "nsg_ids", None) or ()),
+        "backup_retention_days": getattr(raw_adb, "backup_retention_period_in_days", None),
+        "backup_retention_locked": getattr(raw_adb, "is_backup_retention_locked", None),
+        "long_term_backup_schedule_configured": long_term_backup_schedule is not None,
+    }
 
 
 def normalize_database_resource(
@@ -183,8 +203,8 @@ def normalize_database_resource(
     database_type: str,
     source_type: str,
     backup_status: str = "not_applicable",
-    public_endpoint: bool | None = None,
     compartment_id: str | None = None,
+    autonomous_posture: Mapping[str, Any] | None = None,
 ) -> DatabaseResource:
     fields = _common_fields(raw, source_type=source_type)
     if compartment_id is not None:
@@ -192,8 +212,8 @@ def normalize_database_resource(
     return DatabaseResource(
         **fields,
         database_type=database_type,
-        public_endpoint=public_endpoint,
         backup_status=backup_status,
         kms_key_id=getattr(raw, "kms_key_id", None),
         # related_resource_ids filled in by transform.relationships.
+        **(autonomous_posture or {}),
     )

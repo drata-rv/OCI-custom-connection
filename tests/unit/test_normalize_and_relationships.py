@@ -93,13 +93,58 @@ def test_normalize_db_backup_status_variants() -> None:
     assert normalize.normalize_db_backup_status(unknown) == "unknown"
 
 
-def test_normalize_autonomous_backup_status_variants() -> None:
-    enabled = oci.database.models.AutonomousDatabaseSummary(id="a1", backup_retention_period_in_days=7)
-    disabled = oci.database.models.AutonomousDatabaseSummary(id="a2", backup_retention_period_in_days=0)
-    unknown = oci.database.models.AutonomousDatabaseSummary(id="a3")
-    assert normalize.normalize_autonomous_backup_status(enabled) == "enabled"
-    assert normalize.normalize_autonomous_backup_status(disabled) == "disabled"
-    assert normalize.normalize_autonomous_backup_status(unknown) == "unknown"
+def test_normalize_autonomous_database_posture_full_fields() -> None:
+    raw = oci.database.models.AutonomousDatabaseSummary(
+        id="a1",
+        public_endpoint="adb.example.oraclecloudapps.com",
+        private_endpoint="10.0.0.5",
+        whitelisted_ips=["203.0.113.0/24", "198.51.100.0/24"],
+        is_mtls_connection_required=True,
+        nsg_ids=["nsg1"],
+        backup_retention_period_in_days=30,
+        is_backup_retention_locked=True,
+        long_term_backup_schedule=oci.database.models.LongTermBackUpScheduleDetails(),
+    )
+    posture = normalize.normalize_autonomous_database_posture(raw)
+    assert posture == {
+        "public_endpoint_hostname": "adb.example.oraclecloudapps.com",
+        "private_endpoint_configured": True,
+        "public_endpoint_present": True,
+        "access_control_enabled": True,
+        "allowed_source_count": 2,
+        "mtls_required": True,
+        "network_security_group_ids": ("nsg1",),
+        "backup_retention_days": 30,
+        "backup_retention_locked": True,
+        "long_term_backup_schedule_configured": True,
+    }
+
+
+def test_normalize_autonomous_database_posture_no_endpoint_data_resolves_definite_false() -> None:
+    """Oracle always returns these fields for an existing ADB; None means "no public endpoint" etc,
+    a fact we know, not an unresolvable unknown -- unlike raw retention/mTLS fields, which pass
+    None through as-is since those genuinely can be absent on legacy records."""
+
+    raw = oci.database.models.AutonomousDatabaseSummary(id="a2")
+    posture = normalize.normalize_autonomous_database_posture(raw)
+    assert posture["public_endpoint_hostname"] is None
+    assert posture["public_endpoint_present"] is False
+    assert posture["private_endpoint_configured"] is False
+    assert posture["access_control_enabled"] is False
+    assert posture["allowed_source_count"] == 0
+    assert posture["long_term_backup_schedule_configured"] is False
+    assert posture["backup_retention_days"] is None
+    assert posture["backup_retention_locked"] is None
+    assert posture["mtls_required"] is None
+
+
+def test_normalize_autonomous_database_posture_public_endpoint_string_not_coerced_to_bool() -> None:
+    """Guards the exact P0-4 defect: a raw hostname string must never land in a bool field."""
+    raw = oci.database.models.AutonomousDatabaseSummary(id="a3", public_endpoint="host.example.com")
+    posture = normalize.normalize_autonomous_database_posture(raw)
+    assert posture["public_endpoint_hostname"] == "host.example.com"
+    assert posture["public_endpoint_present"] is True
+    assert isinstance(posture["public_endpoint_present"], bool)
 
 
 class TestClassifyWindows:

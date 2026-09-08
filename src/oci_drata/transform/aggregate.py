@@ -210,8 +210,8 @@ def build_snapshot(
     autonomous_databases = [
         normalize.normalize_database_resource(
             a, database_type="autonomous_database", source_type="autonomous_database",
-            backup_status=normalize.normalize_autonomous_backup_status(a),
-            public_endpoint=getattr(a, "public_endpoint", None),
+            backup_status="not_applicable",  # no reliable enabled/disabled signal -- see posture fields
+            autonomous_posture=normalize.normalize_autonomous_database_posture(a),
         )
         for a in autonomous_database.autonomous_databases
     ]
@@ -354,7 +354,7 @@ def build_snapshot(
         "baseDatabaseCount": len(base_databases),
         "autonomousDatabaseCount": len(autonomous_databases),
         "databasePublicEndpointCount": sum(
-            1 for a in autonomous_databases if a.public_endpoint is True
+            1 for a in autonomous_databases if a.public_endpoint_present is True
         ),
         "databaseBackupUnknownCount": sum(
             1 for d in (*base_databases, *autonomous_databases) if d.backup_status == "unknown"

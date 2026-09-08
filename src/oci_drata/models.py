@@ -111,20 +111,40 @@ class Volume(CommonResource):
 @dataclasses.dataclass(frozen=True)
 class DatabaseResource(CommonResource):
     database_type: str = "base_database"
-    public_endpoint: bool | None = None
     backup_status: str = "unknown"  # enabled | disabled | unknown | not_applicable
     kms_key_id: str | None = None
     related_resource_ids: tuple[str, ...] = ()
+    # Autonomous Database posture -- raw/derived facts kept separate rather than
+    # compressed into one guessed status. None on non-ADB rows (field not applicable).
+    public_endpoint_hostname: str | None = None
+    private_endpoint_configured: bool | None = None
+    public_endpoint_present: bool | None = None
+    access_control_enabled: bool | None = None
+    allowed_source_count: int | None = None
+    mtls_required: bool | None = None
+    network_security_group_ids: tuple[str, ...] = ()
+    backup_retention_days: int | None = None
+    backup_retention_locked: bool | None = None
+    long_term_backup_schedule_configured: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         base = super().to_dict()
         base.update(
             {
                 "databaseType": self.database_type,
-                "publicEndpoint": self.public_endpoint,
                 "backupStatus": self.backup_status,
                 "kmsKeyId": self.kms_key_id,
                 "relatedResourceIds": list(self.related_resource_ids),
+                "publicEndpointHostname": self.public_endpoint_hostname,
+                "privateEndpointConfigured": self.private_endpoint_configured,
+                "publicEndpointPresent": self.public_endpoint_present,
+                "accessControlEnabled": self.access_control_enabled,
+                "allowedSourceCount": self.allowed_source_count,
+                "mtlsRequired": self.mtls_required,
+                "networkSecurityGroupIds": list(self.network_security_group_ids),
+                "backupRetentionDays": self.backup_retention_days,
+                "backupRetentionLocked": self.backup_retention_locked,
+                "longTermBackupScheduleConfigured": self.long_term_backup_schedule_configured,
             }
         )
         return base
