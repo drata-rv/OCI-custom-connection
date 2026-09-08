@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# Never commit real deployment config or secrets
+config.yaml
+*.local.yaml
+.oci/
+*.pem
+*.key
+
+# Local dry-run output
+out/
+*.snapshot.json
+
+.DS_Store
