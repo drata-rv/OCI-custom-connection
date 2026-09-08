@@ -216,6 +216,7 @@ Windows VM scenario.
 | `snapshotStatus: failed`, reason mentions schema | The record itself didn't validate — this should not happen against unmodified collector code; check `collection-report.json`'s `schemaErrors` and file an issue rather than working around it. |
 | Drata upload returns `error_class: auth` | Bearer token invalid/expired, or wrong `connectionId`/`resourceId`. The local snapshot is still `complete`; only delivery failed — nothing was overwritten in Drata. |
 | Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
+| Log line `payload approaching size budget`, `collection-report.json`'s `payloadNearBudget: true` | Serialized record is at/above 80% of `runtime.maxPayloadBytes` but still under it — upload still proceeds. Early warning before this tenancy's resource count hits the hard ceiling and uploads start failing; see [TRACEABILITY.md §6](TRACEABILITY.md#6-single-record-scaling-ceiling-p2-2) for the migration path if that happens. |
 
 ## 8. Deployment acceptance checklist
 

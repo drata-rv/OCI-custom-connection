@@ -182,6 +182,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         "payloadBytes": size_result.byte_size,
         "payloadBudgetBytes": size_result.max_bytes,
         "withinPayloadBudget": size_result.within_budget,
+        "payloadNearBudget": size_result.near_budget,
         "snapshotStatus": decision.snapshot_status,
         "completenessReasons": list(decision.reasons),
         "dryRun": dry_run,
@@ -189,6 +190,14 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
 
     if not schema_result.valid:
         logger.error("schema validation failed", extra={"errors": report["schemaErrors"]})
+
+    if size_result.near_budget:
+        # Early warning before the hard payload ceiling blocks upload outright -- see
+        # PayloadSizeResult's docstring and TRACEABILITY.md for the migration path.
+        logger.warning(
+            "payload approaching size budget",
+            extra={"payloadBytes": size_result.byte_size, "payloadBudgetBytes": size_result.max_bytes},
+        )
 
     uploaded = False
     if dry_run:

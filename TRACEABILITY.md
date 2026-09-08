@@ -229,3 +229,38 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   is no separate lighter-weight summary shape in the OCI SDK for either),
   so `kms_key_id` is authoritative; a null `kms_key_id` is a known fact
   (no customer-managed key), not an unresolvable unknown.
+
+## 6. Single-record scaling ceiling (P2-2)
+
+This MVP upserts exactly one aggregate record per tenancy (spec
+requirement 11) — a deliberate constraint, not an oversight. It has a
+hard ceiling: `runtime.maxPayloadBytes` (default in
+`config.example.yaml`), enforced by `validation/size.py::check_payload_size`
+after the full record is built. `PayloadSizeResult.near_budget` (default
+80% of the budget) surfaces an early warning in `collection-report.json`
+(`payloadNearBudget`) and the logs *before* it becomes a hard
+`snapshotStatus: failed` — it is not baked into the uploaded record
+itself, since that would change the record's own measured size.
+
+If a tenancy's resource count outgrows the ceiling, the migration path
+is:
+
+1. **Per-resource-type records** — one Drata Custom Connection record
+   per top-level `resources.*` array (e.g. a separate record for
+   instances, another for databases) instead of one record nesting all
+   of them. Requires: a distinct `recordId` per resource type
+   (`aggregate.py::derive_record_id` would need a type discriminant),
+   splitting `schemas/oci-snapshot-1.0.0.json`'s `resources`/`metrics`
+   sections into per-type schemas, and re-deriving cross-type findings
+   (e.g. `OCI-COMPUTE-PUBLIC-EXPOSURE`, which joins instances against
+   VNICs/subnets/security lists) from data that would now live in
+   separate records — Custom Tests that currently read one record would
+   need to read several.
+2. **Multiple domain records** — a coarser split (e.g. one record for
+   compute+storage+networking, one for database, one for VPN) trading
+   less schema churn for a less granular ceiling fix; still requires
+   distinct `recordId`s and updating any Custom Test that spans domains.
+
+Neither is implemented — this MVP keeps the single-record constraint per
+spec and only adds the early-warning signal above. Revisit if a real
+deployment's resource count approaches `payloadBudgetBytes` in practice.
