@@ -10,7 +10,8 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import hashlib
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
@@ -25,20 +26,19 @@ from oci_drata.models import (
     METRIC_KEYS,
     RESOURCE_COLLECTION_KEYS,
     CommonResource,
-    DatabaseResource,
     Finding,
     Message,
     OperationRecord,
     UnresolvedRelationship,
-    Volume,
 )
 from oci_drata.pagination import OperationResult
 from oci_drata.transform import findings as findings_mod
 from oci_drata.transform import normalize, relationships
 from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposure
+from oci_drata.transform.lifecycle import exclude_referencing, split_by_lifecycle
 from oci_drata.transform.vpn_posture import derive_vpn_posture
 
-DERIVATION_VERSION = "1.1.0"
+DERIVATION_VERSION = "1.2.0"
 SCHEMA_VERSION = "1.0.0"
 COLLECTOR_VERSION = "0.1.0"
 
@@ -47,7 +47,7 @@ def derive_record_id(tenancy_ocid: str, deployment_name: str) -> str:
     """oci-snapshot- + first 24 hex chars of SHA-256(tenancy_ocid + deployment_name).
     build_snapshot() always uses the configured record id directly, never recomputes it here."""
 
-    digest = hashlib.sha256(f"{tenancy_ocid}{deployment_name}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{tenancy_ocid}{deployment_name}".encode()).hexdigest()
     return f"oci-snapshot-{digest[:24]}"
 
 
@@ -99,32 +99,48 @@ def build_snapshot(
     images = [
         normalize.normalize_common(img, source_type="image") for img in compute.images.values()
     ]
-    instances = [normalize.normalize_instance(i) for i in compute.instances]
+
+    kept_instances_raw, excluded_instances_raw = split_by_lifecycle(compute.instances)
+    excluded_instance_ids = {i.id for i in excluded_instances_raw}
+    vnic_attachments = exclude_referencing(
+        compute.vnic_attachments, excluded_ids=excluded_instance_ids, id_field="instance_id"
+    )
+    boot_volume_attachments = exclude_referencing(
+        storage.boot_volume_attachments, excluded_ids=excluded_instance_ids, id_field="instance_id"
+    )
+    volume_attachments = exclude_referencing(
+        storage.volume_attachments, excluded_ids=excluded_instance_ids, id_field="instance_id"
+    )
+
+    instances = [normalize.normalize_instance(i) for i in kept_instances_raw]
     instances = relationships.classify_windows(instances, compute.images)
     instances, unresolved = relationships.resolve_instance_network_and_storage(
         instances,
-        vnic_attachments=compute.vnic_attachments,
-        boot_volume_attachments=storage.boot_volume_attachments,
-        volume_attachments=storage.volume_attachments,
+        vnic_attachments=vnic_attachments,
+        boot_volume_attachments=boot_volume_attachments,
+        volume_attachments=volume_attachments,
     )
     all_unresolved.extend(unresolved)
 
     vnics = [normalize.normalize_vnic(v) for v in compute.vnics.values()]
     vnics, unresolved = relationships.resolve_vnic_addresses(
         vnics,
-        vnic_attachments=compute.vnic_attachments,
+        vnic_attachments=vnic_attachments,
         private_ips=compute.private_ips,
         public_ips_by_private_ip_id=compute.public_ips_by_private_ip_id,
     )
     all_unresolved.extend(unresolved)
 
-    boot_volumes = [normalize.normalize_volume(v, source_type="boot_volume") for v in storage.boot_volumes]
+    kept_boot_volumes_raw, excluded_boot_volumes_raw = split_by_lifecycle(storage.boot_volumes)
+    kept_block_volumes_raw, excluded_block_volumes_raw = split_by_lifecycle(storage.block_volumes)
+
+    boot_volumes = [normalize.normalize_volume(v, source_type="boot_volume") for v in kept_boot_volumes_raw]
     boot_volumes = relationships.resolve_volume_attachments(
-        boot_volumes, attachments=storage.boot_volume_attachments, attachment_volume_id_field="boot_volume_id"
+        boot_volumes, attachments=boot_volume_attachments, attachment_volume_id_field="boot_volume_id"
     )
-    block_volumes = [normalize.normalize_volume(v, source_type="block_volume") for v in storage.block_volumes]
+    block_volumes = [normalize.normalize_volume(v, source_type="block_volume") for v in kept_block_volumes_raw]
     block_volumes = relationships.resolve_volume_attachments(
-        block_volumes, attachments=storage.volume_attachments, attachment_volume_id_field="volume_id"
+        block_volumes, attachments=volume_attachments, attachment_volume_id_field="volume_id"
     )
 
     private_ips = [normalize.normalize_common(p, source_type="private_ip") for p in compute.private_ips]
@@ -143,12 +159,13 @@ def build_snapshot(
         )
         for n in networking.network_security_groups
     ]
-    boot_volume_attachments = [
+    boot_volume_attachment_resources = [
         normalize.normalize_common(a, source_type="boot_volume_attachment")
-        for a in storage.boot_volume_attachments
+        for a in boot_volume_attachments  # already excludes attachments to lifecycle-excluded instances
     ]
-    volume_attachments = [
-        normalize.normalize_common(a, source_type="volume_attachment") for a in storage.volume_attachments
+    volume_attachment_resources = [
+        normalize.normalize_common(a, source_type="volume_attachment")
+        for a in volume_attachments  # already excludes attachments to lifecycle-excluded instances
     ]
 
     exposure_config = ExposureConfig(
@@ -292,6 +309,23 @@ def build_snapshot(
 
     # -- Warnings ----------------------------------------------------------
     warnings: list[Message] = []
+    for label, excluded_raw in (
+        ("instance", excluded_instances_raw),
+        ("boot_volume", excluded_boot_volumes_raw),
+        ("block_volume", excluded_block_volumes_raw),
+    ):
+        if excluded_raw:
+            warnings.append(
+                Message(
+                    code="LIFECYCLE_EXCLUDED",
+                    message=(
+                        f"{len(excluded_raw)} {label}(s) excluded from evidence: "
+                        "lifecycle_state is TERMINATED or TERMINATING"
+                    ),
+                    severity="info",
+                    resource_ids=tuple(sorted(i.id for i in excluded_raw)),
+                )
+            )
     if exadata.detected:
         warnings.append(
             Message(
@@ -385,8 +419,8 @@ def build_snapshot(
         "publicIps": _sorted_dicts(public_ips),
         "bootVolumes": _sorted_dicts(boot_volumes),
         "blockVolumes": _sorted_dicts(block_volumes),
-        "bootVolumeAttachments": _sorted_dicts(boot_volume_attachments),
-        "volumeAttachments": _sorted_dicts(volume_attachments),
+        "bootVolumeAttachments": _sorted_dicts(boot_volume_attachment_resources),
+        "volumeAttachments": _sorted_dicts(volume_attachment_resources),
         "vcns": _sorted_dicts(vcns),
         "subnets": _sorted_dicts(subnets),
         "routeTables": _sorted_dicts(route_tables),
@@ -423,6 +457,7 @@ def build_snapshot(
             compartment_id=op.compartment_id, status=op.status, page_count=op.page_count,
             item_count=op.item_count, request_ids=tuple(op.request_ids),
             error_code=op.error_code, error_message=op.error_message,
+            retry_delays_seconds=tuple(op.retry_delays_seconds),
         )
         for op in all_operations
     ]

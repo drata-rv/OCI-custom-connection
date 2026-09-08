@@ -7,7 +7,8 @@ Derivation logic lives in oci_drata.transform, not here.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 Tags = Mapping[str, Any]
 
@@ -393,6 +394,7 @@ class OperationRecord:
     compartment_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    retry_delays_seconds: tuple[float, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -406,6 +408,7 @@ class OperationRecord:
             "requestIds": list(self.request_ids),
             "errorCode": self.error_code,
             "errorMessage": self.error_message,
+            "retryDelaysSeconds": list(self.retry_delays_seconds),
         }
 
 

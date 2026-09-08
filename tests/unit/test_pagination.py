@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import oci
-import pytest
 
 from oci_drata.pagination import RetryPolicy, call_once, operations_complete, paginate
 
@@ -87,6 +86,63 @@ def test_paginate_non_retryable_error_fails_immediately() -> None:
     )
     assert result.status == "failed"
     assert call.call_count == 1  # no retry burned on a non-retryable status
+
+
+def test_paginate_409_incorrect_state_is_retried() -> None:
+    """P1-5: 409 is not blanket-retryable -- only OCI's own documented transient codes are."""
+    conflict = oci.exceptions.ServiceError(409, "IncorrectState", {}, {"message": "resource busy"})
+    call = MagicMock(side_effect=[conflict, _response(["x"])])
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
+    assert result.status == "success"
+    assert call.call_count == 2
+
+
+def test_paginate_409_other_code_is_not_retried() -> None:
+    """A 409 that isn't IncorrectState/LockConflict is a real conflict, not a transient one --
+    retrying it can't help and previously burned the full retry budget for nothing."""
+    conflict = oci.exceptions.ServiceError(
+        409, "NotAuthorizedOrResourceAlreadyExists", {}, {"message": "already exists"}
+    )
+    call = MagicMock(side_effect=[conflict])
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
+    assert result.status == "failed"
+    assert call.call_count == 1
+
+
+def test_paginate_501_not_implemented_is_not_retried() -> None:
+    """5xx is retryable except 501 -- retrying an operation the service doesn't implement
+    can never succeed."""
+    not_implemented = oci.exceptions.ServiceError(501, "NotImplemented", {}, {"message": "nope"})
+    call = MagicMock(side_effect=[not_implemented])
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
+    assert result.status == "failed"
+    assert call.call_count == 1
+
+
+def test_paginate_502_is_retried() -> None:
+    bad_gateway = oci.exceptions.ServiceError(502, "BadGateway", {}, {"message": "upstream"})
+    call = MagicMock(side_effect=[bad_gateway, _response(["x"])])
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
+    assert result.status == "success"
+    assert call.call_count == 2
+
+
+def test_paginate_records_retry_delays_in_manifest() -> None:
+    """P1-5: backoff decisions must be visible in the manifest, not just applied silently."""
+    throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
+    call = MagicMock(side_effect=[throttle_error, throttle_error, _response(["x"])])
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
+    assert result.status == "success"
+    assert len(result.retry_delays_seconds) == 2
+    assert all(d >= 0 for d in result.retry_delays_seconds)
+
+
+def test_paginate_records_retry_delays_even_on_exhaustion() -> None:
+    throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
+    call = MagicMock(side_effect=[throttle_error, throttle_error, throttle_error])
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
+    assert result.status == "failed"
+    assert len(result.retry_delays_seconds) == 2  # 3 attempts total, 2 retries between them
 
 
 def test_call_once_success() -> None:

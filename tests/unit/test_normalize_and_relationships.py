@@ -14,7 +14,7 @@ def _stamp(obj, region="us-ashburn-1"):
 
 
 def test_normalize_timestamp_utc_z_suffix() -> None:
-    dt = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    dt = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     assert normalize.normalize_timestamp(dt) == "2026-09-08T20:00:00Z"
 
 
@@ -44,6 +44,22 @@ def test_normalize_instance_requires_region_stamp() -> None:
         normalize.normalize_instance(raw)
 
 
+def test_normalize_common_does_not_crash_on_unrecognized_lifecycle_state() -> None:
+    """The OCI SDK's own enum-typed property setters silently coerce any value outside
+    their known set to the literal sentinel "UNKNOWN_ENUM_VALUE" -- a genuinely new OCI
+    lifecycle state (added after this SDK version was pinned) never reaches our code as its
+    real name; the SDK has already discarded it one layer down. This codebase's fields are
+    typed plain str (not a closed Python Enum) specifically so it never crashes or drops a
+    resource over an unrecognized value -- but "preserve unknown enum values" only means
+    "pass through whatever the SDK gives us", not "recover the SDK's own already-lost data"."""
+
+    raw = _stamp(
+        oci.core.models.Vcn(id="vcn1", compartment_id="c1", lifecycle_state="SOME_FUTURE_STATE_V2")
+    )
+    normalized = normalize.normalize_common(raw, source_type="vcn")
+    assert normalized.lifecycle_state == "UNKNOWN_ENUM_VALUE"
+
+
 def test_normalize_instance_basic_fields() -> None:
     raw = _stamp(
         oci.core.models.Instance(
@@ -68,6 +84,10 @@ def test_normalize_vnic_requires_subnet_id() -> None:
 
 
 def test_normalize_volume_customer_managed_key_present() -> None:
+    """P1-4: list_volumes/list_boot_volumes return the full Volume/BootVolume type, not a
+    lighter-weight summary -- kms_key_id is authoritative, so absent must resolve to a
+    definite False (no CMK), never None/unknown."""
+
     with_key = _stamp(
         oci.core.models.Volume(
             id="vol1", compartment_id="c1", lifecycle_state="AVAILABLE", kms_key_id="key1"
@@ -77,7 +97,7 @@ def test_normalize_volume_customer_managed_key_present() -> None:
         oci.core.models.Volume(id="vol2", compartment_id="c1", lifecycle_state="AVAILABLE")
     )
     assert normalize.normalize_volume(with_key, source_type="block_volume").customer_managed_key_present is True
-    assert normalize.normalize_volume(without_key, source_type="block_volume").customer_managed_key_present is None
+    assert normalize.normalize_volume(without_key, source_type="block_volume").customer_managed_key_present is False
 
 
 def test_normalize_db_backup_status_variants() -> None:
@@ -165,7 +185,7 @@ def test_normalize_db_system_detail_preserves_shape_version_redundancy() -> None
 
 
 def test_normalize_database_detail_preserves_backup_and_patch_fields() -> None:
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     raw = oci.database.models.DatabaseSummary(
         id="db1", last_backup_timestamp=now, patch_version="OCT2025",
         db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True, recovery_window_in_days=14),

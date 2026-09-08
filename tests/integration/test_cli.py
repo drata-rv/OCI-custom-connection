@@ -11,14 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from oci_drata import cli
-from oci_drata.config import ConfigError
 
 from .test_end_to_end import (
     _app_config,
     _autonomous_database,
     _database_base_empty,
     _discovery,
-    _empty_ok,
     _exadata_not_detected,
     _exposed_windows_compute,
     _networking_allowing_rdp,
@@ -88,7 +86,6 @@ def test_dry_run_writes_sanitized_snapshot_and_report(
     config_path = tmp_path / "config.yaml"
     import yaml
 
-    from oci_drata.config import load_config
 
     sample = Path(__file__).resolve().parent.parent.parent / "config.example.yaml"
     raw = yaml.safe_load(sample.read_text())

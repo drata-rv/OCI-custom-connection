@@ -9,8 +9,9 @@ from __future__ import annotations
 import dataclasses
 import os
 import stat
+from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Sequence
+from typing import Any
 
 import yaml
 

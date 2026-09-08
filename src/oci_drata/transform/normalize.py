@@ -6,7 +6,8 @@ which run after this module and consume its output."""
 from __future__ import annotations
 
 import datetime
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from oci_drata.models import (
     CommonResource,
@@ -37,7 +38,7 @@ def normalize_timestamp(value: datetime.datetime | str | None) -> str | None:
         value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if value.tzinfo is None:
         raise ValueError(f"naive datetime cannot be normalized to UTC RFC3339: {value!r}")
-    return value.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _flatten_defined_tags(defined_tags: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -189,11 +190,18 @@ def normalize_internet_gateway(raw: Any) -> InternetGateway:
 
 
 def normalize_volume(raw: Any, *, source_type: str) -> Volume:
+    """list_volumes/list_boot_volumes return the full Volume/BootVolume type (there is no
+    separate lighter-weight VolumeSummary in the OCI SDK) -- kms_key_id is returned
+    authoritatively, so null means "no customer-managed key", a known fact, not an
+    unresolvable unknown. customer_managed_key_present is therefore always a definite
+    bool, never None -- P1-4: a prior version treated absent-key as unknown, conflating it
+    with a genuinely unavailable field on a summary-shaped response, which this isn't."""
+
     kms_key_id = getattr(raw, "kms_key_id", None)
     return Volume(
         **_common_fields(raw, source_type=source_type),
         kms_key_id=kms_key_id,
-        customer_managed_key_present=(kms_key_id is not None) if kms_key_id is not None else None,
+        customer_managed_key_present=kms_key_id is not None,
     )
 
 

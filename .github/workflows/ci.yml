@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check src tests
+
+      - name: mypy
+        run: mypy src
+
+      # Includes tests/integration/test_wheel_packaging.py, which builds a wheel,
+      # installs it into a fresh venv, and loads the default schema from outside
+      # the repo checkout -- the P0-1 regression test.
+      - name: pytest
+        run: pytest tests -q
+
+  reproducible-install:
+    name: locked dependency install (python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install from the pinned lock file
+        run: |
+          pip install -r requirements-lock.txt
+          pip install -e . --no-deps
+
+      - name: pytest against the locked install
+        run: pytest tests -q
+
+      - name: Vulnerability audit (pinned dependency snapshot)
+        run: pip-audit -r requirements-lock.txt --strict

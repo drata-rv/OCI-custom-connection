@@ -127,16 +127,18 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 |---|---|---|
 | Exhaust every `opc-next-page` | `pagination.py::paginate` | `test_pagination.py::test_paginate_exhausts_multiple_pages_including_empty_page_with_token` |
 | Dynamic regional client construction | `oci_auth.py::regional_client` | exercised by every collector test |
-| Verify regions subscribed + READY | `collection/discovery.py::_resolve_regions` | Mocked discovery, `test_pagination.py`-style; no dedicated test file |
-| Compartment allow/deny, deterministic | `collection/discovery.py` | same |
-| Bounded concurrency + retry w/ jitter | `pagination.py::RetryPolicy` (per-call), `cli.py::_run_independent_collectors` (`ThreadPoolExecutor`, cross-collector) | `test_pagination.py` (retry), `test_cli.py` (concurrency wiring) |
-| Preserve unknown enum values | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum`) | — |
+| Verify regions subscribed + READY | `collection/discovery.py::_resolve_regions`, `_discovery_region` (bootstraps from the OCI SDK config file's own validated region, not `oci.regions.allow[0]`, so an invalid/unsubscribed first entry fails with a clean diagnostic instead of a raw connection error) | `tests/unit/test_discovery.py` |
+| Compartment allow/deny, deterministic, subtree-exclusion (`collection/discovery.py::_expand_to_subtrees` -- excluding a compartment excludes its whole subtree, not just the exact configured OCID; overlapping configured roots dedupe by id instead of producing duplicate entries) | `collection/discovery.py` | `tests/unit/test_discovery.py` |
+| Bounded concurrency + retry w/ jitter, OCI-aware retryability | `pagination.py::RetryPolicy` (per-call), `is_retryable_service_error` (mirrors the OCI SDK's own `TimeoutConnectionAndServiceErrorRetryChecker` defaults: 409 retried only for `IncorrectState`/`LockConflict`, 429 always, 5xx except 501 always — not a blanket status-code list), `cli.py::_run_independent_collectors` (`ThreadPoolExecutor`, cross-collector). Backoff delays actually slept are recorded per operation (`retryDelaysSeconds` in `manifest.operations[]`), not just applied silently. `collection/compute.py::_lookup_public_ip` shares the same classification for its 404-as-success special case. | `test_pagination.py` (retryability classification, backoff-delay capture), `test_cli.py` (concurrency wiring) |
+| Never crash/drop a resource over an unrecognized enum value | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum` — but this only preserves whatever the OCI SDK hands us: the SDK's own enum-typed property setters silently coerce any value outside their known set to the sentinel `"UNKNOWN_ENUM_VALUE"` before our code sees it, so a genuinely novel state's real name is already lost one layer down, not recoverable here) | `test_normalize_and_relationships.py::test_normalize_common_does_not_crash_on_unrecognized_lifecycle_state` |
+| Exclude terminated/terminating resources from evidence, never silently | `transform/lifecycle.py::split_by_lifecycle`/`exclude_referencing` (instances, boot/block volumes only — see README §9); excluded counts/ids reported via a `LIFECYCLE_EXCLUDED` warning, never dropped without a trace | `tests/unit/test_lifecycle.py`, `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (terminated instance + its own attachment excluded without tripping a false unresolved-relationship) |
 | Normalize timestamps to UTC RFC3339 | `transform/normalize.py::normalize_timestamp` | `test_normalize_and_relationships.py` (4 cases incl. non-UTC conversion, naive-datetime rejection) |
 | Deterministic output ordering | `transform/aggregate.py::_sorted_dicts` (every array sorted by id/assertionId) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (same-input-same-output assertion) |
 | Block upload on failure/unsupported/unresolved/schema/oversize/Exadata | `validation/completeness.py`, `pagination.py::operations_complete` (`unsupported` blocks like `failed`; `skipped` — a disabled service — does not) | `test_end_to_end.py` (3 blocking scenarios), `test_cli.py`, `test_pagination.py::test_operations_complete_ignores_skipped_but_blocks_on_unsupported` |
 | Distinguish empty inventory from failure | `pagination.py::OperationResult.status` (`success` + 0 items ≠ `failed`) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (empty `dbSystems`/`databases` arrays, still `snapshotStatus: complete`) |
 | Mock OCI + Drata in tests, no live credentials | all of `tests/` | `pytest` run with no `~/.oci/config` or `DRATA_API_TOKEN` required |
 | Do not create Drata Custom Tests | — (no code path exists that could) | — |
+| CI: lint, type-check, wheel-install test, Python version matrix, dependency lock + vulnerability audit | `.github/workflows/ci.yml` (Ruff + mypy + pytest across Python 3.12/3.13; separate job installs from `requirements-lock.txt` and runs `pip-audit --strict`) | `tests/integration/test_wheel_packaging.py` runs inside the matrix job; the lock-file install itself is verified by the `reproducible-install` job |
 
 ## 4. Security requirements
 
@@ -205,3 +207,9 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   (`normalize_data_guard_detail`). `networkSecurityGroupIds` is shared
   with the Autonomous Database posture fields above (same meaning:
   attached NSG ids), populated for whichever `databaseType` it applies to.
+* `Volume.customer_managed_key_present` is always a definite `bool`, never
+  `None` (`normalize.py::normalize_volume`) — `list_volumes`/
+  `list_boot_volumes` return the full `Volume`/`BootVolume` type (there
+  is no separate lighter-weight summary shape in the OCI SDK for either),
+  so `kms_key_id` is authoritative; a null `kms_key_id` is a known fact
+  (no customer-managed key), not an unresolvable unknown.

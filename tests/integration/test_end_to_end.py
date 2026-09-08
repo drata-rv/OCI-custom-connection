@@ -7,7 +7,6 @@ from __future__ import annotations
 import datetime
 
 import oci
-import pytest
 
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
@@ -114,13 +113,23 @@ def _exposed_windows_compute() -> ComputeCollectionResult:
         id="ocid1.instance.oc1..vm1", compartment_id=COMPARTMENT_OCID, display_name="win-vm-1",
         lifecycle_state="RUNNING", image_id="ocid1.image.oc1..img1",
     ))
+    # P1-3: a terminated instance (with its own attachment) must be excluded from evidence,
+    # and must not surface as an unresolved relationship via its own now-dropped attachment.
+    terminated_instance = _stamp(oci.core.models.Instance(
+        id="ocid1.instance.oc1..vmold", compartment_id=COMPARTMENT_OCID, display_name="old-vm",
+        lifecycle_state="TERMINATED", image_id="ocid1.image.oc1..img1",
+    ))
     image = _stamp(oci.core.models.Image(id="ocid1.image.oc1..img1", compartment_id=COMPARTMENT_OCID, operating_system="Windows Server"))
     attachment = oci.core.models.VnicAttachment(id="ocid1.vnicattachment.oc1..att1", instance_id=instance.id, vnic_id="ocid1.vnic.oc1..v1")
+    terminated_attachment = oci.core.models.VnicAttachment(
+        id="ocid1.vnicattachment.oc1..attold", instance_id=terminated_instance.id, vnic_id="ocid1.vnic.oc1..vold"
+    )
     vnic = _stamp(oci.core.models.Vnic(id="ocid1.vnic.oc1..v1", compartment_id=COMPARTMENT_OCID, subnet_id="ocid1.subnet.oc1..sub1", nsg_ids=["ocid1.networksecuritygroup.oc1..nsg1"]))
     private_ip = _stamp(oci.core.models.PrivateIp(id="ocid1.privateip.oc1..pip1", compartment_id=COMPARTMENT_OCID, vnic_id=vnic.id, ip_address="10.0.0.5"))
     public_ip = _stamp(oci.core.models.PublicIp(id="ocid1.publicip.oc1..pub1", compartment_id=COMPARTMENT_OCID, ip_address="203.0.113.9"))
     return ComputeCollectionResult(
-        instances=[instance], images={image.id: image}, vnic_attachments=[attachment],
+        instances=[instance, terminated_instance], images={image.id: image},
+        vnic_attachments=[attachment, terminated_attachment],
         vnics={vnic.id: vnic}, private_ips=[private_ip],
         public_ips_by_private_ip_id={private_ip.id: public_ip},
         operations=[_empty_ok("compute")],
@@ -161,8 +170,15 @@ def _storage() -> StorageCollectionResult:
         id="ocid1.bootvolumeattachment.oc1..bva1", compartment_id=COMPARTMENT_OCID,
         instance_id="ocid1.instance.oc1..vm1", boot_volume_id=boot_volume.id
     ))
+    # P1-3/P1-4 regression: an attachment to the terminated instance (see
+    # _exposed_windows_compute) must not leak into resources.bootVolumeAttachments.
+    old_attachment = _stamp(oci.core.models.BootVolumeAttachment(
+        id="ocid1.bootvolumeattachment.oc1..bvaold", compartment_id=COMPARTMENT_OCID,
+        instance_id="ocid1.instance.oc1..vmold", boot_volume_id=boot_volume.id
+    ))
     return StorageCollectionResult(
-        boot_volumes=[boot_volume], block_volumes=[], boot_volume_attachments=[attachment],
+        boot_volumes=[boot_volume], block_volumes=[],
+        boot_volume_attachments=[attachment, old_attachment],
         volume_attachments=[], operations=[_empty_ok("blockstorage")],
     )
 
@@ -175,7 +191,7 @@ def _database_base_empty() -> DatabaseBaseCollectionResult:
 
 
 def _database_base_populated() -> DatabaseBaseCollectionResult:
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     db_system = _stamp(oci.database.models.DbSystemSummary(
         id="ocid1.dbsystem.oc1..sys1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
         shape="VM.Standard2.4", version="19.0.0.0", os_version="7.9", node_count=2,
@@ -238,7 +254,7 @@ def _vpn_non_redundant() -> VpnCollectionResult:
 
 def test_complete_collection_produces_one_schema_valid_record() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
 
     result = build_snapshot(
         app_config,
@@ -274,11 +290,20 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert decision.should_upload is True
 
     instances = result.record["resources"]["instances"]
-    assert len(instances) == 1
+    assert len(instances) == 1  # terminated instance excluded, not just filtered from this count
     assert instances[0]["osClassification"] == "windows"
     assert instances[0]["effectiveIngressExposure"] == "exposed"
     assert instances[0]["exposedAdministrativePorts"] == [3389]
     assert result.record["metrics"]["internetExposedWindowsVmCount"] == 1
+
+    lifecycle_warning = next(
+        w for w in result.record["warnings"]
+        if w["code"] == "LIFECYCLE_EXCLUDED" and "instance" in w["message"]
+    )
+    assert lifecycle_warning["resourceIds"] == ["ocid1.instance.oc1..vmold"]
+
+    boot_volume_attachment_ids = {a["id"] for a in result.record["resources"]["bootVolumeAttachments"]}
+    assert boot_volume_attachment_ids == {"ocid1.bootvolumeattachment.oc1..bva1"}
 
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
@@ -341,7 +366,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
 
 def test_exadata_detection_blocks_upload_even_when_everything_else_succeeds() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     exadata = ExadataDetectionResult(
         detected=True, reasons=["db_system X has Exadata shape"], affected_db_system_ids=("x",),
         affected_autonomous_database_ids=(), cloud_vm_clusters=[], exadata_infrastructures=[],
@@ -370,7 +395,7 @@ def test_exadata_detection_blocks_upload_even_when_everything_else_succeeds() ->
 
 def test_failed_operation_blocks_upload() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     failed_storage = StorageCollectionResult(
         boot_volumes=[], block_volumes=[], boot_volume_attachments=[], volume_attachments=[],
         operations=[OperationResult(service="blockstorage", operation="list_boot_volumes", region=REGION, compartment_id=COMPARTMENT_OCID, status="failed", error_code="ServiceError")],
@@ -395,7 +420,7 @@ def test_failed_operation_blocks_upload() -> None:
 
 def test_oversized_payload_fails_regardless_of_completeness() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     result = build_snapshot(
         app_config, discovery=_discovery(), compute=_exposed_windows_compute(), storage=_storage(),
         networking=_networking_allowing_rdp(), database_base=_database_base_empty(),

@@ -61,6 +61,19 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+For a reproducible install pinned to exactly what CI runs against, use
+`requirements-lock.txt` instead (see that file's header for how to
+regenerate it after changing `pyproject.toml`):
+
+```bash
+pip install -r requirements-lock.txt
+pip install -e . --no-deps
+```
+
+CI (`.github/workflows/ci.yml`) runs Ruff, mypy, and the full test suite
+across a Python 3.12/3.13 matrix, plus a separate job that installs from
+the locked requirements and runs `pip-audit` against them.
+
 Copy the sample config and fill in deployment-specific values (regions,
 compartments, tenancy OCID, Drata connection/resource IDs — none of this
 is secret):
@@ -253,6 +266,15 @@ See the cited module docstrings for detail.
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
   "unless explicitly noncritical" escape hatch isn't implemented.
+* **Lifecycle-state exclusion (TERMINATED/TERMINATING) is implemented
+  only for compute instances and boot/block volumes**
+  (`transform/lifecycle.py`). DB systems/databases/autonomous
+  databases/VPN resources still retain every lifecycle state returned
+  by OCI — extending exclusion there needs the same correlated
+  attachment/relationship filtering (see `lifecycle.py`'s own
+  docstring) applied to each resource's parent/child chain, not done
+  yet. Excluded resources are never silently dropped: a
+  `LIFECYCLE_EXCLUDED` entry in `warnings` reports the count and ids.
 * **Operations within an enabled domain have no required/optional
   distinction** (`pagination.py::operations_complete`) — any operation
   failure (even a non-essential enrichment call) blocks that entire

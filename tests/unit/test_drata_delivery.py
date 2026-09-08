@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from oci_drata.config import DrataConfig, SecretRef
 from oci_drata.delivery.drata import upsert_record
@@ -89,3 +90,61 @@ def test_authorization_header_never_appears_in_result(drata_config: DrataConfig)
     session.post.return_value = _response(201)
     result = upsert_record(drata_config, {"id": "x"}, session=session)
     assert "fake-token-value" not in repr(result)
+
+
+def test_403_forbidden_is_classified_as_auth_not_validation(drata_config: DrataConfig) -> None:
+    """403 (valid token, insufficient permission) is a distinct real-world case from 401
+    (bad token) -- both are classified "auth" by this client, but each status is its own
+    branch of _AUTH_STATUS and deserves its own regression coverage."""
+    session = MagicMock()
+    session.post.return_value = _response(403, "forbidden")
+    result = upsert_record(drata_config, {"id": "x"}, session=session)
+    assert result.uploaded is False
+    assert result.error_class == "auth"
+    assert session.post.call_count == 1
+
+
+def test_400_and_404_and_409_are_classified_as_validation(drata_config: DrataConfig) -> None:
+    for status in (400, 404, 409):
+        session = MagicMock()
+        session.post.return_value = _response(status, "rejected")
+        result = upsert_record(drata_config, {"id": "x"}, session=session)
+        assert result.uploaded is False
+        assert result.error_class == "validation", f"status {status}"
+        assert session.post.call_count == 1
+
+
+def test_unexpected_status_is_not_retried_and_classified_unexpected(drata_config: DrataConfig) -> None:
+    """A status in none of the known sets (not 2xx, not auth, not validation, not the
+    retryable 429/5xx set) must fail immediately, not be silently retried or misclassified."""
+    session = MagicMock()
+    session.post.return_value = _response(418, "teapot")
+    result = upsert_record(drata_config, {"id": "x"}, session=session)
+    assert result.uploaded is False
+    assert result.error_class == "unexpected"
+    assert session.post.call_count == 1
+
+
+def test_transport_exception_is_retried_then_succeeds(drata_config: DrataConfig) -> None:
+    """The except requests.RequestException branch (connection reset, DNS failure, etc.) had
+    no test coverage at all -- only the retryable-status-code path (429/5xx) was exercised."""
+    session = MagicMock()
+    session.post.side_effect = [requests.ConnectionError("reset"), _response(201)]
+    result = upsert_record(
+        drata_config, {"id": "x"}, session=session, base_delay_seconds=0.001, max_delay_seconds=0.002
+    )
+    assert result.uploaded is True
+    assert result.attempts == 2
+
+
+def test_transport_exception_exhaustion_returns_transport_error(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.side_effect = requests.ConnectionError("reset")
+    result = upsert_record(
+        drata_config, {"id": "x"}, session=session,
+        max_attempts=3, base_delay_seconds=0.001, max_delay_seconds=0.002,
+    )
+    assert result.uploaded is False
+    assert result.error_class == "transport"
+    assert result.attempts == 3
+    assert session.post.call_count == 3
