@@ -458,6 +458,7 @@ def build_snapshot(
             compartment_id=op.compartment_id, status=op.status, page_count=op.page_count,
             item_count=op.item_count, request_ids=tuple(op.request_ids),
             error_code=op.error_code, error_message=op.error_message,
+            retry_delays_seconds=tuple(op.retry_delays_seconds),
         )
         for op in all_operations
     ]

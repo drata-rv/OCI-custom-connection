@@ -18,8 +18,26 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Retryable: throttling, transient server errors, 409 (OCI eventual-consistency conflicts).
-RETRYABLE_STATUS_CODES = frozenset({409, 429, 500, 502, 503, 504})
+# Mirrors the OCI Python SDK's own default classification
+# (oci.retry.retry_checkers.TimeoutConnectionAndServiceErrorRetryChecker.RETRYABLE_STATUSES_AND_CODES /
+# retry_any_5xx=True): a blanket "retry every 409" is wrong -- OCI's 409 covers many
+# non-transient conflicts (e.g. a real naming/state conflict) alongside the two genuinely
+# transient ones. 501 (Not Implemented) is deliberately excluded from the 5xx retry --
+# retrying an operation the service doesn't implement can't ever succeed.
+RETRYABLE_409_CODES = frozenset({"IncorrectState", "LockConflict"})
+
+
+def is_retryable_service_error(exc: "oci.exceptions.ServiceError") -> bool:
+    status = exc.status
+    code = getattr(exc, "code", None)
+    if status == 409:
+        return code in RETRYABLE_409_CODES
+    if status == 429:
+        return True
+    if status >= 500 and status != 501:
+        return True
+    return False
+
 
 OperationStatus = str  # "success" | "failed" | "unsupported" | "skipped"
 
@@ -55,6 +73,7 @@ class OperationResult:
     request_ids: list[str] = dataclasses.field(default_factory=list)
     error_code: str | None = None
     error_message: str | None = None
+    retry_delays_seconds: list[float] = dataclasses.field(default_factory=list)
     items: list[Any] = dataclasses.field(default_factory=list, repr=False)
 
     @property
@@ -86,17 +105,21 @@ def operations_complete(operations: Iterable["OperationResult"]) -> bool:
 
 
 class _RetryExhausted(Exception):
-    def __init__(self, error_code: str, error_message: str, request_ids: list[str]) -> None:
+    def __init__(
+        self, error_code: str, error_message: str, request_ids: list[str], retry_delays: list[float]
+    ) -> None:
         super().__init__(error_message)
         self.error_code = error_code
         self.error_message = error_message
         self.request_ids = request_ids
+        self.retry_delays = retry_delays
 
 
 def _invoke_with_retry(
     call: Callable[..., Any], policy: RetryPolicy, call_kwargs: dict[str, Any]
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], list[float]]:
     request_ids: list[str] = []
+    retry_delays: list[float] = []
     attempt = 0
     while True:
         try:
@@ -105,12 +128,13 @@ def _invoke_with_retry(
             request_id = getattr(exc, "request_id", None)
             if request_id:
                 request_ids.append(request_id)
-            retryable = exc.status in RETRYABLE_STATUS_CODES
+            retryable = is_retryable_service_error(exc)
             if not retryable or attempt >= policy.max_attempts - 1:
                 raise _RetryExhausted(
                     error_code=str(getattr(exc, "code", exc.status)),
                     error_message=str(getattr(exc, "message", str(exc))),
                     request_ids=request_ids,
+                    retry_delays=retry_delays,
                 ) from exc
         except (oci.exceptions.ConnectTimeout, oci.exceptions.RequestException) as exc:
             if attempt >= policy.max_attempts - 1:
@@ -118,6 +142,7 @@ def _invoke_with_retry(
                     error_code="transport_error",
                     error_message=str(exc),
                     request_ids=request_ids,
+                    retry_delays=retry_delays,
                 ) from exc
         else:
             request_id = None
@@ -126,9 +151,11 @@ def _invoke_with_retry(
                 request_id = headers.get("opc-request-id")
             if request_id:
                 request_ids.append(request_id)
-            return response, request_ids
+            return response, request_ids, retry_delays
 
-        time.sleep(policy.delay_seconds(attempt))
+        delay = policy.delay_seconds(attempt)
+        retry_delays.append(delay)
+        time.sleep(delay)
         attempt += 1
 
 
@@ -167,12 +194,13 @@ def paginate(
         if page_token is not None:
             kwargs["page"] = page_token
         try:
-            response, request_ids = _invoke_with_retry(call, policy, kwargs)
+            response, request_ids, retry_delays = _invoke_with_retry(call, policy, kwargs)
         except _RetryExhausted as exc:
             result.status = "failed"
             result.error_code = exc.error_code
             result.error_message = exc.error_message
             result.request_ids.extend(exc.request_ids)
+            result.retry_delays_seconds.extend(exc.retry_delays)
             logger.warning(
                 "operation failed after retry exhaustion",
                 extra={
@@ -186,6 +214,7 @@ def paginate(
             return result
 
         result.request_ids.extend(request_ids)
+        result.retry_delays_seconds.extend(retry_delays)
         page_items = response.data or []
         result.items.extend(page_items)
         result.item_count += len(page_items)
@@ -222,15 +251,17 @@ def call_once(
         status="success",
     )
     try:
-        response, request_ids = _invoke_with_retry(call, policy, dict(call_kwargs))
+        response, request_ids, retry_delays = _invoke_with_retry(call, policy, dict(call_kwargs))
     except _RetryExhausted as exc:
         result.status = "failed"
         result.error_code = exc.error_code
         result.error_message = exc.error_message
         result.request_ids.extend(exc.request_ids)
+        result.retry_delays_seconds.extend(exc.retry_delays)
         return result
 
     result.request_ids.extend(request_ids)
+    result.retry_delays_seconds.extend(retry_delays)
     result.page_count = 1
     if response.data is not None:
         result.items.append(response.data)

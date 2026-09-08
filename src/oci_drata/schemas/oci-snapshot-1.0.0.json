@@ -199,7 +199,8 @@
         "status",
         "pageCount",
         "itemCount",
-        "requestIds"
+        "requestIds",
+        "retryDelaysSeconds"
       ],
       "properties": {
         "service": {
@@ -251,6 +252,14 @@
             "string",
             "null"
           ]
+        },
+        "retryDelaysSeconds": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "description": "Backoff delay actually slept before each retried attempt, in order. Empty if the operation succeeded (or failed) on its first attempt."
         }
       }
     },

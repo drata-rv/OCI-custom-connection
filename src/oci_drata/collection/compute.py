@@ -15,10 +15,10 @@ from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
 from oci_drata.pagination import (
-    RETRYABLE_STATUS_CODES,
     OperationResult,
     RetryPolicy,
     call_once,
+    is_retryable_service_error,
     operations_complete,
     paginate,
     stamp_region,
@@ -217,12 +217,14 @@ def _lookup_public_ip(
             if exc.status == 404:
                 result.page_count = 1
                 return result, None
-            if exc.status not in RETRYABLE_STATUS_CODES or attempt >= policy.max_attempts - 1:
+            if not is_retryable_service_error(exc) or attempt >= policy.max_attempts - 1:
                 result.status = "failed"
                 result.error_code = str(getattr(exc, "code", exc.status))
                 result.error_message = str(getattr(exc, "message", str(exc)))
                 return result, None
-            time.sleep(policy.delay_seconds(attempt))
+            delay = policy.delay_seconds(attempt)
+            result.retry_delays_seconds.append(delay)
+            time.sleep(delay)
             attempt += 1
             continue
         except (oci.exceptions.ConnectTimeout, oci.exceptions.RequestException) as exc:
@@ -231,7 +233,9 @@ def _lookup_public_ip(
                 result.error_code = "transport_error"
                 result.error_message = str(exc)
                 return result, None
-            time.sleep(policy.delay_seconds(attempt))
+            delay = policy.delay_seconds(attempt)
+            result.retry_delays_seconds.append(delay)
+            time.sleep(delay)
             attempt += 1
             continue
 

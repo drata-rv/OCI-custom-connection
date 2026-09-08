@@ -393,6 +393,7 @@ class OperationRecord:
     compartment_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    retry_delays_seconds: tuple[float, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -406,6 +407,7 @@ class OperationRecord:
             "requestIds": list(self.request_ids),
             "errorCode": self.error_code,
             "errorMessage": self.error_message,
+            "retryDelaysSeconds": list(self.retry_delays_seconds),
         }
 
 
