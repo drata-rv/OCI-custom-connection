@@ -14,7 +14,7 @@ def _stamp(obj, region="us-ashburn-1"):
 
 
 def test_normalize_timestamp_utc_z_suffix() -> None:
-    dt = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    dt = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     assert normalize.normalize_timestamp(dt) == "2026-09-08T20:00:00Z"
 
 
@@ -169,7 +169,7 @@ def test_normalize_db_system_detail_preserves_shape_version_redundancy() -> None
 
 
 def test_normalize_database_detail_preserves_backup_and_patch_fields() -> None:
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     raw = oci.database.models.DatabaseSummary(
         id="db1", last_backup_timestamp=now, patch_version="OCT2025",
         db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True, recovery_window_in_days=14),

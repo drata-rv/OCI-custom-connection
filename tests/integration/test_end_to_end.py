@@ -7,7 +7,6 @@ from __future__ import annotations
 import datetime
 
 import oci
-import pytest
 
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
@@ -192,7 +191,7 @@ def _database_base_empty() -> DatabaseBaseCollectionResult:
 
 
 def _database_base_populated() -> DatabaseBaseCollectionResult:
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     db_system = _stamp(oci.database.models.DbSystemSummary(
         id="ocid1.dbsystem.oc1..sys1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
         shape="VM.Standard2.4", version="19.0.0.0", os_version="7.9", node_count=2,
@@ -255,7 +254,7 @@ def _vpn_non_redundant() -> VpnCollectionResult:
 
 def test_complete_collection_produces_one_schema_valid_record() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
 
     result = build_snapshot(
         app_config,
@@ -367,7 +366,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
 
 def test_exadata_detection_blocks_upload_even_when_everything_else_succeeds() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     exadata = ExadataDetectionResult(
         detected=True, reasons=["db_system X has Exadata shape"], affected_db_system_ids=("x",),
         affected_autonomous_database_ids=(), cloud_vm_clusters=[], exadata_infrastructures=[],
@@ -396,7 +395,7 @@ def test_exadata_detection_blocks_upload_even_when_everything_else_succeeds() ->
 
 def test_failed_operation_blocks_upload() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     failed_storage = StorageCollectionResult(
         boot_volumes=[], block_volumes=[], boot_volume_attachments=[], volume_attachments=[],
         operations=[OperationResult(service="blockstorage", operation="list_boot_volumes", region=REGION, compartment_id=COMPARTMENT_OCID, status="failed", error_code="ServiceError")],
@@ -421,7 +420,7 @@ def test_failed_operation_blocks_upload() -> None:
 
 def test_oversized_payload_fails_regardless_of_completeness() -> None:
     app_config = _app_config()
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
     result = build_snapshot(
         app_config, discovery=_discovery(), compute=_exposed_windows_compute(), storage=_storage(),
         networking=_networking_allowing_rdp(), database_base=_database_base_empty(),

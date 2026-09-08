@@ -7,7 +7,8 @@ plain list :func:`pagination.paginate` expects.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import oci
 
@@ -58,7 +59,7 @@ def _skip_result() -> AutonomousDatabaseCollectionResult:
     )
 
 
-def _unwrap_peers(client: "oci.database.DatabaseClient") -> Callable[..., Any]:
+def _unwrap_peers(client: oci.database.DatabaseClient) -> Callable[..., Any]:
     def _call(**kwargs: Any) -> Any:
         response = client.list_autonomous_database_peers(**kwargs)
         response.data = response.data.items if response.data is not None else []

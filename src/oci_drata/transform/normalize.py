@@ -6,7 +6,8 @@ which run after this module and consume its output."""
 from __future__ import annotations
 
 import datetime
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from oci_drata.models import (
     CommonResource,
@@ -37,7 +38,7 @@ def normalize_timestamp(value: datetime.datetime | str | None) -> str | None:
         value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if value.tzinfo is None:
         raise ValueError(f"naive datetime cannot be normalized to UTC RFC3339: {value!r}")
-    return value.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _flatten_defined_tags(defined_tags: Mapping[str, Any] | None) -> dict[str, Any]:

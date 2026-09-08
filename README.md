@@ -61,6 +61,19 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+For a reproducible install pinned to exactly what CI runs against, use
+`requirements-lock.txt` instead (see that file's header for how to
+regenerate it after changing `pyproject.toml`):
+
+```bash
+pip install -r requirements-lock.txt
+pip install -e . --no-deps
+```
+
+CI (`.github/workflows/ci.yml`) runs Ruff, mypy, and the full test suite
+across a Python 3.12/3.13 matrix, plus a separate job that installs from
+the locked requirements and runs `pip-audit` against them.
+
 Copy the sample config and fill in deployment-specific values (regions,
 compartments, tenancy OCID, Drata connection/resource IDs — none of this
 is secret):

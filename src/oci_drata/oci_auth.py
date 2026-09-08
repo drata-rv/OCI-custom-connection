@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import dataclasses
 import stat
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import oci
 

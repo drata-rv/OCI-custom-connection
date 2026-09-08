@@ -17,13 +17,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0,<9",
+    "pytest>=9.0,<10",  # >=9.0.3 fixes PYSEC-2026-1845 (predictable /tmp/pytest-of-{user} path)
     "pytest-cov>=5.0,<6",
     "responses>=0.25,<1",
     "mypy>=1.10,<2",
     "types-PyYAML",
     "types-jsonschema",
     "build>=1.2,<2",
+    "ruff>=0.6,<1",
+    "pip-audit>=2.7,<3",
 ]
 
 [project.scripts]
@@ -37,6 +39,21 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 130
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = [
+    "UP047",  # PEP 695 generic syntax; TypeVar-based generics stay valid and are used consistently here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test fixtures construct raw OCI SDK model objects inline with long literal OCIDs;
+# splitting them for E501 hurts readability more than it helps.
+"tests/**/*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

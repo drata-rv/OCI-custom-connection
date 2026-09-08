@@ -138,6 +138,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Distinguish empty inventory from failure | `pagination.py::OperationResult.status` (`success` + 0 items ≠ `failed`) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (empty `dbSystems`/`databases` arrays, still `snapshotStatus: complete`) |
 | Mock OCI + Drata in tests, no live credentials | all of `tests/` | `pytest` run with no `~/.oci/config` or `DRATA_API_TOKEN` required |
 | Do not create Drata Custom Tests | — (no code path exists that could) | — |
+| CI: lint, type-check, wheel-install test, Python version matrix, dependency lock + vulnerability audit | `.github/workflows/ci.yml` (Ruff + mypy + pytest across Python 3.12/3.13; separate job installs from `requirements-lock.txt` and runs `pip-audit --strict`) | `tests/integration/test_wheel_packaging.py` runs inside the matrix job; the lock-file install itself is verified by the `reproducible-install` job |
 
 ## 4. Security requirements
 

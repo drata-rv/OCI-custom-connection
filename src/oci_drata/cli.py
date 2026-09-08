@@ -13,9 +13,10 @@ import datetime
 import json
 import logging
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from oci_drata.collection.compute import ComputeCollectionResult, collect_compute
 from oci_drata.collection.database_autonomous import (
@@ -24,7 +25,7 @@ from oci_drata.collection.database_autonomous import (
 )
 from oci_drata.collection.database_base import DatabaseBaseCollectionResult, collect_database_base
 from oci_drata.collection.discovery import DiscoveryResult, discover
-from oci_drata.collection.exadata_detection import ExadataDetectionResult, detect_exadata
+from oci_drata.collection.exadata_detection import detect_exadata
 from oci_drata.collection.networking import NetworkingCollectionResult, collect_networking
 from oci_drata.collection.storage import StorageCollectionResult, collect_storage
 from oci_drata.collection.vpn import VpnCollectionResult, collect_vpn
@@ -117,7 +118,7 @@ class RunResult:
 
 
 def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
-    started_at = datetime.datetime.now(tz=datetime.timezone.utc)
+    started_at = datetime.datetime.now(tz=datetime.UTC)
     logger.info(
         "starting collection run",
         extra={"deployment": app_config.deployment.name, "dryRun": dry_run},
@@ -141,7 +142,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         retry_policy=retry_policy,
     )
 
-    completed_at = datetime.datetime.now(tz=datetime.timezone.utc)
+    completed_at = datetime.datetime.now(tz=datetime.UTC)
     aggregate = build_snapshot(
         app_config,
         discovery=discovery, compute=compute_result, storage=storage_result,

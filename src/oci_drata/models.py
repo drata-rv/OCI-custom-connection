@@ -7,7 +7,8 @@ Derivation logic lives in oci_drata.transform, not here.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 Tags = Mapping[str, Any]
 

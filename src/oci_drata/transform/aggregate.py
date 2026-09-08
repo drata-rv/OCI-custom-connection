@@ -10,7 +10,8 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import hashlib
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
@@ -25,12 +26,10 @@ from oci_drata.models import (
     METRIC_KEYS,
     RESOURCE_COLLECTION_KEYS,
     CommonResource,
-    DatabaseResource,
     Finding,
     Message,
     OperationRecord,
     UnresolvedRelationship,
-    Volume,
 )
 from oci_drata.pagination import OperationResult
 from oci_drata.transform import findings as findings_mod
@@ -48,7 +47,7 @@ def derive_record_id(tenancy_ocid: str, deployment_name: str) -> str:
     """oci-snapshot- + first 24 hex chars of SHA-256(tenancy_ocid + deployment_name).
     build_snapshot() always uses the configured record id directly, never recomputes it here."""
 
-    digest = hashlib.sha256(f"{tenancy_ocid}{deployment_name}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{tenancy_ocid}{deployment_name}".encode()).hexdigest()
     return f"oci-snapshot-{digest[:24]}"
 
 

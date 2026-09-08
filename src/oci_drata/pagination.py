@@ -10,7 +10,8 @@ import dataclasses
 import logging
 import random
 import time
-from typing import Any, Callable, Iterable, TypeVar
+from collections.abc import Callable, Iterable
+from typing import Any, TypeVar
 
 import oci
 
@@ -27,7 +28,7 @@ T = TypeVar("T")
 RETRYABLE_409_CODES = frozenset({"IncorrectState", "LockConflict"})
 
 
-def is_retryable_service_error(exc: "oci.exceptions.ServiceError") -> bool:
+def is_retryable_service_error(exc: oci.exceptions.ServiceError) -> bool:
     status = exc.status
     code = getattr(exc, "code", None)
     if status == 409:
@@ -93,7 +94,7 @@ def stamp_region(items: Iterable[Any], region: str) -> list[Any]:
     return stamped
 
 
-def operations_complete(operations: Iterable["OperationResult"]) -> bool:
+def operations_complete(operations: Iterable[OperationResult]) -> bool:
     """Domain is complete when nothing in it failed or was unsupported. ``skipped`` is not a
     failure -- it means the whole service was disabled by configuration, a deliberate scope
     decision, not missing evidence. ``unsupported`` means OCI/the SDK didn't return what an

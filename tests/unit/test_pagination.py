@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import oci
-import pytest
 
 from oci_drata.pagination import RetryPolicy, call_once, operations_complete, paginate
 

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import dataclasses
 import ipaddress
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from oci_drata.models import Instance, Vnic
 
