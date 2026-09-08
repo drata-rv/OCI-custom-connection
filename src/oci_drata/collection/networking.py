@@ -1,8 +1,7 @@
-"""Network exposure evidence collection (spec 5.4).
+"""Network exposure evidence collection.
 
-Returns raw OCI SDK model objects only -- exposure derivation
-(hasPublicAddress/hasInternetGatewayRoute/effectiveIngressExposure/etc.)
-happens later in :mod:`oci_drata.transform.normalize`, not here.
+Returns raw OCI SDK model objects; exposure derivation happens in
+:mod:`oci_drata.transform.normalize`.
 """
 
 from __future__ import annotations
@@ -158,12 +157,8 @@ def collect_networking(
                 if not nsg_id:
                     continue
 
-                # Neither of these two operations accepts compartment_id at
-                # all (verified via inspect.getsource: their expected_kwargs
-                # lists only cover direction/limit/page/sort_by/sort_order),
-                # so compartment_id is deliberately omitted here rather than
-                # forwarded by paginate() -- passing it would raise
-                # ValueError from the SDK's own kwarg validation.
+                # list_network_security_group_security_rules/_vnics reject
+                # compartment_id -- omit it; passing it raises ValueError.
                 rules_op = paginate(
                     service="virtual_network",
                     operation="list_network_security_group_security_rules",

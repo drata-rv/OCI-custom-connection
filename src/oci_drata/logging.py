@@ -1,10 +1,7 @@
 """Structured JSON logging with secret redaction.
 
-Every log record is emitted as one JSON object per line. A logging
-:class:`~logging.Filter` redacts secret-shaped substrings from the message
-and from every ``extra`` value before the record is formatted, so a
-collector or delivery module accidentally interpolating a token or PEM body
-into a log line still cannot leak it.
+Emits one JSON object per log record. Redaction filter runs on message and
+``extra`` values before formatting, so interpolated tokens/PEM bodies can't leak.
 """
 
 from __future__ import annotations

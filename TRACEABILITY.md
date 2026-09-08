@@ -12,12 +12,12 @@ to MVP scope.
 | 1-4 | Read spec, assess repo, plan, identify contradictions | — (initial assessment, no blocking contradictions found) | — |
 | 5 | Configuration and secret resolution | `config.py`, `redaction.py` | `tests/unit/test_config.py`, `test_redaction.py` |
 | 6 | OCI auth + pagination/retry layer | `oci_auth.py`, `pagination.py` | `tests/unit/test_pagination.py` |
-| 7 | Service collectors, independent | `collection/*.py` (7 files) | `tests/unit/test_operation_allowlist.py` + inline agent verification (see git history) |
+| 7 | Service collectors, independent | `collection/*.py` (7 files) | `tests/unit/test_operation_allowlist.py` |
 | 8 | Normalize into allowlisted source models | `transform/normalize.py` | `tests/unit/test_normalize_and_relationships.py` |
 | 9 | Resolve relationships using OCIDs | `transform/relationships.py` | `tests/unit/test_normalize_and_relationships.py` |
 | 10 | Versioned derived facts | `transform/exposure.py`, `vpn_posture.py` (`derivation_version`/`DERIVATION_VERSION` on every `Finding`) | `tests/unit/test_exposure.py` |
 | 11 | Exactly one aggregate record | `transform/aggregate.py::build_snapshot` | `tests/integration/test_end_to_end.py` |
-| 12 | Validate against JSON Schema | `validation/schema.py` | `tests/unit/test_schema_validation.py`, cross-checked against AJV directly (see commit history) |
+| 12 | Validate against JSON Schema | `validation/schema.py` | `tests/unit/test_schema_validation.py` |
 | 13 | Payload budget enforcement | `validation/size.py` | `tests/unit/test_size.py` |
 | 14 | Upload only complete snapshots | `validation/completeness.py`, `cli.py::run` | `tests/integration/test_end_to_end.py`, `test_cli.py` |
 | 15 | Preserve last known-good record | `cli.py::run` (upload gated on `decision.should_upload`; no call means Drata's existing record is untouched by construction) | `tests/integration/test_cli.py::test_incomplete_run_blocks_upload` |
@@ -37,7 +37,7 @@ is not in `security.ALLOWED_OCI_OPERATIONS`, or matches
 
 | Operation | Client | Test |
 |---|---|---|
-| `get_tenancy` | `IdentityClient` | `tests/unit/test_pagination.py` (via `call_once`); `discovery.py` smoke-tested during build (mocked, see commit `b553373`) |
+| `get_tenancy` | `IdentityClient` | `tests/unit/test_pagination.py` (via `call_once`) |
 | `list_region_subscriptions` | `IdentityClient` | same |
 | `list_compartments` | `IdentityClient` | same |
 | `list_availability_domains` | `IdentityClient` | same |
@@ -114,7 +114,7 @@ collected Base/Autonomous results (no extra API calls).
 | `list_ip_sec_connection_tunnels` | Keyed by `ipsc_id`, not `compartment_id` |
 | `get_ip_sec_connection_tunnel` | Conditional — only when a listed tunnel is missing a required field |
 | `list_cpes`, `list_drgs` | |
-| `list_drg_attachments` | `attachment_type="ALL"` confirmed as a real accepted value |
+| `list_drg_attachments` | `attachment_type="ALL"` is a valid accepted value |
 | `list_drg_route_tables`, `list_drg_route_rules` | Scoped to DRGs with an `IPSEC_TUNNEL` attachment only, not every DRG in the tenancy |
 
 All `VirtualNetworkClient`. **Never called**: `get_ip_sec_connection_tunnel_shared_secret`,
@@ -127,7 +127,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 |---|---|---|
 | Exhaust every `opc-next-page` | `pagination.py::paginate` | `test_pagination.py::test_paginate_exhausts_multiple_pages_including_empty_page_with_token` |
 | Dynamic regional client construction | `oci_auth.py::regional_client` | exercised by every collector test |
-| Verify regions subscribed + READY | `collection/discovery.py::_resolve_regions` | `test_pagination.py`-style mocked discovery (build-time smoke test, commit `b553373`) |
+| Verify regions subscribed + READY | `collection/discovery.py::_resolve_regions` | Mocked discovery, `test_pagination.py`-style; no dedicated test file |
 | Compartment allow/deny, deterministic | `collection/discovery.py` | same |
 | Bounded concurrency + retry w/ jitter | `pagination.py::RetryPolicy` (per-call), `cli.py::_run_independent_collectors` (`ThreadPoolExecutor`, cross-collector) | `test_pagination.py` (retry), `test_cli.py` (concurrency wiring) |
 | Preserve unknown enum values | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum`) | — |
@@ -150,7 +150,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same test |
 | Never retrieve unrestricted instance metadata | No `get_windows_instance_initial_credentials` or metadata-service call anywhere in `collection/` |
 
-## 5. Confirmed assumptions / documented simplifications
+## 5. Assumptions and simplifications
 
 See `README.md §9` for the user-facing version. Implementation-level detail:
 

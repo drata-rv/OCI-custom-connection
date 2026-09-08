@@ -1,14 +1,6 @@
-"""Exadata detection (spec 5.7).
-
-Minimal, no-drill-down existence check: any of a database domain shape
-(``DbSystemSummary.shape`` prefixed ``"Exadata"``), a dedicated Autonomous
-Database (always Exadata Infrastructure-backed), or any Exadata-family
-infrastructure resource existing at all in an approved compartment is enough
-to mark the database domain incomplete -- per spec, this module must never
-claim complete managed-database coverage once any of these is true.
-
-``db_systems``/``autonomous_databases`` are the already-collected results
-from :mod:`database_base`/:mod:`database_autonomous`; this module makes no
+"""Exadata detection: existence check on Exadata db_system shape, dedicated ADB, or any
+Exadata-family infrastructure resource, to mark the database domain incomplete. Consumes
+already-collected ``db_systems``/``autonomous_databases``; makes no
 ``list_db_systems``/``list_autonomous_databases`` calls of its own.
 """
 

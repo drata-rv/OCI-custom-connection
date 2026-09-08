@@ -1,8 +1,5 @@
-"""Snapshot completeness/upload decision (spec section 10's failure/upload
-policy table). Schema and payload-size failures are checked first and
-short-circuit straight to "failed" -- they mean the record itself is
-unusable, independent of how much OCI evidence collection succeeded.
-"""
+"""Computes snapshot completeness/upload decision.
+Schema and payload-size failures short-circuit to "failed" before evidence completeness is checked."""
 
 from __future__ import annotations
 
@@ -47,9 +44,7 @@ def decide_completeness(
             "(spec 5.7/10: no partial database evidence)"
         )
     if unresolved_relationship_count > 0:
-        # No noncritical-relationship classification is implemented in this
-        # MVP -- every unresolved relationship blocks upload by default,
-        # matching spec 10's "No by default" for this condition.
+        # no relationship classification exists; any unresolved relationship blocks upload
         reasons.append(f"{unresolved_relationship_count} unresolved relationship(s)")
 
     if reasons:

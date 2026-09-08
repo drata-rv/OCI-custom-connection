@@ -1,15 +1,8 @@
-"""CLI entry point (spec deliverable 1): ``oci-drata [--config PATH]
-[--dry-run]``.
+"""CLI entry point: ``oci-drata [--config PATH] [--dry-run]``.
 
-Never accepts secrets as arguments -- config.py already rejects an inline
-secret in the YAML file itself; this module doesn't add a CLI-argument
-escape hatch around that (spec 4.1: "Never accept credentials as CLI
-arguments because process listings and shell history can expose them").
-
-Independent collectors (compute, storage, networking, both database
-domains, VPN) run concurrently, bounded by ``runtime.maxConcurrency`` --
-Exadata detection runs after, since it consumes the two database
-collectors' output rather than re-querying.
+Never accepts secrets as CLI arguments. Independent collectors run
+concurrently (bounded by ``runtime.maxConcurrency``); Exadata detection
+runs after, since it consumes the database collectors' output.
 """
 
 from __future__ import annotations

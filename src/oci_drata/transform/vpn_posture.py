@@ -1,13 +1,7 @@
-"""Site-to-Site VPN redundancy derivation (spec 5.8, 15: "minimum tunnel
-count, required UP count").
+"""Site-to-Site VPN redundancy derivation (spec 5.8, 15).
 
-Deliberately simple: unlike exposure, there's no multi-hop evidence chain
-here -- vpn.py's tunnels_by_connection_id already carries everything this
-needs. A connection genuinely missing from that mapping (which
-collect_vpn's loop structure should never produce, since every connection
-found triggers a tunnels lookup unconditionally) is the one defensive
-"unknown" case; a connection present with zero tunnels is treated as a
-real, provable zero -- not_redundant, not unknown.
+Connection missing from tunnels_by_connection_id -> unknown.
+Connection present with zero tunnels -> not_redundant (provable zero, not unknown).
 """
 
 from __future__ import annotations

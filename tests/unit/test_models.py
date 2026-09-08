@@ -89,8 +89,7 @@ def test_operation_record_to_dict() -> None:
 
 
 def test_metric_and_resource_key_lists_match_schema_counts() -> None:
-    # Cross-check against schemas/oci-snapshot-1.0.0.json so a schema edit
-    # that isn't mirrored here fails loudly instead of silently drifting.
+    # guards against drift from schemas/oci-snapshot-1.0.0.json
     from oci_drata.validation.schema import load_schema
 
     schema = load_schema()

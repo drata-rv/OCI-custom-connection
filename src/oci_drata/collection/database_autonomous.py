@@ -1,25 +1,7 @@
-"""Autonomous Database collection (spec 5.6).
-
-``AutonomousDatabaseSummary`` already carries workload, dedicated/serverless
-indicator, compute/storage sizing, subnet/NSGs, private endpoint, ACLs,
-mTLS requirement, encryption references, and Data Guard indicators directly,
-so no ``get_autonomous_database`` enrichment call is made.
-
-``list_autonomous_database_peers`` is unlike every other ``list_*`` operation
-in this module: it returns a single ``AutonomousDatabasePeerCollection``
-object (with an ``items`` attribute) rather than a bare list, so
-:func:`pagination.paginate` -- which does ``response.data.extend(...)`` --
-would try to iterate a non-iterable collection object. ``_unwrap_peers``
-adapts the raw client call so ``response.data`` is the plain
-``list[AutonomousDatabasePeerSummary]`` paginate expects; headers (and thus
-``opc-next-page``/request-id extraction) pass through untouched.
-
-``list_autonomous_database_peers`` is called for every Autonomous Database,
-not only ones flagged Data Guard-enabled/with peer ids: it is a plain list
-operation with no documented "not applicable" error for a standalone ADB
-(unlike, e.g., a documented 404-for-no-public-IP case elsewhere), so an
-empty result is expected and any real failure is surfaced the same way as
-every other operation in this module -- via ``OperationResult.status``.
+"""Autonomous Database collection. ``AutonomousDatabaseSummary`` is full-fidelity, so no
+``get_autonomous_database`` call is made. ``list_autonomous_database_peers`` returns an
+``AutonomousDatabasePeerCollection``, not a bare list; ``_unwrap_peers`` adapts it to the
+plain list :func:`pagination.paginate` expects.
 """
 
 from __future__ import annotations
@@ -46,11 +28,7 @@ class AutonomousDatabaseCollectionResult:
     autonomous_databases: list[Any]
     autonomous_database_backups: list[Any]
     autonomous_database_dataguard_associations: list[Any]
-    # AutonomousDatabasePeerSummary carries only id+region, no back-reference
-    # to its owning ADB (unlike every other list_* result in this module) --
-    # keyed by the owning ADB's id, same reasoning as vpn.py's
-    # tunnels_by_connection_id, rather than losing that association in a
-    # flat list.
+    # Peer summaries carry no back-reference to their owning ADB; keyed by ADB id.
     autonomous_database_peers_by_adb_id: dict[str, list[Any]]
     operations: list[OperationResult]
 
@@ -124,9 +102,7 @@ def collect_autonomous_database(
         autonomous_databases.extend(region_adbs)
 
         for adb in region_adbs:
-            # compartment_id is accepted by list_autonomous_database_backups
-            # but autonomous_database_id alone is sufficient scoping, per
-            # "per ADB found".
+            # list_autonomous_database_backups: autonomous_database_id alone is sufficient scope.
             backup_op = paginate(
                 service="database",
                 operation="list_autonomous_database_backups",
@@ -149,13 +125,8 @@ def collect_autonomous_database(
             operations.append(dg_op)
             autonomous_database_dataguard_associations.extend(stamp_region(dg_op.items, region))
 
-            # Not region-stamped: a peer summary's own `region` field is the
-            # peer's real (often different) region, e.g. a cross-region Data
-            # Guard standby -- overriding it with the region we queried from
-            # would corrupt that fact. Peers are folded into the owning
-            # ADB's relatedResourceIds by OCID in the transform layer, never
-            # rendered as their own resource row, so this is the only raw
-            # list in this module that's exempt from stamp_region.
+            # Not region-stamped: peer's own `region` field may be a real different region
+            # (e.g. cross-region Data Guard standby); stamping would overwrite it.
             peers_op = paginate(
                 service="database",
                 operation="list_autonomous_database_peers",

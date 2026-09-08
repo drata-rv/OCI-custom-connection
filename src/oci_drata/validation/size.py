@@ -1,6 +1,4 @@
-"""Deterministic serialization and payload-size budget enforcement
-(spec section 7.1 step 10, section 9: "budget is 4.5 MB").
-"""
+"""Deterministic serialization and payload-size budget enforcement."""
 
 from __future__ import annotations
 
@@ -10,11 +8,8 @@ from typing import Any
 
 
 def serialize_deterministic(record: dict[str, Any]) -> bytes:
-    """Serialize with stable key order (Python dicts preserve insertion
-    order; every ``to_dict()`` in :mod:`oci_drata.models` emits keys in a
-    fixed order) and stable array order (arrays are sorted by the aggregate
-    builder before this is called, never here) -- the same record always
-    produces the same bytes."""
+    """Serialize record to deterministic bytes (stable key order, fixed separators).
+    Caller must pre-sort arrays; this function does not sort them."""
 
     return json.dumps(record, sort_keys=False, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8"

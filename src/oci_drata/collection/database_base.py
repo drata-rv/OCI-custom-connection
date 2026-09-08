@@ -1,11 +1,6 @@
-"""Base Database Service collection (spec 5.5).
-
-``DatabaseClient`` list operations here already return full-fidelity summary
-objects (KMS/vault reference, subnet/NSG placement, backup and Data Guard
-state all present directly on ``DbSystemSummary``/``DbHomeSummary``/
-``DatabaseSummary``/``BackupSummary``/``DataGuardAssociation``), so no
-``get_*`` enrichment call is made -- only the ``list_*`` chain
-db_system -> db_home -> database -> {backup, data_guard_association}.
+"""Base Database Service collection: list_db_systems -> list_db_homes -> list_databases
+-> {list_backups, list_data_guard_associations}. Summary objects are full-fidelity; no
+get_* enrichment call is made.
 """
 
 from __future__ import annotations
@@ -99,8 +94,7 @@ def collect_database_base(
 
         region_db_homes: list[Any] = []
         for db_system in region_db_systems:
-            # list_db_homes requires compartment_id positionally; db_system_id
-            # is the documented filter for "scoped by DB system".
+            # list_db_homes requires compartment_id positionally; db_system_id scopes by DB system.
             op = paginate(
                 service="database",
                 operation="list_db_homes",
@@ -116,8 +110,7 @@ def collect_database_base(
 
         region_databases: list[Any] = []
         for db_home in region_db_homes:
-            # list_databases requires compartment_id positionally; db_home_id
-            # is the documented filter for "scoped by DB home".
+            # list_databases requires compartment_id positionally; db_home_id scopes by DB home.
             op = paginate(
                 service="database",
                 operation="list_databases",
@@ -132,10 +125,8 @@ def collect_database_base(
         databases.extend(region_databases)
 
         for database in region_databases:
-            # list_backups accepts compartment_id, but scoping by database_id
-            # alone is sufficient and matches "scoped by each database found";
-            # list_data_guard_associations does not accept compartment_id at
-            # all (unknown-kwargs ValueError) so it is never passed here.
+            # list_backups: database_id alone is sufficient scope.
+            # list_data_guard_associations rejects compartment_id (unknown-kwargs ValueError) -- never pass it.
             backup_op = paginate(
                 service="database",
                 operation="list_backups",

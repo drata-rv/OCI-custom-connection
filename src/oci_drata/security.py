@@ -1,21 +1,13 @@
-"""Explicit allow/deny lists enforcing the read-only, least-privilege
-security posture (spec: "Never call OCI mutation or secret-retrieval
-operations", "Never retrieve VPN shared secrets, database credentials,
-wallets, or unrestricted instance metadata").
+"""Allow/deny lists enforcing read-only, least-privilege OCI access.
 
-This is not just documentation: ``tests/unit/test_operation_allowlist.py``
-statically scans every module under ``src/oci_drata/collection`` with
-:mod:`ast` and fails the build if any OCI client method call is not in
-:data:`ALLOWED_OCI_OPERATIONS`, or if it matches
-:data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS` outright.
-A collector cannot silently grow a mutating or secret-retrieving call.
+``tests/unit/test_operation_allowlist.py`` ast-scans ``src/oci_drata/collection``
+and fails the build on any call not in :data:`ALLOWED_OCI_OPERATIONS` or matching
+:data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS`.
 """
 
 from __future__ import annotations
 
-# Any OCI SDK method whose name starts with one of these prefixes is a
-# mutation, lifecycle, or credential/secret-retrieval operation and must
-# never be called by a collector, regardless of allowlist membership below.
+# Mutation/lifecycle/credential-retrieval prefixes; forbidden regardless of allowlist membership.
 FORBIDDEN_OPERATION_PREFIXES: tuple[str, ...] = (
     "create_",
     "update_",
@@ -51,10 +43,8 @@ FORBIDDEN_OPERATION_PREFIXES: tuple[str, ...] = (
     "instance_action",
 )
 
-# Specific operations that exist in the SDK, are exact-name matches for a
-# "get_*"/"list_*" shape, but return credentials, secrets, or unrestricted
-# metadata rather than configuration evidence. Denylisted by exact name even
-# though they would otherwise pass the prefix check.
+# get_*/list_*-shaped operations that return credentials/secrets/unrestricted
+# metadata; denylisted by exact name since they'd pass the prefix check.
 FORBIDDEN_OPERATIONS: frozenset[str] = frozenset(
     {
         "get_windows_instance_initial_credentials",
@@ -66,9 +56,8 @@ FORBIDDEN_OPERATIONS: frozenset[str] = frozenset(
     }
 )
 
-# Every OCI SDK "list_*"/"get_*" operation a collector is permitted to call,
-# grouped by spec section for traceability. Keep in lockstep with
-# TRACEABILITY.md and with the collectors that actually call these names.
+# Allowed list_*/get_* operations, grouped by spec section. Keep in sync with
+# TRACEABILITY.md and the collectors that call these names.
 ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
     {
         # 5.1 Discovery

@@ -1,11 +1,7 @@
-"""Reusable OCI list/get-operation execution: exhaustive pagination, bounded
-retry with exponential backoff and jitter, and a structured per-operation
-result that feeds the aggregate record's ``manifest.operations``.
-
-Every OCI SDK call in this project goes through :func:`paginate` (for
-``list_*`` operations) or :func:`call_once` (for ``get_*`` operations) so
-that pagination, retry, and provenance capture are implemented exactly once
-and are uniformly testable with mocked responses.
+"""Reusable OCI list/get-operation execution: pagination, bounded retry with
+backoff+jitter, and a per-operation result feeding ``manifest.operations``.
+Every OCI SDK call goes through :func:`paginate` (``list_*``) or
+:func:`call_once` (``get_*``).
 """
 
 from __future__ import annotations
@@ -22,8 +18,7 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# HTTP statuses worth retrying: throttling, transient server-side failures,
-# and conflict (OCI sometimes returns 409 for eventually-consistent reads).
+# Retryable: throttling, transient server errors, 409 (OCI eventual-consistency conflicts).
 RETRYABLE_STATUS_CODES = frozenset({409, 429, 500, 502, 503, 504})
 
 OperationStatus = str  # "success" | "failed" | "unsupported" | "skipped"
@@ -43,11 +38,11 @@ class RetryPolicy:
 
 @dataclasses.dataclass
 class OperationResult:
-    """Outcome of one OCI operation, including every page it took to collect.
+    """Outcome of one OCI operation, including every page collected.
 
-    ``items`` is intentionally excluded from the manifest -- only counts and
-    request IDs are serialized there (see transform/aggregate.py). Collector
-    modules consume ``items`` directly.
+    ``items`` is excluded from the manifest (only counts/request IDs
+    serialized there, see transform/aggregate.py); collectors consume
+    ``items`` directly.
     """
 
     service: str
@@ -68,17 +63,9 @@ class OperationResult:
 
 
 def stamp_region(items: Iterable[Any], region: str) -> list[Any]:
-    """Set ``.region`` on every item to the region it was actually queried
-    from, overriding any same-named field the OCI model itself carries.
-
-    Only a handful of OCI resource models (e.g. ``Instance``) expose their
-    own ``region`` field, and even where present its meaning isn't
-    guaranteed to match "the endpoint this collector queried" -- most
-    resource types (``Vnic``, ``Volume``, ``DbSystem``, ``IPSecConnection``,
-    ...) have no region field at all. Every resource in the aggregate
-    record's schema requires ``region``, so every collector stamps it here,
-    at the single point where the region is authoritatively known, rather
-    than each collector re-deriving or guessing it later.
+    """Set ``.region`` on every item to the queried region, overriding any
+    same-named field the OCI model carries -- most resource types have no
+    reliable region field of their own.
     """
 
     stamped = list(items)
@@ -88,11 +75,8 @@ def stamp_region(items: Iterable[Any], region: str) -> list[Any]:
 
 
 def operations_complete(operations: Iterable["OperationResult"]) -> bool:
-    """A domain is complete when nothing in it failed. ``unsupported``
-    (e.g. an operation absent from the pinned SDK version, or Exadata
-    detection halting further database collection) and ``skipped`` (a
-    service module disabled via configuration) are not failures -- only
-    ``failed`` blocks completeness, per spec section 10."""
+    """Domain is complete when nothing in it failed. ``unsupported`` and
+    ``skipped`` are not failures -- only ``failed`` blocks completeness."""
 
     return all(op.status != "failed" for op in operations)
 
@@ -154,11 +138,10 @@ def paginate(
     retry_policy: RetryPolicy | None = None,
     **call_kwargs: Any,
 ) -> OperationResult:
-    """Execute an OCI SDK ``list_*`` bound method, following ``opc-next-page``
-    until absent. Never raises for a well-formed OCI ``ServiceError`` or
-    transport failure -- returns ``status="failed"`` so the caller can decide
-    how the failure affects overall snapshot completeness. Only a programmer
-    error (unexpected exception type) propagates.
+    """Execute an OCI SDK ``list_*`` bound method, paginating via
+    ``opc-next-page``. Never raises for a well-formed ``ServiceError`` or
+    transport failure -- returns ``status="failed"`` instead; only a
+    programmer error propagates.
     """
 
     policy = retry_policy or RetryPolicy()
@@ -173,10 +156,8 @@ def paginate(
     page_token: str | None = None
     while True:
         kwargs = dict(call_kwargs)
-        # compartment_id is captured separately so it always lands in the
-        # manifest even for operations that don't take one (e.g. get_tenancy
-        # keyed by tenancy_id); forward it to the call itself here, since
-        # nearly every OCI list_*/get_* operation requires it as a named arg.
+        # compartment_id captured separately for the manifest; forwarded here
+        # since most list_*/get_* ops require it (e.g. get_tenancy doesn't).
         if compartment_id is not None:
             kwargs.setdefault("compartment_id", compartment_id)
         if page_token is not None:

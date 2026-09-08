@@ -1,18 +1,9 @@
-"""OCID-based relationship resolution (spec 7.1 steps 3-5): join raw
-attachment/reference tables onto already-normalized resources, and record
-an :class:`~oci_drata.models.UnresolvedRelationship` instead of silently
-dropping a child whose parent (or vice versa) can't be found.
-
-Every function here is a pure transform: normalized resources in, updated
-resources (via ``dataclasses.replace``, since the models are frozen) plus
-any newly-discovered unresolved relationships out.
-
-The Base/Autonomous Database join functions correlate a normalized list
-with its raw source list positionally (``zip(raw_list, normalized_list)``):
-callers must normalize each raw list into its normalized counterpart with a
-single order-preserving pass (a list comprehension, not a dict rebuild) so
-this invariant holds -- see :mod:`oci_drata.transform.aggregate`.
-"""
+"""Joins raw attachment/reference tables onto already-normalized resources;
+records an :class:`~oci_drata.models.UnresolvedRelationship` instead of
+dropping a child whose parent (or vice versa) can't be found. Database join
+functions correlate raw/normalized lists positionally (zip) -- callers must
+normalize each raw list into its counterpart with a single order-preserving
+pass."""
 
 from __future__ import annotations
 
@@ -23,10 +14,8 @@ from oci_drata.models import DatabaseResource, Instance, UnresolvedRelationship,
 
 
 def classify_windows(instances: list[Instance], images: dict[str, Any]) -> list[Instance]:
-    """spec 5.2: windows | non_windows | unknown, never assumed
-    non-Windows. Unknown covers a missing image_id and a failed/unauthorized
-    image lookup identically -- both mean "we cannot prove this either way".
-    """
+    """Classifies windows/non_windows/unknown; never assumes non-Windows.
+    Unknown covers missing image_id and failed/unauthorized lookup alike."""
 
     classified = []
     for instance in instances:
@@ -178,10 +167,9 @@ def _link(
     parent_type: str,
     unresolved: list[UnresolvedRelationship],
 ) -> None:
-    """Bidirectional relatedResourceIds link, mutating resources_by_id in
-    place. Records an UnresolvedRelationship instead of dropping the child
-    when the parent isn't in the collected set (e.g. a database whose
-    parent DB home failed to page)."""
+    """Bidirectional relatedResourceIds link, mutates resources_by_id in
+    place. Records UnresolvedRelationship instead of dropping the child when
+    the parent isn't in the collected set."""
 
     if not parent_id:
         return
@@ -262,8 +250,7 @@ def resolve_base_database_relationships(
         )
     for raw_dg, dg in zip(raw_data_guard_associations, data_guard_associations):
         database_id = getattr(raw_dg, "database_id", None)
-        # DataGuardAssociation has no compartment_id of its own -- backfill
-        # from the parent database now that the join is known.
+        # DataGuardAssociation has no compartment_id; backfill from parent database.
         if database_id in by_id:
             dg = dataclasses.replace(dg, compartment_id=by_id[database_id].compartment_id)
             by_id[dg.id] = dg
@@ -340,11 +327,9 @@ def resolve_autonomous_database_relationships(
             unresolved=unresolved,
         )
 
-    # Peers are id/region pointers only (no separate resource row exists to
-    # link to -- see normalize.py) -- fold each peer's id directly into the
-    # owning ADB's relatedResourceIds. Already keyed by owning ADB id at
-    # collection time (AutonomousDatabasePeerSummary carries no back-
-    # reference of its own), so no join/unresolved-tracking is needed here.
+    # Peers are id/region pointers only, no separate resource row -- folded
+    # directly into owning ADB's related_resource_ids. Already keyed by ADB
+    # id at collection time; no unresolved-tracking needed.
     for adb_id, raw_peers in autonomous_database_peers_by_adb_id.items():
         peer_ids = {p.id for p in raw_peers if getattr(p, "id", None)}
         if adb_id in by_id and peer_ids:

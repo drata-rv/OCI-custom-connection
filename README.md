@@ -111,11 +111,10 @@ cannot target a credential-shaped field.
 
 **Validate every statement below against Oracle's current [Core Services
 IAM policy reference](https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/corepolicyreference.htm)
-and the Database service's policy reference before granting in production
-— this list was authored against the collectors' actual OCI SDK calls
-(see [TRACEABILITY.md](TRACEABILITY.md)) and general OCI policy
-conventions, not a live Oracle-side check against the exact policy verb
-tables, which this environment couldn't reach while building the MVP.**
+and the Database service's policy reference before granting in
+production.** This list is derived from the collectors' actual OCI SDK
+calls (see [TRACEABILITY.md](TRACEABILITY.md)) and general OCI policy
+conventions — not from a live check against Oracle's policy verb tables.
 
 Create a dedicated group (e.g. `oci-drata-collector`) and a dedicated
 API-signing user with no other access, then:
@@ -136,11 +135,11 @@ Allow group oci-drata-collector to read database-family in tenancy
 
 Notes:
 
-* `use network-security-groups` is a real, narrow exception — Oracle's own
-  policy mapping requires it for `list_network_security_group_security_rules`
-  and `list_network_security_group_vnics`, even though this collector
-  performs no mutation. Spec §5.4 calls this out explicitly; do not widen
-  it beyond `network-security-groups`.
+* `use network-security-groups` is required — Oracle's policy mapping
+  requires it for `list_network_security_group_security_rules` and
+  `list_network_security_group_vnics`, though this collector performs no
+  mutation. Spec §5.4 calls this out; do not widen it beyond
+  `network-security-groups`.
 * `instance-family`/`virtual-network-family`/`volume-family`/
   `database-family` are OCI's own policy aggregate groupings; confirm they
   cover every specific resource type this collector reads (full list in
@@ -150,8 +149,8 @@ Notes:
 * Never grant `manage`, `all-resources`, any secret-family / Vault
   secret-content permission, or any IPSec shared-secret permission. This
   collector never calls a mutating, wallet, credential, or shared-secret
-  operation — enforced by `security.py`'s allowlist and
-  `test_operation_allowlist.py`, not just this policy document.
+  operation, enforced by `security.py`'s allowlist and
+  `test_operation_allowlist.py`.
 
 ## 5. Execution
 
@@ -187,9 +186,9 @@ print('valid' if result.valid else result.errors)
 
 `tests/integration/test_end_to_end.py` runs the identical
 `build_snapshot → validate_record → check_payload_size →
-decide_completeness` pipeline against fully mocked collector output — read
-it for a worked example of what a schema-valid record looks like,
-including the headline "publicly exposed Windows VM" scenario.
+decide_completeness` pipeline against fully mocked collector output. It is
+a worked example of a schema-valid record, including a publicly exposed
+Windows VM scenario.
 
 ## 7. Troubleshooting
 
@@ -229,8 +228,8 @@ From spec §13, adapted as a literal checklist:
 - [ ] Serialized snapshot stays below 4.5 MB.
 - [ ] First upload creates a record (`201`); second run updates the same
       record (`200`), same `id`.
-- [ ] A deliberately broken run (e.g. revoke one policy grant) leaves the
-      last known-good Drata record untouched.
+- [ ] Revoking one policy grant to force a failed run leaves the last
+      known-good Drata record untouched.
 - [ ] No secret-bearing field appears in `out/snapshot.json`,
       `collection-report.json`, or logs.
 - [ ] Deployment technical and compliance owners have reviewed
@@ -239,8 +238,7 @@ From spec §13, adapted as a literal checklist:
 
 ## 9. Known MVP limitations
 
-Documented deliberately, not hidden — see the cited module docstrings for
-the full reasoning:
+See the cited module docstrings for detail.
 
 * **Exposure CIDR matching is exact-string, not real CIDR-superset
   containment** (`transform/exposure.py`). A permissive rule for

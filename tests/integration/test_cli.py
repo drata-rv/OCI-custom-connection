@@ -1,8 +1,5 @@
-"""cli.run() orchestration, mocked at the collector-function boundary
-(build_signer/discover/collect_*/detect_exadata) rather than the OCI client
-level -- this is the layer cli.py itself owns (concurrency, aggregate,
-validate, decide, report, dry-run output), already covered end-to-end at
-the OCI-client-mock level by test_end_to_end.py.
+"""Tests cli.run() orchestration; collectors mocked at function boundary.
+OCI-client-mock level coverage lives in test_end_to_end.py.
 """
 
 from __future__ import annotations

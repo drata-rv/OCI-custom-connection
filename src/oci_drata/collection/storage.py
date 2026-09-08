@@ -1,7 +1,7 @@
-"""Boot and block storage evidence collection (spec 5.3).
+"""Boot and block storage evidence collection.
 
-Returns raw OCI SDK model objects only -- encryption-at-rest/in-transit
-derivation happens later in :mod:`oci_drata.transform.normalize`, not here.
+Returns raw OCI SDK model objects; encryption-at-rest/in-transit derivation
+happens in :mod:`oci_drata.transform.normalize`.
 """
 
 from __future__ import annotations
@@ -75,10 +75,8 @@ def collect_storage(
         availability_domains = discovery.availability_domains_by_region.get(region, [])
 
         for compartment_id in discovery.approved_compartment_ids:
-            # list_boot_volumes/list_volumes/list_volume_attachments all
-            # accept availability_domain as optional (verified via
-            # inspect.getsource: neither is a required parameter), so one
-            # call per compartment lists across every AD in the region.
+            # list_boot_volumes/list_volumes/list_volume_attachments: availability_domain
+            # optional, one call per compartment covers every AD in the region.
             boot_volumes_op = paginate(
                 service="blockstorage",
                 operation="list_boot_volumes",
@@ -112,10 +110,8 @@ def collect_storage(
             operations.append(volume_attachments_op)
             volume_attachments.extend(stamp_region(volume_attachments_op.items, region))
 
-            # list_boot_volume_attachments requires availability_domain as a
-            # required positional parameter (verified via inspect.signature),
-            # unlike the three calls above -- one call per AD per
-            # compartment is unavoidable here.
+            # list_boot_volume_attachments requires availability_domain -- one call
+            # per AD per compartment.
             for ad in availability_domains:
                 ad_name = getattr(ad, "name", None)
                 if not ad_name:

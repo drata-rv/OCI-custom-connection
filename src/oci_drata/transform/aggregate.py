@@ -1,12 +1,8 @@
-"""Build exactly one aggregate record (spec 7.1 steps 6-10, 7.3): calls
-normalize -> relationships -> exposure/vpn_posture -> findings in order,
-computes metrics, and serializes with deterministic ordering (every
-resource/finding/warning array sorted by id/assertionId so the same
-collection run always produces byte-identical output).
+"""Builds one aggregate record: normalize -> relationships -> exposure/vpn_posture ->
+findings, then metrics and serialization. Resource/finding/warning arrays sort by
+id/assertionId for deterministic output.
 
-This module does not decide whether to upload -- that's
-:mod:`oci_drata.validation.completeness`, which needs the schema-validation
-and payload-size results this module's caller computes afterward.
+Does not decide upload eligibility; see :mod:`oci_drata.validation.completeness`.
 """
 
 from __future__ import annotations
@@ -48,11 +44,8 @@ COLLECTOR_VERSION = "0.1.0"
 
 
 def derive_record_id(tenancy_ocid: str, deployment_name: str) -> str:
-    """Spec 4.2 recommendation: oci-snapshot- + first 24 hex chars of
-    SHA-256(tenancy_ocid + deployment_name). Provided for operators setting
-    up `drata.recordId` in their deployment config -- build_snapshot()
-    always uses the configured value directly, never recomputes it, so the
-    record id stays stable between runs even if this derivation changes."""
+    """oci-snapshot- + first 24 hex chars of SHA-256(tenancy_ocid + deployment_name).
+    build_snapshot() always uses the configured record id directly, never recomputes it here."""
 
     digest = hashlib.sha256(f"{tenancy_ocid}{deployment_name}".encode("utf-8")).hexdigest()
     return f"oci-snapshot-{digest[:24]}"

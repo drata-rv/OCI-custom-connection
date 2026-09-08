@@ -1,11 +1,8 @@
-"""Tenancy, region-subscription, and compartment discovery (spec 5.1).
+"""Tenancy, region, and compartment discovery; runs once before all other collectors.
 
-Every subsequent collector depends on the two sets this module derives:
-``approved_regions`` (configured allowlist entries that are actually
-subscribed and ``READY``) and ``approved_compartment_ids`` (configured root
-compartments' subtree, allowlist then denylist applied deterministically).
-Discovery runs once, before any service collector, and its own failures are
-always treated as required-domain failures by the completeness check.
+Derives approved_regions (subscribed+READY) and approved_compartment_ids
+(root subtree, allow/deny applied); its failures count as required-domain
+failures.
 """
 
 from __future__ import annotations
@@ -47,9 +44,7 @@ class DiscoveryResult:
 
 
 def _discovery_region(app_config: AppConfig) -> str:
-    # Identity list/get calls used here work from any subscribed region; use
-    # the first configured allowed region so discovery never touches a
-    # region outside the allowlist even before subscriptions are confirmed.
+    # Identity calls work from any region; use first allowed region to stay within allowlist before subscriptions are confirmed.
     return app_config.oci.regions.allow[0]
 
 
@@ -101,16 +96,10 @@ def discover(
             retry_policy=retry_policy,
         )
         operations.append(op)
-        # Compartments are tenancy-global, not a regional resource -- there
-        # is no "real" region to record. The schema still requires a
-        # non-null region on every resource row, so this is stamped with
-        # the region discovery itself queried from, documented here as a
-        # deliberate choice rather than a meaningful residency fact.
+        # Compartments aren't regional; stamped with discovery region only to satisfy schema's non-null region field.
         all_compartments.extend(stamp_region(op.items, region))
 
-    # list_compartments never returns the root compartment itself; a
-    # configured root is always in scope for collection even though it
-    # never appears as a child of itself.
+    # list_compartments never returns the root itself; roots stay in scope separately.
     root_ids = {
         (tenancy_ocid if root == "tenancy" else root) for root in app_config.oci.compartments.roots
     }
@@ -158,8 +147,7 @@ def _resolve_regions(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     configured = app_config.oci.regions.allow
     if not region_sub_op.ok:
-        # Collection failure, not a subscription fact: every configured
-        # region is unready because we could not prove otherwise.
+        # API failure, not a subscription fact: treat all configured regions unready (can't prove otherwise).
         return (), tuple(configured)
 
     ready_by_name = {

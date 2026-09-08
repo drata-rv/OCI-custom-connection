@@ -1,8 +1,6 @@
-"""Compute instance, image, and VNIC/IP evidence collection (spec 5.2).
+"""Compute instance, image, and VNIC/IP evidence collection.
 
-Returns raw OCI SDK model objects only -- Windows classification and any
-other allowlisted-field projection happens later in
-:mod:`oci_drata.transform.normalize`, not here.
+Returns raw OCI SDK objects; projection happens in oci_drata.transform.normalize.
 """
 
 from __future__ import annotations
@@ -98,9 +96,7 @@ def collect_compute(
 
             for instance in region_instances:
                 image_id = getattr(instance, "image_id", None)
-                # Cache across the whole run, not per region/compartment: many
-                # instances share the same platform image, so this keeps
-                # get_image calls to at most one per unique image_id.
+                # images cached across full run by image_id, not per region/compartment
                 if not image_id or image_id in images:
                     continue
                 image_op = call_once(
@@ -115,9 +111,7 @@ def collect_compute(
                 operations.append(image_op)
                 if image_op.ok and image_op.items:
                     images[image_id] = stamp_region(image_op.items, region)[0]
-                # A failed/missing image lookup is left unresolved here;
-                # Windows classification for it becomes "unknown" downstream,
-                # not a domain failure and not assumed non-Windows.
+                # missing image lookup -> Windows classification "unknown" downstream, not assumed non-Windows
 
             attachments_op = paginate(
                 service="compute",
@@ -150,10 +144,7 @@ def collect_compute(
                     if vnic_op.ok and vnic_op.items:
                         vnics[vnic_id] = stamp_region(vnic_op.items, region)[0]
 
-                # list_private_ips does not accept compartment_id (verified via
-                # inspect.signature/expected_kwargs -- it filters by
-                # vnic_id/subnet_id/ip_address only), so compartment_id is
-                # deliberately omitted from this call.
+                # list_private_ips rejects compartment_id -- filters by vnic_id/subnet_id/ip_address only, omit it
                 private_ips_op = paginate(
                     service="virtual_network",
                     operation="list_private_ips",
@@ -201,16 +192,7 @@ def _lookup_public_ip(
     compartment_id: str,
     retry_policy: RetryPolicy | None,
 ) -> tuple[OperationResult, Any | None]:
-    """Look up the public IP assigned to one private IP.
-
-    Not every private IP has a public IP, and OCI signals "none assigned" as
-    a plain 404 ServiceError -- an expected, very common outcome, not a
-    collection failure. call_once() has no way to distinguish that from a
-    real failure (both would come back status="failed"), so this calls the
-    SDK method directly with the same bounded retry/backoff as call_once,
-    but treats a clean 404 as a synthetic success with item_count=0 rather
-    than exhausting/failing the operation.
-    """
+    """Look up the public IP for a private IP; 404 (none assigned) is success with item_count=0, not failure."""
 
     policy = retry_policy or RetryPolicy()
     result = OperationResult(

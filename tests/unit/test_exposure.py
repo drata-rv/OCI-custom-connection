@@ -92,7 +92,6 @@ def test_public_with_igw_but_no_permissive_rule_is_not_exposed() -> None:
         id="rt1",
         route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="igw1")],
     )
-    # NSG rule only opens port 443, not an administrative port.
     nsg_rule = oci.core.models.SecurityRule(
         direction="INGRESS", protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK",
         tcp_options=oci.core.models.TcpOptions(destination_port_range=oci.core.models.PortRange(min=443, max=443)),

@@ -1,13 +1,7 @@
-"""Site-to-Site VPN evidence collection (spec 5.8).
+"""Site-to-site VPN evidence collection (spec 5.8).
 
-``VirtualNetworkClient`` list operations already return the same full model
-as their ``get_*`` counterparts here (``IPSecConnection``, ``Cpe``, ``Drg``
-all carry every field the corresponding ``get_*`` call would add), so this
-module skips ``get_ip_sec_connection``/``get_cpe``/``get_drg`` entirely --
-same precedent as Database and Compute. ``get_ip_sec_connection_tunnel`` is
-the one exception kept conditional: called only if a listed tunnel is
-genuinely missing status/routing/ike_version/bgp_session_info, in case a
-future SDK revision ever returns a sparser tunnel summary from the list call.
+Skips get_ip_sec_connection/get_cpe/get_drg -- list calls return the full model.
+get_ip_sec_connection_tunnel runs only when a tunnel is missing status/routing/ike_version/bgp_session_info.
 """
 
 from __future__ import annotations
@@ -31,8 +25,7 @@ from oci_drata.pagination import (
 
 _SERVICE = "virtual_network"
 
-# Fields IPSecConnectionTunnel is expected to carry off the list call;
-# absence of any of these is the only trigger for a per-tunnel get_* call.
+# Missing any of these on a tunnel triggers a per-tunnel get_ip_sec_connection_tunnel call.
 _TUNNEL_REQUIRED_FIELDS: tuple[str, ...] = ("status", "routing", "ike_version", "bgp_session_info")
 
 
@@ -108,10 +101,7 @@ def collect_vpn(
             ip_sec_connections.extend(region_connections)
 
             for connection in region_connections:
-                # list_ip_sec_connection_tunnels rejects any kwarg outside
-                # {limit, page, retry_strategy, ...} -- compartment_id must
-                # not be forwarded here, unlike the compartment-scoped calls
-                # below.
+                # list_ip_sec_connection_tunnels rejects compartment_id -- omit it.
                 tunnels_op = paginate(
                     service=_SERVICE,
                     operation="list_ip_sec_connection_tunnels",
@@ -140,10 +130,7 @@ def collect_vpn(
                     if tunnel_op.ok and tunnel_op.items:
                         tunnels[index] = stamp_region(tunnel_op.items, region)[0]
 
-                # Tunnel objects carry no back-reference to their parent
-                # IPSec connection (verified against IPSecConnectionTunnel's
-                # swagger_types) -- keyed dict is how that relationship
-                # survives for the transform layer.
+                # Tunnels carry no back-reference to their connection -- keyed by connection id here.
                 tunnels_by_connection_id.setdefault(connection.id, []).extend(tunnels)
 
             cpe_op = paginate(
@@ -181,11 +168,7 @@ def collect_vpn(
             region_attachments = stamp_region(attachment_op.items, region)
             drg_attachments.extend(region_attachments)
 
-            # Scope DRG route-table/rule walks to DRGs that actually carry an
-            # IPSEC_TUNNEL attachment in this compartment -- cheap to tell
-            # apart since list_drg_attachments(attachment_type="ALL") is
-            # already fetched above, so no reason to walk every DRG in the
-            # tenancy for routing unrelated to site-to-site VPN.
+            # Only walk DRGs with an IPSEC_TUNNEL attachment in this compartment.
             vpn_relevant_drg_ids = {
                 attachment.drg_id
                 for attachment in region_attachments

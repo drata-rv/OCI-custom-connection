@@ -1,8 +1,6 @@
-"""OCI authentication (API-signing user) and dynamic regional client
-construction. No region, tenancy, or client is ever hard-coded here -- every
-regional client is built from the caller-supplied region string, which
-itself must come from the validated configuration allowlist
-(see :mod:`oci_drata.collection.discovery`).
+"""OCI authentication (API-signing user) and dynamic regional client construction.
+Region/tenancy/client are never hard-coded; region must come from the validated
+config allowlist (see :mod:`oci_drata.collection.discovery`).
 """
 
 from __future__ import annotations
@@ -27,10 +25,8 @@ class AuthError(Exception):
 class TenancySigner:
     """Resolved OCI SDK config for the API-signing user.
 
-    Holds the private key file *path* (via the underlying OCI config dict),
-    never key material read into this object's own fields. Do not log
-    ``base_config`` directly -- it contains no secret values itself, but a
-    resolved passphrase may be layered into a per-region copy in memory.
+    Holds only the private key file path, not key material. Do not log
+    ``base_config`` -- may carry a resolved passphrase.
     """
 
     base_config: dict[str, str]
@@ -48,9 +44,8 @@ class TenancySigner:
 def build_signer(app_config: AppConfig) -> TenancySigner:
     """Load and validate the API-signing user's OCI SDK configuration.
 
-    Fails closed: any missing file, permission problem, validation error, or
-    tenancy mismatch raises :class:`AuthError` rather than falling back to a
-    weaker signer or an ambient credential source.
+    Fails closed: raises :class:`AuthError` on any missing file, permission
+    problem, validation error, or tenancy mismatch.
     """
 
     auth = app_config.oci.authentication
@@ -100,7 +95,7 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
 
 
 def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySigner, *, region: str) -> T:
-    """Construct an OCI SDK client bound to one region, built dynamically
-    from the caller-supplied region rather than a hard-coded value."""
+    """Construct an OCI SDK client bound to one region; region is always
+    caller-supplied, never hard-coded."""
 
     return client_cls(signer.region_config(region))

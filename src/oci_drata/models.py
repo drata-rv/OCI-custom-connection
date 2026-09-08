@@ -1,17 +1,7 @@
-"""Allowlisted source-fact and derived-fact models.
+"""Source-fact and derived-fact models mirroring schemas/oci-snapshot-1.0.0.json.
 
-Every dataclass here mirrors one definition in
-``schemas/oci-snapshot-1.0.0.json`` field-for-field. ``to_dict()`` always
-emits every schema-declared property (using ``None``/``"unknown"``/``[]``
-defaults rather than omitting a key) so serialization is deterministic and
-never accidentally introduces a property the schema's
-``additionalProperties: false`` would reject.
-
-These are *source facts* (allowlisted copies of OCI response fields, with
-region/compartment/sourceType/parent-ID stamped on) and a small set of
-*derived* shapes (:class:`Finding`, :class:`Message`). Derivation logic
-itself lives in :mod:`oci_drata.transform`, not here -- this module only
-defines the allowed shape of the data.
+to_dict() emits every schema-declared key (schema sets additionalProperties: false).
+Derivation logic lives in oci_drata.transform, not here.
 """
 
 from __future__ import annotations

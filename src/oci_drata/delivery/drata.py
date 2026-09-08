@@ -1,18 +1,9 @@
-"""Drata Custom Connection upsert client (spec section 9).
+"""Drata Custom Connection upsert client.
 
-``POST /custom-connections/{connectionId}/resources/{resourceId}/records``
-with body ``{"data": <record>}``. HTTP 201 (created) and 200 (updated) are
-both success -- the endpoint upserts by the record's own stable ``id``.
-
-Mirrors the rest of the codebase's error-handling philosophy
-(:mod:`oci_drata.pagination`): expected failure modes never raise, they
-come back as a typed :class:`DeliveryResult` with an ``error_class`` so the
-caller can apply spec section 10's policy directly --
-auth/validation failures mean the *local* snapshot is still complete but
-*delivery* failed (do not retry as if it were transient); 429/5xx get
-bounded retry; never regenerate the snapshot mid-retry (the caller passes
-the same already-built ``record`` back in on every attempt, this module
-performs no re-collection).
+POSTs ``record`` to the connection's records endpoint; 200/201 both mean
+success (upsert by the record's ``id``). Failures never raise -- returned
+as ``DeliveryResult`` with ``error_class``: auth/validation are non-retryable,
+429/5xx get bounded retry.
 """
 
 from __future__ import annotations

@@ -208,14 +208,12 @@ def test_resolve_base_database_relationship_chain() -> None:
     )
 
     assert unresolved == []
-    # Links are bidirectional: db_home ends up with both its parent
-    # db_system and its child database.
+    # db_home link is bidirectional: parent db_system and child database.
     assert set(db_homes[0].related_resource_ids) == {"sys1", "db1"}
     assert set(db_systems[0].related_resource_ids) == {"home1"}
     assert set(databases[0].related_resource_ids) == {"home1", "bkp1", "dg1"}
     assert backups[0].related_resource_ids == ("db1",)
-    # compartment_id backfilled from parent database, not left as the
-    # normalize-time placeholder.
+    # compartment_id backfilled from parent database.
     assert dgs[0].compartment_id == "c1"
     assert dgs[0].related_resource_ids == ("db1",)
 
@@ -234,9 +232,7 @@ def test_resolve_base_database_relationship_records_unresolved_when_parent_missi
     )
     assert len(unresolved) == 1
     assert unresolved[0].target_id == "ghost-db"
-    # The raw OCID reference is preserved even though it couldn't be
-    # cross-referenced -- that fact is what the unresolved record above is
-    # for, not a reason to drop the reference itself.
+    # Raw OCID reference is preserved even when unresolved.
     assert backups[0].related_resource_ids == ("ghost-db",)
 
 

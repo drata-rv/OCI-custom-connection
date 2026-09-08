@@ -1,9 +1,5 @@
-"""Complete two-region... actually one-region-for-brevity mocked collection
-that must produce one schema-valid record end to end (spec section 12:
-"Complete two-region mocked collection produces one schema-valid record").
-Every collector result here is hand-built (no live OCI credentials), then
-run through the exact same aggregate.build_snapshot()/validate_record()/
-check_payload_size()/decide_completeness() pipeline cli.py uses.
+"""End-to-end mocked collection producing one schema-valid record via
+build_snapshot(), validate_record(), check_payload_size(), decide_completeness().
 """
 
 from __future__ import annotations
@@ -251,8 +247,6 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert decision.snapshot_status == "complete"
     assert decision.should_upload is True
 
-    # The headline scenario actually landed: a Windows VM, publicly
-    # addressed, with RDP open to the world.
     instances = result.record["resources"]["instances"]
     assert len(instances) == 1
     assert instances[0]["osClassification"] == "windows"
@@ -260,12 +254,10 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert instances[0]["exposedAdministrativePorts"] == [3389]
     assert result.record["metrics"]["internetExposedWindowsVmCount"] == 1
 
-    # VPN connection has only one tunnel against a minimum of two: flagged
-    # not redundant, and reflected in the aggregate metric.
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
 
-    # Deterministic ordering: same input, same output bytes.
+    # deterministic: same input produces same output
     result2 = build_snapshot(
         app_config, discovery=_discovery(), compute=_exposed_windows_compute(), storage=_storage(),
         networking=_networking_allowing_rdp(), database_base=_database_base_empty(),
@@ -338,7 +330,7 @@ def test_oversized_payload_fails_regardless_of_completeness() -> None:
         autonomous_database=_autonomous_database(), exadata=_exadata_not_detected(),
         vpn=_vpn_non_redundant(), started_at=now, completed_at=now,
     )
-    size_result = check_payload_size(result.record, max_bytes=10)  # absurdly small budget
+    size_result = check_payload_size(result.record, max_bytes=10)
     decision = decide_completeness(
         discovery_complete=True, unready_regions=(), domain_complete={}, exadata_detected=False,
         unresolved_relationship_count=0, schema_valid=True, within_payload_budget=size_result.within_budget,

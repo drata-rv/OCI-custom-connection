@@ -1,10 +1,5 @@
-"""Static enforcement of the read-only, least-privilege posture: every OCI
-client method referenced anywhere under src/oci_drata/collection must be in
-security.ALLOWED_OCI_OPERATIONS and must not match a forbidden name/prefix.
-A collector cannot silently grow a mutating or secret-retrieving call --
-this test fails the build the moment one is added, without needing live
-OCI credentials.
-"""
+"""Fails if any OCI operation referenced under src/oci_drata/collection is
+missing from ALLOWED_OCI_OPERATIONS or matches a forbidden name/prefix."""
 
 from __future__ import annotations
 

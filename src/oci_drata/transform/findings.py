@@ -1,15 +1,5 @@
-"""Derived-fact assertions (spec 7.2, 7.4): one :class:`Finding` per
-resource per security predicate, giving a manually-authored Drata Custom
-Test scalar per-resource results to reference instead of re-deriving joins
-itself. Every finding here maps directly to a spec-named decision or
-metric -- this is not an attempt at an exhaustive control catalog, which is
-explicitly out of scope (Custom Tests are authored manually in the Drata
-UI, per spec section 1 and the non-goals in section 14).
-
-An assertion is "pass" only when every applicable resource passes and none
-is unknown, per spec 7.2 -- but that summary judgment belongs to whoever
-authors the Custom Test against these per-resource findings, not to this
-module. This module only emits the per-resource facts.
+"""Derived-fact assertions (spec 7.2, 7.4): one Finding per resource per security predicate.
+Emits per-resource facts only; pass/fail rollup across resources is done by the consuming Custom Test.
 """
 
 from __future__ import annotations

@@ -1,30 +1,8 @@
 """Network exposure derivation for compute instances (spec 5.4).
 
-``effectiveIngressExposure`` answers one specific compliance question --
-"is this instance reachable on a configured administrative port from a
-public source" -- not "is any port on this instance open to the internet".
-That's why it's computed together with ``exposedAdministrativePorts``
-rather than as an independent general-exposure flag: spec's own metrics
-(``internetExposedWindowsVmCount``, ``publiclyAddressedWindowsVmCount``)
-are specifically about administrative-port reachability, and every
-finding built downstream cites a concrete port.
-
-Per spec: "effectiveIngressExposure=exposed only when collector can prove
-public addressing, route path, and permissive effective ingress. Missing
-route/rule/membership evidence yields unknown, not not_exposed." -- proving
-the negative (no public address at all) is the one case allowed to short
-circuit straight to not_exposed regardless of route/rule completeness,
-since a resource with no public IP cannot be internet-reachable no matter
-what its routing or security rules say.
-
-Known MVP simplification, documented rather than hidden: a source CIDR is
-matched by exact string equality against the configured
-``decisions.publicSourceCidrs`` list (default ``0.0.0.0/0``, ``::/0``), not
-by CIDR-superset containment. A rule permitting ``0.0.0.0/1`` would not be
-flagged even though it covers half the public internet. Extending this to
-real CIDR containment math is a natural follow-up, not implemented here to
-avoid an unverified, untested subnetting routine in a security-relevant
-code path.
+effectiveIngressExposure reflects administrative-port reachability only, not general port exposure.
+Missing route/rule/membership evidence yields unknown; only no public address short-circuits to not_exposed.
+Source CIDR match is exact string equality against publicSourceCidrs, not CIDR-superset containment.
 """
 
 from __future__ import annotations
@@ -116,25 +94,21 @@ def _derive_one(
     config: ExposureConfig,
 ) -> Instance:
     if not instance.vnic_ids:
-        # No resolved VNIC at all -- can't prove or disprove addressing.
+        # No VNIC ids: addressing unprovable -> unknown.
         return dataclasses.replace(
             instance, has_public_address=None, effective_ingress_exposure="unknown"
         )
 
     instance_vnics = [vnics_by_id[v] for v in instance.vnic_ids if v in vnics_by_id]
     if len(instance_vnics) != len(instance.vnic_ids):
-        # A VNIC attachment referenced a VNIC we failed to resolve --
-        # addressing cannot be proven complete either way.
+        # Unresolved VNIC reference: addressing not provably complete.
         return dataclasses.replace(
             instance, has_public_address=None, effective_ingress_exposure="unknown"
         )
 
     has_public_address = any(v.public_addresses for v in instance_vnics)
     if not has_public_address:
-        # Definitive: no public IP anywhere on this instance's VNICs means
-        # it cannot be internet-reachable, regardless of route/rule
-        # completeness -- the one case allowed to short-circuit past
-        # "unknown".
+        # No public IP: not internet-reachable regardless of route/rule completeness. Only short-circuit case.
         return dataclasses.replace(
             instance,
             has_public_address=False,

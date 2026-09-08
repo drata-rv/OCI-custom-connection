@@ -1,15 +1,7 @@
-"""Deployment configuration loading and secret-reference resolution.
+"""Deployment config loading and secretRef resolution.
 
-Design rules (see spec section 4):
-
-* The YAML deployment file holds non-secret settings only. Anything that
-  looks like an inline credential is rejected before the file is trusted.
-* Credentials enter the process only through a ``secretRef`` (env var or
-  mounted file), resolved lazily and only by the callers that need them
-  (:mod:`oci_drata.oci_auth`, :mod:`oci_drata.delivery.drata`).
-* Non-secret runtime overrides are read from environment variables using
-  the ``OCI_DRATA__`` prefix, applied after the YAML file and before secret
-  resolution (precedence order in spec 4.3).
+Inline credentials are rejected; secrets resolve only via secretRef, lazily, per caller.
+OCI_DRATA__-prefixed env vars override non-secret settings after YAML load, before secret resolution.
 """
 
 from __future__ import annotations
@@ -116,9 +108,6 @@ def _scan_for_inline_secrets(node: Any, *, path: str = "$") -> None:
         for key, value in node.items():
             child_path = f"{path}.{key}"
             if is_forbidden_key(key):
-                # Keys that are explicitly secret references must resolve to
-                # a well-formed secretRef object (or null); anything else is
-                # an inline credential.
                 if value is not None and not _looks_like_secret_ref(value):
                     raise ConfigError(
                         f"{child_path}: field name suggests a credential; only null or a "
@@ -138,7 +127,7 @@ def _scan_for_inline_secrets(node: Any, *, path: str = "$") -> None:
 
 
 # --------------------------------------------------------------------------
-# Non-secret environment overrides (spec 4.3)
+# Non-secret environment overrides
 # --------------------------------------------------------------------------
 
 
@@ -425,9 +414,7 @@ def load_config(
 ) -> AppConfig:
     """Load, validate, and type the deployment configuration file.
 
-    Does not resolve any secret -- callers resolve each secretRef only at
-    the point of use, so an unrelated failure never needs a credential in
-    scope.
+    Does not resolve any secret -- callers resolve each secretRef at point of use.
     """
 
     env = os.environ if env is None else env
@@ -445,13 +432,13 @@ def load_config(
 
     _scan_for_inline_secrets(raw)
     _apply_env_overrides(raw, env)
-    _scan_for_inline_secrets(raw)  # overrides could theoretically reintroduce a literal
+    _scan_for_inline_secrets(raw)  # overrides could reintroduce a literal secret
 
     return _build_app_config(raw)
 
 
 # --------------------------------------------------------------------------
-# Redaction helpers for logging (spec: never print resolved secrets)
+# Redaction helpers for logging -- never print resolved secrets
 # --------------------------------------------------------------------------
 
 

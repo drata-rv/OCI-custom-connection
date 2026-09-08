@@ -1,14 +1,7 @@
-"""Raw OCI SDK model objects -> allowlisted source-fact models (spec 7.1
-step 2). Copies only fields the schema knows about, plus the handful of
-single-object derivations that need no cross-resource join (e.g. "does this
-volume reference a KMS key" from its own kms_key_id field). Anything that
-needs another resource's data -- Windows classification, network exposure,
-ID-list relationships, VPN redundancy -- happens in
-:mod:`oci_drata.transform.relationships`,
-:mod:`oci_drata.transform.exposure`, and
-:mod:`oci_drata.transform.vpn_posture`, all of which run after this module
-and consume its output.
-"""
+"""Normalizes raw OCI SDK objects into allowlisted source-fact models.
+Cross-resource joins (Windows classification, network exposure, ID-list
+relationships, VPN redundancy) happen in relationships/exposure/vpn_posture,
+which run after this module and consume its output."""
 
 from __future__ import annotations
 
@@ -27,10 +20,9 @@ from oci_drata.models import (
 
 
 def normalize_timestamp(value: datetime.datetime | str | None) -> str | None:
-    """UTC RFC3339, second precision, always ``Z``-suffixed (spec: "Normalize
-    timestamps to UTC RFC3339"). OCI SDK response fields deserialize to
-    timezone-aware ``datetime`` objects; a bare string is accepted
-    defensively and re-normalized rather than trusted verbatim."""
+    """Normalizes to UTC RFC3339, second precision, Z-suffixed. Accepts a
+    bare string defensively and re-normalizes it rather than trusting it
+    verbatim."""
 
     if value is None:
         return None
@@ -42,9 +34,8 @@ def normalize_timestamp(value: datetime.datetime | str | None) -> str | None:
 
 
 def _flatten_defined_tags(defined_tags: Mapping[str, Any] | None) -> dict[str, Any]:
-    """OCI defined_tags nests one level (namespace -> {key: value}); the
-    schema's tags definition only allows flat scalar values. Flattened to
-    "namespace.key" so real tag data survives instead of being dropped."""
+    """Flattens OCI's nested namespace->{key: value} defined_tags to
+    "namespace.key" (schema only allows flat scalar values)."""
 
     if not defined_tags:
         return {}
@@ -70,10 +61,8 @@ def _common_fields(raw: Any, *, source_type: str) -> dict[str, Any]:
         "id": raw.id,
         "source_type": source_type,
         "region": _region(raw),
-        # Not every OCI model declares compartment_id (e.g.
-        # DataGuardAssociation has none at all -- an AttributeError, not a
-        # None, if accessed directly). Callers that know it can be missing
-        # pass an explicit compartment_id override.
+        # compartment_id may be absent entirely (e.g. DataGuardAssociation);
+        # getattr avoids AttributeError. Callers override via compartment_id param.
         "compartment_id": getattr(raw, "compartment_id", None),
         "display_name": getattr(raw, "display_name", None),
         "lifecycle_state": getattr(raw, "lifecycle_state", None),
@@ -84,15 +73,11 @@ def _common_fields(raw: Any, *, source_type: str) -> dict[str, Any]:
 
 
 def normalize_common(raw: Any, *, source_type: str, compartment_id: str | None = None) -> CommonResource:
-    """For resource kinds that need no extra fields beyond CommonResource:
-    compartments, images, private IPs, public IPs, VCNs, subnets, route
-    tables, internet gateways, security lists, NSGs, boot/volume
-    attachments, CPEs, DRGs, DRG attachments.
-
-    ``compartment_id`` overrides ``raw.compartment_id`` for the rare object
-    that doesn't carry its own (e.g. a DataGuardAssociation, backfilled by
-    the caller from its parent database).
-    """
+    """Normalizes resource kinds needing no fields beyond CommonResource
+    (compartments, images, IPs, VCNs, subnets, route tables, gateways,
+    security lists, NSGs, attachments, CPEs, DRGs). compartment_id overrides
+    raw.compartment_id when the object doesn't carry its own (e.g.
+    DataGuardAssociation)."""
 
     fields = _common_fields(raw, source_type=source_type)
     if compartment_id is not None:
@@ -101,10 +86,8 @@ def normalize_common(raw: Any, *, source_type: str, compartment_id: str | None =
 
 
 def normalize_instance(raw: Any) -> Instance:
-    """imageId is the only structural field copied here -- osClassification,
-    hasPublicAddress, effectiveIngressExposure, exposedAdministrativePorts,
-    vnicIds, and volumeIds are all cross-resource joins/derivations filled
-    in later by transform.relationships and transform.exposure."""
+    """Copies only image_id. osClassification, exposure fields, vnicIds,
+    volumeIds filled in later by transform.relationships/exposure."""
 
     return Instance(
         **_common_fields(raw, source_type="compute_instance"),
@@ -113,13 +96,9 @@ def normalize_instance(raw: Any) -> Instance:
 
 
 def normalize_vnic(raw: Any) -> Vnic:
-    """instanceId/nsgIds are direct copies; subnetId is required by the
-    schema so an absent value fails loudly rather than silently defaulting.
-    privateAddresses/publicAddresses are cross-resource joins (a VNIC's
-    private_ip/public_ip fields only carry its *primary* address; secondary
-    private IPs and any public IP come from the separate list_private_ips/
-    get_public_ip_by_private_ip_id collections) -- filled in by
-    transform.relationships, not here."""
+    """subnet_id required, raises if absent. private/public addresses filled
+    in later by transform.relationships (VNIC's own fields carry only the
+    primary address)."""
 
     subnet_id = getattr(raw, "subnet_id", None)
     if not subnet_id:
@@ -146,18 +125,14 @@ def normalize_ipsec_connection(raw: Any) -> IpsecConnection:
         **_common_fields(raw, source_type="ipsec_connection"),
         cpe_id=raw.cpe_id or "",
         drg_id=raw.drg_id or "",
-        # tunnel_ids/tunnel_count/up_tunnel_count/redundancy_status are
-        # filled in by transform.vpn_posture, which has the tunnel list this
-        # module never sees.
+        # tunnel_ids/tunnel_count/up_tunnel_count/redundancy_status filled in by transform.vpn_posture.
     )
 
 
 def normalize_ipsec_tunnel(
     raw: Any, *, ipsec_connection_id: str, fallback_compartment_id: str
 ) -> IpsecTunnel:
-    # IPSecConnectionTunnel declares its own compartment_id, but it's not
-    # guaranteed populated on every SDK/API revision -- fall back to the
-    # parent connection's compartment, which a tunnel always belongs to.
+    # compartment_id not guaranteed populated on tunnel; fall back to parent connection's.
     fields = _common_fields(raw, source_type="ipsec_tunnel")
     if not fields["compartment_id"]:
         fields["compartment_id"] = fallback_compartment_id
@@ -179,9 +154,8 @@ def _bgp_state(raw: Any) -> str | None:
 
 
 def normalize_db_backup_status(raw_database: Any) -> str:
-    """Base Database Service: DbBackupConfig.auto_backup_enabled is a direct
-    boolean -- "enabled"/"disabled" copy, "unknown" only when the nested
-    config itself is absent."""
+    """Returns enabled/disabled from DbBackupConfig.auto_backup_enabled;
+    unknown only if config absent."""
 
     backup_config = getattr(raw_database, "db_backup_config", None)
     if backup_config is None:
@@ -193,10 +167,9 @@ def normalize_db_backup_status(raw_database: Any) -> str:
 
 
 def normalize_autonomous_backup_status(raw_adb: Any) -> str:
-    """Autonomous Database has no explicit enable/disable flag (automatic
-    backups are the default for the service) -- retention period is the
-    closest direct signal: >0 means backups are being retained, 0 means
-    retention is off, absent means we can't tell."""
+    """Autonomous DB has no explicit enable/disable flag; derives
+    enabled/disabled from backup_retention_period_in_days (>0 = enabled,
+    0 = disabled), unknown if absent."""
 
     retention_days = getattr(raw_adb, "backup_retention_period_in_days", None)
     if retention_days is None:
