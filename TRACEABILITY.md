@@ -1,8 +1,7 @@
 # Requirement / API Traceability Matrix
 
 Maps every build requirement, OCI API operation, and engineering behavior
-from [oci_to_drata_mvp_build_spec.md](oci_to_drata_mvp_build_spec.md) to
-the module and test that implement/verify it. Status legend: ✅ done and
+to the module and test that implement/verify it. Status legend: ✅ done and
 tested · ⚠️ done, documented simplification (see note) · — not applicable
 to MVP scope.
 

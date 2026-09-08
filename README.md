@@ -4,9 +4,7 @@ Read-only Oracle Cloud Infrastructure configuration-evidence collector that
 normalizes findings into one schema-valid JSON record and upserts it into
 an existing Drata Custom Connection.
 
-Authoritative product/technical contract:
-[oci_to_drata_mvp_build_spec.md](oci_to_drata_mvp_build_spec.md). Full
-requirement/API traceability: [TRACEABILITY.md](TRACEABILITY.md).
+Requirement/API traceability: [TRACEABILITY.md](TRACEABILITY.md).
 
 **Status: MVP, functionally complete, not yet run against a live tenancy.**
 Every module is covered by mocked unit/integration tests; nothing here has
@@ -73,9 +71,7 @@ cp config.example.yaml config.yaml
 
 `config.yaml` is git-ignored; never commit it once it has real
 `connectionId`/`resourceId`/`expectedTenancyOcid` values. See
-[config.example.yaml](config.example.yaml) for every field and
-[§4.1-4.3 of the spec](oci_to_drata_mvp_build_spec.md#41-design-rules) for
-the full configuration/secret design contract this file implements.
+[config.example.yaml](config.example.yaml) for every field.
 
 ## 3. Secret provisioning
 

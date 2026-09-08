@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 from pathlib import Path
 
 import pytest
 
 from oci_drata.validation.schema import load_schema, validate_record
 
-SPEC_PATH = Path(__file__).resolve().parent.parent.parent / "oci_to_drata_mvp_build_spec.md"
+FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "sample-record.json"
 
 
 @pytest.fixture(scope="module")
@@ -19,11 +18,7 @@ def schema() -> dict:
 
 @pytest.fixture(scope="module")
 def sample_record() -> dict:
-    spec_text = SPEC_PATH.read_text()
-    match = re.search(r"Body:\n\n```json\n(.*?)\n```", spec_text, re.S)
-    assert match is not None, "sample record not found in spec"
-    body = json.loads(match.group(1))
-    return body["data"]
+    return json.loads(FIXTURE_PATH.read_text())
 
 
 def test_schema_is_valid_draft7(schema: dict) -> None:
@@ -32,7 +27,7 @@ def test_schema_is_valid_draft7(schema: dict) -> None:
     jsonschema.Draft7Validator.check_schema(schema)
 
 
-def test_spec_sample_record_validates(schema: dict, sample_record: dict) -> None:
+def test_sample_record_validates(schema: dict, sample_record: dict) -> None:
     result = validate_record(sample_record, schema)
     assert result.valid, result.errors
 
@@ -59,9 +54,6 @@ def test_invalid_enum_value_fails(schema: dict, sample_record: dict) -> None:
 
 
 def test_empty_resource_arrays_are_valid(schema: dict, sample_record: dict) -> None:
-    # Distinguishing an empty (but successful) inventory from a failed
-    # collection is a hard functional requirement -- an all-empty resources
-    # object must still be schema-valid.
     result = validate_record(sample_record, schema)
     assert result.valid
     assert sample_record["resources"]["instances"] == []
