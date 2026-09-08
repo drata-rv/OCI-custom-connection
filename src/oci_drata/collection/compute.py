@@ -21,8 +21,15 @@ from oci_drata.pagination import (
     is_retryable_service_error,
     operations_complete,
     paginate,
+    run_concurrently,
     stamp_region,
 )
+
+# P2-1: bounds the per-VNIC-attachment enrichment fan-out (get_vnic/list_private_ips/
+# get_public_ip_by_private_ip_id per attachment) within one region+compartment iteration.
+# Independent of runtime.maxConcurrency, which bounds concurrency *between* collectors
+# (cli.py::_run_independent_collectors), not the serial per-item loop within one of them.
+_PER_ATTACHMENT_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -125,53 +132,81 @@ def collect_compute(
             region_attachments = stamp_region(attachments_op.items, region)
             vnic_attachments.extend(region_attachments)
 
-            for attachment in region_attachments:
+            # P2-1: get_vnic/list_private_ips/get_public_ip_by_private_ip_id per attachment
+            # was a fully serial N+1 loop. Each attachment's chain is independent and safe
+            # to run concurrently -- workers only read the vnics cache (never write it) and
+            # return their own data; this thread merges every result back sequentially, so
+            # nothing here needs a lock. Two attachments racing on the same not-yet-cached
+            # vnic_id within one batch can cause one harmless duplicate get_vnic call (both
+            # see the cache miss before either writes it back) -- never a correctness issue,
+            # only ever one redundant read of already-public OCI data.
+            def _process_attachment(
+                attachment: Any,
+                *,
+                _vnet_client: Any = vnet_client,
+                _region: str = region,
+                _compartment_id: str = compartment_id,
+                _vnics_snapshot: dict[str, Any] = vnics,
+            ) -> tuple[list[OperationResult], tuple[str, Any] | None, list[Any], dict[str, Any]]:
                 vnic_id = getattr(attachment, "vnic_id", None)
                 if not vnic_id:
-                    continue
+                    return [], None, [], {}
 
-                if vnic_id not in vnics:
+                ops: list[OperationResult] = []
+                vnic_entry: tuple[str, Any] | None = None
+                if vnic_id not in _vnics_snapshot:
                     vnic_op = call_once(
                         service="virtual_network",
                         operation="get_vnic",
-                        call=vnet_client.get_vnic,
-                        region=region,
-                        compartment_id=compartment_id,
+                        call=_vnet_client.get_vnic,
+                        region=_region,
+                        compartment_id=_compartment_id,
                         vnic_id=vnic_id,
                         retry_policy=retry_policy,
                     )
-                    operations.append(vnic_op)
+                    ops.append(vnic_op)
                     if vnic_op.ok and vnic_op.items:
-                        vnics[vnic_id] = stamp_region(vnic_op.items, region)[0]
+                        vnic_entry = (vnic_id, stamp_region(vnic_op.items, _region)[0])
 
                 # list_private_ips rejects compartment_id -- filters by vnic_id/subnet_id/ip_address only, omit it
                 private_ips_op = paginate(
                     service="virtual_network",
                     operation="list_private_ips",
-                    call=vnet_client.list_private_ips,
-                    region=region,
+                    call=_vnet_client.list_private_ips,
+                    region=_region,
                     vnic_id=vnic_id,
                     retry_policy=retry_policy,
                 )
-                operations.append(private_ips_op)
-                region_private_ips = stamp_region(private_ips_op.items, region)
-                private_ips.extend(region_private_ips)
+                ops.append(private_ips_op)
+                attachment_private_ips = stamp_region(private_ips_op.items, _region)
 
-                for private_ip in region_private_ips:
+                attachment_public_ips: dict[str, Any] = {}
+                for private_ip in attachment_private_ips:
                     private_ip_id = getattr(private_ip, "id", None)
                     if not private_ip_id:
                         continue
                     public_ip_op, public_ip = _lookup_public_ip(
-                        vnet_client,
+                        _vnet_client,
                         private_ip_id,
-                        region=region,
-                        compartment_id=compartment_id,
+                        region=_region,
+                        compartment_id=_compartment_id,
                         retry_policy=retry_policy,
                     )
-                    operations.append(public_ip_op)
+                    ops.append(public_ip_op)
                     if public_ip is not None:
-                        public_ip.region = region
-                        public_ips_by_private_ip_id[private_ip_id] = public_ip
+                        public_ip.region = _region
+                        attachment_public_ips[private_ip_id] = public_ip
+
+                return ops, vnic_entry, attachment_private_ips, attachment_public_ips
+
+            for ops, vnic_entry, attachment_private_ips, attachment_public_ips in run_concurrently(
+                region_attachments, _process_attachment, max_workers=_PER_ATTACHMENT_CONCURRENCY
+            ):
+                operations.extend(ops)
+                if vnic_entry is not None:
+                    vnics[vnic_entry[0]] = vnic_entry[1]
+                private_ips.extend(attachment_private_ips)
+                public_ips_by_private_ip_id.update(attachment_public_ips)
 
     return ComputeCollectionResult(
         instances=instances,

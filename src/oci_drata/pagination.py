@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 import oci
@@ -92,6 +93,29 @@ def stamp_region(items: Iterable[Any], region: str) -> list[Any]:
     for item in stamped:
         item.region = region
     return stamped
+
+
+R = TypeVar("R")
+
+
+def run_concurrently(items: list[T], fn: Callable[[T], R], *, max_workers: int) -> list[R]:
+    """P2-1: bounded concurrent map, for the N+1 per-item enrichment calls within one
+    collector (get_vnic/list_private_ips/get_public_ip_by_private_ip_id per VNIC
+    attachment, list_*_backups/_dataguard_associations per database, etc.) that a
+    cross-collector ThreadPoolExecutor (see cli.py::_run_independent_collectors) doesn't
+    touch -- that pool bounds concurrency *between* compute/storage/networking/database/
+    vpn, not the serial per-item loop *within* one of them.
+
+    Each `fn(item)` must be self-contained (build its own OperationResult(s), return
+    them alongside whatever data the caller needs) and must not mutate shared state --
+    the caller merges every result back into shared dicts/lists sequentially on the
+    calling thread after every future completes, so no lock is needed anywhere in this
+    module or its callers. Order of `items` is not preserved in the returned list."""
+
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=max(1, min(len(items), max_workers))) as pool:
+        return list(pool.map(fn, items))
 
 
 def operations_complete(operations: Iterable[OperationResult]) -> bool:

@@ -276,6 +276,13 @@ See the cited module docstrings for detail.
   docstring) applied to each resource's parent/child chain, not done
   yet. Excluded resources are never silently dropped: a
   `LIFECYCLE_EXCLUDED` entry in `warnings` reports the count and ids.
+* **Bounded per-item concurrency (`pagination.py::run_concurrently`) is
+  applied only to `collection/compute.py`'s per-VNIC-attachment
+  enrichment.** `networking.py` (per-NSG rule/membership calls),
+  `database_base.py`/`database_autonomous.py` (per-db-system/per-
+  database/per-ADB backup/DataGuard/peer calls), and `vpn.py`
+  (per-connection tunnel listing) still run their per-item enrichment
+  loops serially — same pattern, not applied there yet.
 * **Operations within an enabled domain have no required/optional
   distinction** (`pagination.py::operations_complete`) — any operation
   failure (even a non-essential enrichment call) blocks that entire
