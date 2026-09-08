@@ -147,6 +147,82 @@ def test_normalize_autonomous_database_posture_public_endpoint_string_not_coerce
     assert isinstance(posture["public_endpoint_present"], bool)
 
 
+def test_normalize_route_table_preserves_route_rules() -> None:
+    raw = _stamp(
+        oci.core.models.RouteTable(
+            id="rt1", compartment_id="c1",
+            route_rules=[
+                oci.core.models.RouteRule(
+                    destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
+                    network_entity_id="ocid1.internetgateway.oc1..igw1", description="default route",
+                )
+            ],
+        )
+    )
+    normalized = normalize.normalize_route_table(raw)
+    assert len(normalized.route_rules) == 1
+    rule = normalized.route_rules[0]
+    assert rule.destination == "0.0.0.0/0"
+    assert rule.network_entity_id == "ocid1.internetgateway.oc1..igw1"
+    assert rule.description == "default route"
+
+
+def test_normalize_security_list_preserves_ingress_and_egress_rules() -> None:
+    raw = _stamp(
+        oci.core.models.SecurityList(
+            id="sl1", compartment_id="c1",
+            ingress_security_rules=[
+                oci.core.models.IngressSecurityRule(
+                    protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK", is_stateless=False,
+                    tcp_options=oci.core.models.TcpOptions(
+                        destination_port_range=oci.core.models.PortRange(min=22, max=22)
+                    ),
+                )
+            ],
+            egress_security_rules=[
+                oci.core.models.EgressSecurityRule(
+                    protocol="all", destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
+                )
+            ],
+        )
+    )
+    normalized = normalize.normalize_security_list(raw)
+    assert len(normalized.ingress_rules) == 1
+    assert normalized.ingress_rules[0].direction == "ingress"
+    assert normalized.ingress_rules[0].source == "0.0.0.0/0"
+    assert normalized.ingress_rules[0].tcp_port_range == normalize.PortRange(min=22, max=22)
+    assert len(normalized.egress_rules) == 1
+    assert normalized.egress_rules[0].direction == "egress"
+    assert normalized.egress_rules[0].destination == "0.0.0.0/0"
+
+
+def test_normalize_network_security_group_preserves_joined_security_rules() -> None:
+    raw = _stamp(oci.core.models.NetworkSecurityGroup(id="nsg1", compartment_id="c1"))
+    rules = [
+        oci.core.models.SecurityRule(
+            direction="INGRESS", protocol="6", source="203.0.113.0/24", source_type="CIDR_BLOCK",
+            tcp_options=oci.core.models.TcpOptions(
+                destination_port_range=oci.core.models.PortRange(min=3389, max=3389)
+            ),
+        )
+    ]
+    normalized = normalize.normalize_network_security_group(raw, security_rules=rules)
+    assert len(normalized.security_rules) == 1
+    rule = normalized.security_rules[0]
+    assert rule.direction == "ingress"  # normalized to lowercase
+    assert rule.source == "203.0.113.0/24"
+    assert rule.tcp_port_range == normalize.PortRange(min=3389, max=3389)
+
+
+def test_normalize_internet_gateway_preserves_enabled_and_vcn() -> None:
+    raw = _stamp(
+        oci.core.models.InternetGateway(id="igw1", compartment_id="c1", is_enabled=True, vcn_id="vcn1")
+    )
+    normalized = normalize.normalize_internet_gateway(raw)
+    assert normalized.is_enabled is True
+    assert normalized.vcn_id == "vcn1"
+
+
 class TestClassifyWindows:
     def test_windows_image(self) -> None:
         raw = _stamp(

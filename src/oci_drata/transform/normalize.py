@@ -12,8 +12,15 @@ from oci_drata.models import (
     CommonResource,
     DatabaseResource,
     Instance,
+    InternetGateway,
     IpsecConnection,
     IpsecTunnel,
+    NetworkSecurityGroup,
+    PortRange,
+    RouteRule,
+    RouteTable,
+    SecurityList,
+    SecurityRule,
     Vnic,
     Volume,
 )
@@ -108,6 +115,76 @@ def normalize_vnic(raw: Any) -> Vnic:
         instance_id=None,  # filled in by relationships via the attachment join
         subnet_id=subnet_id,
         nsg_ids=tuple(getattr(raw, "nsg_ids", None) or ()),
+    )
+
+
+def _port_range(options: Any) -> PortRange | None:
+    port_range = getattr(options, "destination_port_range", None)
+    if port_range is None:
+        return None
+    return PortRange(min=getattr(port_range, "min", None), max=getattr(port_range, "max", None))
+
+
+def normalize_route_rule(raw: Any) -> RouteRule:
+    return RouteRule(
+        destination=getattr(raw, "destination", None),
+        destination_type=getattr(raw, "destination_type", None),
+        network_entity_id=getattr(raw, "network_entity_id", None),
+        description=getattr(raw, "description", None),
+    )
+
+
+def normalize_route_table(raw: Any) -> RouteTable:
+    return RouteTable(
+        **_common_fields(raw, source_type="route_table"),
+        route_rules=tuple(normalize_route_rule(r) for r in getattr(raw, "route_rules", None) or ()),
+    )
+
+
+def _security_rule(raw: Any, *, direction: str) -> SecurityRule:
+    return SecurityRule(
+        direction=direction,
+        protocol=getattr(raw, "protocol", None),
+        source=getattr(raw, "source", None),
+        source_type=getattr(raw, "source_type", None),
+        destination=getattr(raw, "destination", None),
+        destination_type=getattr(raw, "destination_type", None),
+        is_stateless=getattr(raw, "is_stateless", None),
+        tcp_port_range=_port_range(getattr(raw, "tcp_options", None)),
+        udp_port_range=_port_range(getattr(raw, "udp_options", None)),
+        description=getattr(raw, "description", None),
+    )
+
+
+def normalize_security_list(raw: Any) -> SecurityList:
+    return SecurityList(
+        **_common_fields(raw, source_type="security_list"),
+        ingress_rules=tuple(
+            _security_rule(r, direction="ingress")
+            for r in getattr(raw, "ingress_security_rules", None) or ()
+        ),
+        egress_rules=tuple(
+            _security_rule(r, direction="egress")
+            for r in getattr(raw, "egress_security_rules", None) or ()
+        ),
+    )
+
+
+def normalize_network_security_group(raw: Any, *, security_rules: list[Any]) -> NetworkSecurityGroup:
+    return NetworkSecurityGroup(
+        **_common_fields(raw, source_type="network_security_group"),
+        security_rules=tuple(
+            _security_rule(r, direction=(getattr(r, "direction", None) or "unknown").lower())
+            for r in security_rules
+        ),
+    )
+
+
+def normalize_internet_gateway(raw: Any) -> InternetGateway:
+    return InternetGateway(
+        **_common_fields(raw, source_type="internet_gateway"),
+        is_enabled=getattr(raw, "is_enabled", None),
+        vcn_id=getattr(raw, "vcn_id", None),
     )
 
 

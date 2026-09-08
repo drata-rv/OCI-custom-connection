@@ -261,6 +261,21 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
 
+    route_table = result.record["resources"]["routeTables"][0]
+    assert route_table["routeRules"] == [
+        {
+            "destination": "0.0.0.0/0",
+            "destinationType": None,
+            "networkEntityId": "ocid1.internetgateway.oc1..igw1",
+            "description": None,
+        }
+    ]
+    nsg = result.record["resources"]["networkSecurityGroups"][0]
+    assert len(nsg["securityRules"]) == 1
+    assert nsg["securityRules"][0]["direction"] == "ingress"
+    assert nsg["securityRules"][0]["source"] == "0.0.0.0/0"
+    assert nsg["securityRules"][0]["tcpPortRange"] == {"min": 3389, "max": 3389}
+
     adb = result.record["resources"]["autonomousDatabases"][0]
     assert adb["backupStatus"] == "not_applicable"
     assert adb["publicEndpointHostname"] == "adb1.adb.us-ashburn-1.oraclecloudapps.com"

@@ -134,15 +134,13 @@ def build_snapshot(
     ]
     vcns = [normalize.normalize_common(v, source_type="vcn") for v in networking.vcns]
     subnets = [normalize.normalize_common(s, source_type="subnet") for s in networking.subnets]
-    route_tables = [normalize.normalize_common(r, source_type="route_table") for r in networking.route_tables]
-    internet_gateways = [
-        normalize.normalize_common(g, source_type="internet_gateway") for g in networking.internet_gateways
-    ]
-    security_lists = [
-        normalize.normalize_common(s, source_type="security_list") for s in networking.security_lists
-    ]
+    route_tables = [normalize.normalize_route_table(r) for r in networking.route_tables]
+    internet_gateways = [normalize.normalize_internet_gateway(g) for g in networking.internet_gateways]
+    security_lists = [normalize.normalize_security_list(s) for s in networking.security_lists]
     network_security_groups = [
-        normalize.normalize_common(n, source_type="network_security_group")
+        normalize.normalize_network_security_group(
+            n, security_rules=networking.nsg_security_rules_by_nsg_id.get(n.id, [])
+        )
         for n in networking.network_security_groups
     ]
     boot_volume_attachments = [

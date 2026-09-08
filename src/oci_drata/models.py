@@ -109,6 +109,110 @@ class Volume(CommonResource):
 
 
 @dataclasses.dataclass(frozen=True)
+class PortRange:
+    min: int | None = None
+    max: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"min": self.min, "max": self.max}
+
+
+@dataclasses.dataclass(frozen=True)
+class RouteRule:
+    destination: str | None = None
+    destination_type: str | None = None
+    network_entity_id: str | None = None
+    description: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "destination": self.destination,
+            "destinationType": self.destination_type,
+            "networkEntityId": self.network_entity_id,
+            "description": self.description,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class SecurityRule:
+    """Shared shape for security-list ingress/egress rules and NSG security rules --
+    a security-list rule's direction is assigned by the normalizer (the raw
+    Ingress/EgressSecurityRule types don't carry their own direction field)."""
+
+    direction: str = "unknown"  # ingress | egress
+    protocol: str | None = None
+    source: str | None = None
+    source_type: str | None = None
+    destination: str | None = None
+    destination_type: str | None = None
+    is_stateless: bool | None = None
+    tcp_port_range: PortRange | None = None
+    udp_port_range: PortRange | None = None
+    description: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "direction": self.direction,
+            "protocol": self.protocol,
+            "source": self.source,
+            "sourceType": self.source_type,
+            "destination": self.destination,
+            "destinationType": self.destination_type,
+            "isStateless": self.is_stateless,
+            "tcpPortRange": self.tcp_port_range.to_dict() if self.tcp_port_range else None,
+            "udpPortRange": self.udp_port_range.to_dict() if self.udp_port_range else None,
+            "description": self.description,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class RouteTable(CommonResource):
+    route_rules: tuple[RouteRule, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        base = super().to_dict()
+        base.update({"routeRules": [r.to_dict() for r in self.route_rules]})
+        return base
+
+
+@dataclasses.dataclass(frozen=True)
+class SecurityList(CommonResource):
+    ingress_rules: tuple[SecurityRule, ...] = ()
+    egress_rules: tuple[SecurityRule, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        base = super().to_dict()
+        base.update(
+            {
+                "ingressRules": [r.to_dict() for r in self.ingress_rules],
+                "egressRules": [r.to_dict() for r in self.egress_rules],
+            }
+        )
+        return base
+
+
+@dataclasses.dataclass(frozen=True)
+class NetworkSecurityGroup(CommonResource):
+    security_rules: tuple[SecurityRule, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        base = super().to_dict()
+        base.update({"securityRules": [r.to_dict() for r in self.security_rules]})
+        return base
+
+
+@dataclasses.dataclass(frozen=True)
+class InternetGateway(CommonResource):
+    is_enabled: bool | None = None
+    vcn_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        base = super().to_dict()
+        base.update({"isEnabled": self.is_enabled, "vcnId": self.vcn_id})
+        return base
+
+
+@dataclasses.dataclass(frozen=True)
 class DatabaseResource(CommonResource):
     database_type: str = "base_database"
     backup_status: str = "unknown"  # enabled | disabled | unknown | not_applicable

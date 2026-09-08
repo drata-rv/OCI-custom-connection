@@ -539,25 +539,25 @@
         "routeTables": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/routeTable"
           }
         },
         "internetGateways": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/internetGateway"
           }
         },
         "securityLists": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/securityList"
           }
         },
         "networkSecurityGroups": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/networkSecurityGroup"
           }
         },
         "dbSystems": {
@@ -755,6 +755,112 @@
             "attachedInstanceIds": {
               "$ref": "#/definitions/stringArray"
             }
+          }
+        }
+      ]
+    },
+    "portRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": ["integer", "null"] },
+        "max": { "type": ["integer", "null"] }
+      }
+    },
+    "routeRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "destinationType", "networkEntityId", "description"],
+      "properties": {
+        "destination": { "type": ["string", "null"] },
+        "destinationType": { "type": ["string", "null"] },
+        "networkEntityId": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] }
+      }
+    },
+    "securityRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction", "protocol", "source", "sourceType", "destination",
+        "destinationType", "isStateless", "tcpPortRange", "udpPortRange", "description"
+      ],
+      "properties": {
+        "direction": { "type": "string", "enum": ["ingress", "egress", "unknown"] },
+        "protocol": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "sourceType": { "type": ["string", "null"] },
+        "destination": { "type": ["string", "null"] },
+        "destinationType": { "type": ["string", "null"] },
+        "isStateless": { "type": ["boolean", "null"] },
+        "tcpPortRange": {
+          "anyOf": [{ "$ref": "#/definitions/portRange" }, { "type": "null" }]
+        },
+        "udpPortRange": {
+          "anyOf": [{ "$ref": "#/definitions/portRange" }, { "type": "null" }]
+        },
+        "description": { "type": ["string", "null"] }
+      }
+    },
+    "routeTable": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["routeRules"],
+          "properties": {
+            "routeRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/routeRule" }
+            }
+          }
+        }
+      ]
+    },
+    "securityList": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["ingressRules", "egressRules"],
+          "properties": {
+            "ingressRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/securityRule" }
+            },
+            "egressRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/securityRule" }
+            }
+          }
+        }
+      ]
+    },
+    "networkSecurityGroup": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["securityRules"],
+          "properties": {
+            "securityRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/securityRule" }
+            }
+          }
+        }
+      ]
+    },
+    "internetGateway": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["isEnabled", "vcnId"],
+          "properties": {
+            "isEnabled": { "type": ["boolean", "null"] },
+            "vcnId": { "type": ["string", "null"] }
           }
         }
       ]
