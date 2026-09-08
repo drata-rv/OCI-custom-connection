@@ -44,6 +44,22 @@ def test_normalize_instance_requires_region_stamp() -> None:
         normalize.normalize_instance(raw)
 
 
+def test_normalize_common_does_not_crash_on_unrecognized_lifecycle_state() -> None:
+    """The OCI SDK's own enum-typed property setters silently coerce any value outside
+    their known set to the literal sentinel "UNKNOWN_ENUM_VALUE" -- a genuinely new OCI
+    lifecycle state (added after this SDK version was pinned) never reaches our code as its
+    real name; the SDK has already discarded it one layer down. This codebase's fields are
+    typed plain str (not a closed Python Enum) specifically so it never crashes or drops a
+    resource over an unrecognized value -- but "preserve unknown enum values" only means
+    "pass through whatever the SDK gives us", not "recover the SDK's own already-lost data"."""
+
+    raw = _stamp(
+        oci.core.models.Vcn(id="vcn1", compartment_id="c1", lifecycle_state="SOME_FUTURE_STATE_V2")
+    )
+    normalized = normalize.normalize_common(raw, source_type="vcn")
+    assert normalized.lifecycle_state == "UNKNOWN_ENUM_VALUE"
+
+
 def test_normalize_instance_basic_fields() -> None:
     raw = _stamp(
         oci.core.models.Instance(
