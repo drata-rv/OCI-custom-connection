@@ -46,7 +46,12 @@ class AutonomousDatabaseCollectionResult:
     autonomous_databases: list[Any]
     autonomous_database_backups: list[Any]
     autonomous_database_dataguard_associations: list[Any]
-    autonomous_database_peers: list[Any]
+    # AutonomousDatabasePeerSummary carries only id+region, no back-reference
+    # to its owning ADB (unlike every other list_* result in this module) --
+    # keyed by the owning ADB's id, same reasoning as vpn.py's
+    # tunnels_by_connection_id, rather than losing that association in a
+    # flat list.
+    autonomous_database_peers_by_adb_id: dict[str, list[Any]]
     operations: list[OperationResult]
 
     @property
@@ -59,7 +64,7 @@ def _skip_result() -> AutonomousDatabaseCollectionResult:
         autonomous_databases=[],
         autonomous_database_backups=[],
         autonomous_database_dataguard_associations=[],
-        autonomous_database_peers=[],
+        autonomous_database_peers_by_adb_id={},
         operations=[
             OperationResult(
                 service="database",
@@ -98,7 +103,7 @@ def collect_autonomous_database(
     autonomous_databases: list[Any] = []
     autonomous_database_backups: list[Any] = []
     autonomous_database_dataguard_associations: list[Any] = []
-    autonomous_database_peers: list[Any] = []
+    autonomous_database_peers_by_adb_id: dict[str, list[Any]] = {}
 
     for region in discovery.approved_regions:
         client = regional_client(oci.database.DatabaseClient, signer, region=region)
@@ -160,12 +165,12 @@ def collect_autonomous_database(
                 retry_policy=retry_policy,
             )
             operations.append(peers_op)
-            autonomous_database_peers.extend(peers_op.items)
+            autonomous_database_peers_by_adb_id.setdefault(adb.id, []).extend(peers_op.items)
 
     return AutonomousDatabaseCollectionResult(
         autonomous_databases=autonomous_databases,
         autonomous_database_backups=autonomous_database_backups,
         autonomous_database_dataguard_associations=autonomous_database_dataguard_associations,
-        autonomous_database_peers=autonomous_database_peers,
+        autonomous_database_peers_by_adb_id=autonomous_database_peers_by_adb_id,
         operations=operations,
     )
