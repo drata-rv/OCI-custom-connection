@@ -67,6 +67,26 @@ class OperationResult:
         return self.status == "success"
 
 
+def stamp_region(items: Iterable[Any], region: str) -> list[Any]:
+    """Set ``.region`` on every item to the region it was actually queried
+    from, overriding any same-named field the OCI model itself carries.
+
+    Only a handful of OCI resource models (e.g. ``Instance``) expose their
+    own ``region`` field, and even where present its meaning isn't
+    guaranteed to match "the endpoint this collector queried" -- most
+    resource types (``Vnic``, ``Volume``, ``DbSystem``, ``IPSecConnection``,
+    ...) have no region field at all. Every resource in the aggregate
+    record's schema requires ``region``, so every collector stamps it here,
+    at the single point where the region is authoritatively known, rather
+    than each collector re-deriving or guessing it later.
+    """
+
+    stamped = list(items)
+    for item in stamped:
+        item.region = region
+    return stamped
+
+
 def operations_complete(operations: Iterable["OperationResult"]) -> bool:
     """A domain is complete when nothing in it failed. ``unsupported``
     (e.g. an operation absent from the pinned SDK version, or Exadata

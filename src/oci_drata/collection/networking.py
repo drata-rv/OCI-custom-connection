@@ -15,7 +15,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    operations_complete,
+    paginate,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -89,7 +95,7 @@ def collect_networking(
                 retry_policy=retry_policy,
             )
             operations.append(vcns_op)
-            vcns.extend(vcns_op.items)
+            vcns.extend(stamp_region(vcns_op.items, region))
 
             subnets_op = paginate(
                 service="virtual_network",
@@ -100,7 +106,7 @@ def collect_networking(
                 retry_policy=retry_policy,
             )
             operations.append(subnets_op)
-            subnets.extend(subnets_op.items)
+            subnets.extend(stamp_region(subnets_op.items, region))
 
             route_tables_op = paginate(
                 service="virtual_network",
@@ -111,7 +117,7 @@ def collect_networking(
                 retry_policy=retry_policy,
             )
             operations.append(route_tables_op)
-            route_tables.extend(route_tables_op.items)
+            route_tables.extend(stamp_region(route_tables_op.items, region))
 
             internet_gateways_op = paginate(
                 service="virtual_network",
@@ -122,7 +128,7 @@ def collect_networking(
                 retry_policy=retry_policy,
             )
             operations.append(internet_gateways_op)
-            internet_gateways.extend(internet_gateways_op.items)
+            internet_gateways.extend(stamp_region(internet_gateways_op.items, region))
 
             security_lists_op = paginate(
                 service="virtual_network",
@@ -133,7 +139,7 @@ def collect_networking(
                 retry_policy=retry_policy,
             )
             operations.append(security_lists_op)
-            security_lists.extend(security_lists_op.items)
+            security_lists.extend(stamp_region(security_lists_op.items, region))
 
             nsgs_op = paginate(
                 service="virtual_network",
@@ -144,9 +150,10 @@ def collect_networking(
                 retry_policy=retry_policy,
             )
             operations.append(nsgs_op)
-            network_security_groups.extend(nsgs_op.items)
+            region_nsgs = stamp_region(nsgs_op.items, region)
+            network_security_groups.extend(region_nsgs)
 
-            for nsg in nsgs_op.items:
+            for nsg in region_nsgs:
                 nsg_id = getattr(nsg, "id", None)
                 if not nsg_id:
                     continue

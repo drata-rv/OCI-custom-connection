@@ -23,6 +23,7 @@ from oci_drata.pagination import (
     call_once,
     operations_complete,
     paginate,
+    stamp_region,
 )
 
 
@@ -92,9 +93,10 @@ def collect_compute(
                 retry_policy=retry_policy,
             )
             operations.append(instances_op)
-            instances.extend(instances_op.items)
+            region_instances = stamp_region(instances_op.items, region)
+            instances.extend(region_instances)
 
-            for instance in instances_op.items:
+            for instance in region_instances:
                 image_id = getattr(instance, "image_id", None)
                 # Cache across the whole run, not per region/compartment: many
                 # instances share the same platform image, so this keeps
@@ -112,7 +114,7 @@ def collect_compute(
                 )
                 operations.append(image_op)
                 if image_op.ok and image_op.items:
-                    images[image_id] = image_op.items[0]
+                    images[image_id] = stamp_region(image_op.items, region)[0]
                 # A failed/missing image lookup is left unresolved here;
                 # Windows classification for it becomes "unknown" downstream,
                 # not a domain failure and not assumed non-Windows.
@@ -126,9 +128,10 @@ def collect_compute(
                 retry_policy=retry_policy,
             )
             operations.append(attachments_op)
-            vnic_attachments.extend(attachments_op.items)
+            region_attachments = stamp_region(attachments_op.items, region)
+            vnic_attachments.extend(region_attachments)
 
-            for attachment in attachments_op.items:
+            for attachment in region_attachments:
                 vnic_id = getattr(attachment, "vnic_id", None)
                 if not vnic_id:
                     continue
@@ -145,7 +148,7 @@ def collect_compute(
                     )
                     operations.append(vnic_op)
                     if vnic_op.ok and vnic_op.items:
-                        vnics[vnic_id] = vnic_op.items[0]
+                        vnics[vnic_id] = stamp_region(vnic_op.items, region)[0]
 
                 # list_private_ips does not accept compartment_id (verified via
                 # inspect.signature/expected_kwargs -- it filters by
@@ -160,9 +163,10 @@ def collect_compute(
                     retry_policy=retry_policy,
                 )
                 operations.append(private_ips_op)
-                private_ips.extend(private_ips_op.items)
+                region_private_ips = stamp_region(private_ips_op.items, region)
+                private_ips.extend(region_private_ips)
 
-                for private_ip in private_ips_op.items:
+                for private_ip in region_private_ips:
                     private_ip_id = getattr(private_ip, "id", None)
                     if not private_ip_id:
                         continue
@@ -175,6 +179,7 @@ def collect_compute(
                     )
                     operations.append(public_ip_op)
                     if public_ip is not None:
+                        public_ip.region = region
                         public_ips_by_private_ip_id[private_ip_id] = public_ip
 
     return ComputeCollectionResult(

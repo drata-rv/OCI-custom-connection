@@ -18,7 +18,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    operations_complete,
+    paginate,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -88,7 +94,7 @@ def collect_database_base(
                 retry_policy=retry_policy,
             )
             operations.append(op)
-            region_db_systems.extend(op.items)
+            region_db_systems.extend(stamp_region(op.items, region))
         db_systems.extend(region_db_systems)
 
         region_db_homes: list[Any] = []
@@ -105,7 +111,7 @@ def collect_database_base(
                 retry_policy=retry_policy,
             )
             operations.append(op)
-            region_db_homes.extend(op.items)
+            region_db_homes.extend(stamp_region(op.items, region))
         db_homes.extend(region_db_homes)
 
         region_databases: list[Any] = []
@@ -122,7 +128,7 @@ def collect_database_base(
                 retry_policy=retry_policy,
             )
             operations.append(op)
-            region_databases.extend(op.items)
+            region_databases.extend(stamp_region(op.items, region))
         databases.extend(region_databases)
 
         for database in region_databases:
@@ -139,7 +145,7 @@ def collect_database_base(
                 retry_policy=retry_policy,
             )
             operations.append(backup_op)
-            backups.extend(backup_op.items)
+            backups.extend(stamp_region(backup_op.items, region))
 
             dg_op = paginate(
                 service="database",
@@ -150,7 +156,7 @@ def collect_database_base(
                 retry_policy=retry_policy,
             )
             operations.append(dg_op)
-            data_guard_associations.extend(dg_op.items)
+            data_guard_associations.extend(stamp_region(dg_op.items, region))
 
     return DatabaseBaseCollectionResult(
         db_systems=db_systems,

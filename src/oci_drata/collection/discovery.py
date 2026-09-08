@@ -17,7 +17,14 @@ import oci
 
 from oci_drata.config import AppConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, call_once, operations_complete, paginate
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    call_once,
+    operations_complete,
+    paginate,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -25,6 +32,7 @@ class DiscoveryResult:
     tenancy: Any  # oci.identity.models.Tenancy, or None if the call failed
     region_subscriptions: list[Any]
     all_compartments: list[Any]  # every compartment seen: including excluded/inactive
+    discovery_region: str  # region identity/compartment/AD-listing calls were made from
     approved_regions: tuple[str, ...]
     unready_regions: tuple[str, ...]  # configured but not subscribed+READY, or undiscoverable
     approved_compartment_ids: tuple[str, ...]
@@ -93,7 +101,12 @@ def discover(
             retry_policy=retry_policy,
         )
         operations.append(op)
-        all_compartments.extend(op.items)
+        # Compartments are tenancy-global, not a regional resource -- there
+        # is no "real" region to record. The schema still requires a
+        # non-null region on every resource row, so this is stamped with
+        # the region discovery itself queried from, documented here as a
+        # deliberate choice rather than a meaningful residency fact.
+        all_compartments.extend(stamp_region(op.items, region))
 
     # list_compartments never returns the root compartment itself; a
     # configured root is always in scope for collection even though it
@@ -129,6 +142,7 @@ def discover(
         tenancy=tenancy,
         region_subscriptions=region_sub_op.items,
         all_compartments=all_compartments,
+        discovery_region=region,
         approved_regions=approved_regions,
         unready_regions=unready_regions,
         approved_compartment_ids=approved_compartment_ids,

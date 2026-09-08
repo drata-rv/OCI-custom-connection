@@ -14,7 +14,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    operations_complete,
+    paginate,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -82,7 +88,7 @@ def collect_storage(
                 retry_policy=retry_policy,
             )
             operations.append(boot_volumes_op)
-            boot_volumes.extend(boot_volumes_op.items)
+            boot_volumes.extend(stamp_region(boot_volumes_op.items, region))
 
             volumes_op = paginate(
                 service="blockstorage",
@@ -93,7 +99,7 @@ def collect_storage(
                 retry_policy=retry_policy,
             )
             operations.append(volumes_op)
-            block_volumes.extend(volumes_op.items)
+            block_volumes.extend(stamp_region(volumes_op.items, region))
 
             volume_attachments_op = paginate(
                 service="compute",
@@ -104,7 +110,7 @@ def collect_storage(
                 retry_policy=retry_policy,
             )
             operations.append(volume_attachments_op)
-            volume_attachments.extend(volume_attachments_op.items)
+            volume_attachments.extend(stamp_region(volume_attachments_op.items, region))
 
             # list_boot_volume_attachments requires availability_domain as a
             # required positional parameter (verified via inspect.signature),
@@ -124,7 +130,7 @@ def collect_storage(
                     retry_policy=retry_policy,
                 )
                 operations.append(boot_attachments_op)
-                boot_volume_attachments.extend(boot_attachments_op.items)
+                boot_volume_attachments.extend(stamp_region(boot_attachments_op.items, region))
 
     return StorageCollectionResult(
         boot_volumes=boot_volumes,

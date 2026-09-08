@@ -32,7 +32,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    operations_complete,
+    paginate,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -109,7 +115,7 @@ def collect_autonomous_database(
                 retry_policy=retry_policy,
             )
             operations.append(op)
-            region_adbs.extend(op.items)
+            region_adbs.extend(stamp_region(op.items, region))
         autonomous_databases.extend(region_adbs)
 
         for adb in region_adbs:
@@ -125,7 +131,7 @@ def collect_autonomous_database(
                 retry_policy=retry_policy,
             )
             operations.append(backup_op)
-            autonomous_database_backups.extend(backup_op.items)
+            autonomous_database_backups.extend(stamp_region(backup_op.items, region))
 
             dg_op = paginate(
                 service="database",
@@ -136,8 +142,15 @@ def collect_autonomous_database(
                 retry_policy=retry_policy,
             )
             operations.append(dg_op)
-            autonomous_database_dataguard_associations.extend(dg_op.items)
+            autonomous_database_dataguard_associations.extend(stamp_region(dg_op.items, region))
 
+            # Not region-stamped: a peer summary's own `region` field is the
+            # peer's real (often different) region, e.g. a cross-region Data
+            # Guard standby -- overriding it with the region we queried from
+            # would corrupt that fact. Peers are folded into the owning
+            # ADB's relatedResourceIds by OCID in the transform layer, never
+            # rendered as their own resource row, so this is the only raw
+            # list in this module that's exempt from stamp_region.
             peers_op = paginate(
                 service="database",
                 operation="list_autonomous_database_peers",

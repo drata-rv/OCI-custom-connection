@@ -26,6 +26,7 @@ from oci_drata.pagination import (
     call_once,
     operations_complete,
     paginate,
+    stamp_region,
 )
 
 _SERVICE = "virtual_network"
@@ -103,9 +104,10 @@ def collect_vpn(
                 retry_policy=retry_policy,
             )
             operations.append(ipsc_op)
-            ip_sec_connections.extend(ipsc_op.items)
+            region_connections = stamp_region(ipsc_op.items, region)
+            ip_sec_connections.extend(region_connections)
 
-            for connection in ipsc_op.items:
+            for connection in region_connections:
                 # list_ip_sec_connection_tunnels rejects any kwarg outside
                 # {limit, page, retry_strategy, ...} -- compartment_id must
                 # not be forwarded here, unlike the compartment-scoped calls
@@ -119,7 +121,7 @@ def collect_vpn(
                     retry_policy=retry_policy,
                 )
                 operations.append(tunnels_op)
-                tunnels = list(tunnels_op.items)
+                tunnels = stamp_region(tunnels_op.items, region)
 
                 for index, tunnel in enumerate(tunnels):
                     if not _tunnel_needs_enrichment(tunnel):
@@ -136,7 +138,7 @@ def collect_vpn(
                     )
                     operations.append(tunnel_op)
                     if tunnel_op.ok and tunnel_op.items:
-                        tunnels[index] = tunnel_op.items[0]
+                        tunnels[index] = stamp_region(tunnel_op.items, region)[0]
 
                 # Tunnel objects carry no back-reference to their parent
                 # IPSec connection (verified against IPSecConnectionTunnel's
@@ -153,7 +155,7 @@ def collect_vpn(
                 retry_policy=retry_policy,
             )
             operations.append(cpe_op)
-            cpes.extend(cpe_op.items)
+            cpes.extend(stamp_region(cpe_op.items, region))
 
             drg_op = paginate(
                 service=_SERVICE,
@@ -164,7 +166,7 @@ def collect_vpn(
                 retry_policy=retry_policy,
             )
             operations.append(drg_op)
-            drgs.extend(drg_op.items)
+            drgs.extend(stamp_region(drg_op.items, region))
 
             attachment_op = paginate(
                 service=_SERVICE,
@@ -176,7 +178,8 @@ def collect_vpn(
                 retry_policy=retry_policy,
             )
             operations.append(attachment_op)
-            drg_attachments.extend(attachment_op.items)
+            region_attachments = stamp_region(attachment_op.items, region)
+            drg_attachments.extend(region_attachments)
 
             # Scope DRG route-table/rule walks to DRGs that actually carry an
             # IPSEC_TUNNEL attachment in this compartment -- cheap to tell
@@ -185,7 +188,7 @@ def collect_vpn(
             # tenancy for routing unrelated to site-to-site VPN.
             vpn_relevant_drg_ids = {
                 attachment.drg_id
-                for attachment in attachment_op.items
+                for attachment in region_attachments
                 if attachment.drg_id and _is_ipsec_tunnel_attachment(attachment)
             }
 
