@@ -133,7 +133,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Preserve unknown enum values | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum`) | — |
 | Normalize timestamps to UTC RFC3339 | `transform/normalize.py::normalize_timestamp` | `test_normalize_and_relationships.py` (4 cases incl. non-UTC conversion, naive-datetime rejection) |
 | Deterministic output ordering | `transform/aggregate.py::_sorted_dicts` (every array sorted by id/assertionId) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (same-input-same-output assertion) |
-| Block upload on failure/unresolved/schema/oversize/Exadata | `validation/completeness.py` | `test_end_to_end.py` (3 blocking scenarios), `test_cli.py` |
+| Block upload on failure/unsupported/unresolved/schema/oversize/Exadata | `validation/completeness.py`, `pagination.py::operations_complete` (`unsupported` blocks like `failed`; `skipped` — a disabled service — does not) | `test_end_to_end.py` (3 blocking scenarios), `test_cli.py`, `test_pagination.py::test_operations_complete_ignores_skipped_but_blocks_on_unsupported` |
 | Distinguish empty inventory from failure | `pagination.py::OperationResult.status` (`success` + 0 items ≠ `failed`) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (empty `dbSystems`/`databases` arrays, still `snapshotStatus: complete`) |
 | Mock OCI + Drata in tests, no live credentials | all of `tests/` | `pytest` run with no `~/.oci/config` or `DRATA_API_TOKEN` required |
 | Do not create Drata Custom Tests | — (no code path exists that could) | — |
@@ -170,3 +170,38 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   between Base DB and Autonomous DB — the schema has no separate
   `autonomousDatabaseBackups` array, and `databaseType`'s enum has no
   distinct `autonomous_*` values for these two.
+* Autonomous Database `backupStatus` is always `not_applicable`
+  (`transform/normalize.py::normalize_autonomous_database_posture`).
+  Unlike Base DB's `DbBackupConfig.auto_backup_enabled`, ADB has no
+  enabled/disabled boolean on `AutonomousDatabaseSummary` —
+  `backup_retention_period_in_days` is a retention window, not a toggle.
+  Posture is instead exposed as separate raw/derived fields
+  (`backupRetentionDays`, `backupRetentionLocked`,
+  `longTermBackupScheduleConfigured`, `publicEndpointPresent`,
+  `privateEndpointConfigured`, `accessControlEnabled`,
+  `allowedSourceCount`, `mtlsRequired`, `networkSecurityGroupIds`) rather
+  than compressed into one guessed verdict. `OCI-DATABASE-PUBLIC-ENDPOINT`
+  findings key off `publicEndpointPresent` only, not effective
+  reachability — an ADB with a public endpoint can still be access-
+  restricted by an ACL or a private endpoint; this MVP surfaces that
+  context in the finding's `reason` but doesn't fold it into the verdict.
+* Route tables, security lists, NSGs, and internet gateways carry their
+  full rule/state detail (`routeRules`, `ingressRules`/`egressRules`,
+  `securityRules`, `isEnabled`/`vcnId`) instead of the generic
+  `commonResource` shape — see `models.py::RouteTable`/`SecurityList`/
+  `NetworkSecurityGroup`/`InternetGateway` and
+  `normalize.py::normalize_route_table`/`normalize_security_list`/
+  `normalize_network_security_group`/`normalize_internet_gateway`. NSG
+  rules are joined at normalize time from
+  `networking.nsg_security_rules_by_nsg_id` (a separate
+  `list_network_security_group_security_rules` call per NSG, not embedded
+  on the NSG object itself).
+* `base_db_system`/`base_database`/`data_guard` rows carry the same
+  kind of detail beyond the generic identity fields — shape/version/
+  node count/redundancy/subnet/NSGs for db systems
+  (`normalize.py::normalize_db_system_detail`), backup/patch/management
+  status for databases (`normalize_database_detail`), and role/peer
+  role/protection mode/transport type for Data Guard associations
+  (`normalize_data_guard_detail`). `networkSecurityGroupIds` is shared
+  with the Autonomous Database posture fields above (same meaning:
+  attached NSG ids), populated for whichever `databaseType` it applies to.

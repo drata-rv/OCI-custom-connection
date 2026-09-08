@@ -202,7 +202,7 @@ Windows VM scenario.
 | `snapshotStatus: incomplete`, reason mentions Exadata | Exadata (or Exadata-backed dedicated Autonomous) was detected. Per spec, this MVP never claims complete database coverage when Exadata is present — see [§9](#9-known-mvp-limitations). |
 | `snapshotStatus: failed`, reason mentions schema | The record itself didn't validate — this should not happen against unmodified collector code; check `collection-report.json`'s `schemaErrors` and file an issue rather than working around it. |
 | Drata upload returns `error_class: auth` | Bearer token invalid/expired, or wrong `connectionId`/`resourceId`. The local snapshot is still `complete`; only delivery failed — nothing was overwritten in Drata. |
-| Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `schemas/oci-snapshot-1.0.0.json`. |
+| Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
 
 ## 8. Deployment acceptance checklist
 
@@ -240,10 +240,11 @@ From spec §13, adapted as a literal checklist:
 
 See the cited module docstrings for detail.
 
-* **Exposure CIDR matching is exact-string, not real CIDR-superset
-  containment** (`transform/exposure.py`). A permissive rule for
-  `0.0.0.0/1` would not be flagged even though it covers half the public
-  internet.
+* **Exposure NSG-to-NSG source chains are not resolved** (`transform/exposure.py`).
+  A rule whose source is another network security group (not a CIDR) marks
+  that VNIC's ingress evidence `unknown` rather than resolving the
+  referenced NSG's membership. CIDR sources are evaluated by real
+  containment/overlap (`ipaddress`), not string equality.
 * **`findings[]` is a small, spec-anchored set** (`transform/findings.py`)
   — public exposure, customer-managed-key (when required by config),
   database public endpoint, VPN redundancy — not an exhaustive control
@@ -252,6 +253,22 @@ See the cited module docstrings for detail.
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
   "unless explicitly noncritical" escape hatch isn't implemented.
+* **Operations within an enabled domain have no required/optional
+  distinction** (`pagination.py::operations_complete`) — any operation
+  failure (even a non-essential enrichment call) blocks that entire
+  domain's upload; there's no per-operation criticality registry that
+  would let a genuinely optional lookup degrade to an `unknown` finding
+  instead. `unsupported` is treated as a blocking gap, the same as
+  `failed`.
+* **This record cannot self-report current freshness.** `collectedAt`
+  and `freshnessThresholdHours` (from `decisions.freshnessHours`) are
+  written at collection time; nothing re-evaluates them afterward. If
+  the collector stops running, the last successfully uploaded record
+  stays in Drata untouched (upsert-on-success preserves last known-good
+  evidence by design) — it does not become visibly stale on its own.
+  Evaluate `now - collectedAt > freshnessThresholdHours` yourself: in a
+  Custom Test authored in the Drata UI (this tool creates none), or in
+  separate monitoring on the collector's own run cadence.
 * **Exadata detection is existence-only, no drill-down**, per spec §5.7 —
   a tenancy with Exadata will show `snapshotStatus: incomplete`
   indefinitely for the database domain until a phase-two decision is made

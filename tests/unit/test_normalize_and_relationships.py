@@ -93,13 +93,189 @@ def test_normalize_db_backup_status_variants() -> None:
     assert normalize.normalize_db_backup_status(unknown) == "unknown"
 
 
-def test_normalize_autonomous_backup_status_variants() -> None:
-    enabled = oci.database.models.AutonomousDatabaseSummary(id="a1", backup_retention_period_in_days=7)
-    disabled = oci.database.models.AutonomousDatabaseSummary(id="a2", backup_retention_period_in_days=0)
-    unknown = oci.database.models.AutonomousDatabaseSummary(id="a3")
-    assert normalize.normalize_autonomous_backup_status(enabled) == "enabled"
-    assert normalize.normalize_autonomous_backup_status(disabled) == "disabled"
-    assert normalize.normalize_autonomous_backup_status(unknown) == "unknown"
+def test_normalize_autonomous_database_posture_full_fields() -> None:
+    raw = oci.database.models.AutonomousDatabaseSummary(
+        id="a1",
+        public_endpoint="adb.example.oraclecloudapps.com",
+        private_endpoint="10.0.0.5",
+        whitelisted_ips=["203.0.113.0/24", "198.51.100.0/24"],
+        is_mtls_connection_required=True,
+        nsg_ids=["nsg1"],
+        backup_retention_period_in_days=30,
+        is_backup_retention_locked=True,
+        long_term_backup_schedule=oci.database.models.LongTermBackUpScheduleDetails(),
+    )
+    posture = normalize.normalize_autonomous_database_posture(raw)
+    assert posture == {
+        "public_endpoint_hostname": "adb.example.oraclecloudapps.com",
+        "private_endpoint_configured": True,
+        "public_endpoint_present": True,
+        "access_control_enabled": True,
+        "allowed_source_count": 2,
+        "mtls_required": True,
+        "network_security_group_ids": ("nsg1",),
+        "backup_retention_days": 30,
+        "backup_retention_locked": True,
+        "long_term_backup_schedule_configured": True,
+    }
+
+
+def test_normalize_autonomous_database_posture_no_endpoint_data_resolves_definite_false() -> None:
+    """Oracle always returns these fields for an existing ADB; None means "no public endpoint" etc,
+    a fact we know, not an unresolvable unknown -- unlike raw retention/mTLS fields, which pass
+    None through as-is since those genuinely can be absent on legacy records."""
+
+    raw = oci.database.models.AutonomousDatabaseSummary(id="a2")
+    posture = normalize.normalize_autonomous_database_posture(raw)
+    assert posture["public_endpoint_hostname"] is None
+    assert posture["public_endpoint_present"] is False
+    assert posture["private_endpoint_configured"] is False
+    assert posture["access_control_enabled"] is False
+    assert posture["allowed_source_count"] == 0
+    assert posture["long_term_backup_schedule_configured"] is False
+    assert posture["backup_retention_days"] is None
+    assert posture["backup_retention_locked"] is None
+    assert posture["mtls_required"] is None
+
+
+def test_normalize_autonomous_database_posture_public_endpoint_string_not_coerced_to_bool() -> None:
+    """Guards the exact P0-4 defect: a raw hostname string must never land in a bool field."""
+    raw = oci.database.models.AutonomousDatabaseSummary(id="a3", public_endpoint="host.example.com")
+    posture = normalize.normalize_autonomous_database_posture(raw)
+    assert posture["public_endpoint_hostname"] == "host.example.com"
+    assert posture["public_endpoint_present"] is True
+    assert isinstance(posture["public_endpoint_present"], bool)
+
+
+def test_normalize_db_system_detail_preserves_shape_version_redundancy() -> None:
+    raw = oci.database.models.DbSystemSummary(
+        id="sys1", shape="VM.Standard2.4", version="19.0.0.0", os_version="7.9",
+        node_count=2, disk_redundancy="HIGH", subnet_id="sub1", nsg_ids=["nsg1", "nsg2"],
+    )
+    detail = normalize.normalize_db_system_detail(raw)
+    assert detail == {
+        "shape": "VM.Standard2.4",
+        "version": "19.0.0.0",
+        "os_version": "7.9",
+        "node_count": 2,
+        "disk_redundancy": "HIGH",
+        "subnet_id": "sub1",
+        "network_security_group_ids": ("nsg1", "nsg2"),
+    }
+
+
+def test_normalize_database_detail_preserves_backup_and_patch_fields() -> None:
+    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.timezone.utc)
+    raw = oci.database.models.DatabaseSummary(
+        id="db1", last_backup_timestamp=now, patch_version="OCT2025",
+        db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True, recovery_window_in_days=14),
+        database_management_config=oci.database.models.DatabaseManagementConfig(
+            database_management_status="ENABLED"
+        ),
+    )
+    detail = normalize.normalize_database_detail(raw)
+    assert detail["last_backup_timestamp"] == "2026-09-08T20:00:00Z"
+    assert detail["last_failed_backup_timestamp"] is None
+    assert detail["patch_version"] == "OCT2025"
+    assert detail["recovery_window_days"] == 14
+    assert detail["database_management_status"] == "ENABLED"
+
+
+def test_normalize_database_detail_no_backup_config_is_null_not_error() -> None:
+    raw = oci.database.models.DatabaseSummary(id="db2")
+    detail = normalize.normalize_database_detail(raw)
+    assert detail["recovery_window_days"] is None
+    assert detail["database_management_status"] is None
+
+
+def test_normalize_data_guard_detail_preserves_role_and_protection_mode() -> None:
+    raw = oci.database.models.DataGuardAssociation(
+        id="dg1", database_id="db1", role="PRIMARY", peer_role="STANDBY",
+        protection_mode="MAXIMUM_AVAILABILITY", transport_type="SYNC",
+    )
+    detail = normalize.normalize_data_guard_detail(raw)
+    assert detail == {
+        "data_guard_role": "PRIMARY",
+        "data_guard_peer_role": "STANDBY",
+        "data_guard_protection_mode": "MAXIMUM_AVAILABILITY",
+        "data_guard_transport_type": "SYNC",
+    }
+
+
+def test_normalize_route_table_preserves_route_rules() -> None:
+    raw = _stamp(
+        oci.core.models.RouteTable(
+            id="rt1", compartment_id="c1",
+            route_rules=[
+                oci.core.models.RouteRule(
+                    destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
+                    network_entity_id="ocid1.internetgateway.oc1..igw1", description="default route",
+                )
+            ],
+        )
+    )
+    normalized = normalize.normalize_route_table(raw)
+    assert len(normalized.route_rules) == 1
+    rule = normalized.route_rules[0]
+    assert rule.destination == "0.0.0.0/0"
+    assert rule.network_entity_id == "ocid1.internetgateway.oc1..igw1"
+    assert rule.description == "default route"
+
+
+def test_normalize_security_list_preserves_ingress_and_egress_rules() -> None:
+    raw = _stamp(
+        oci.core.models.SecurityList(
+            id="sl1", compartment_id="c1",
+            ingress_security_rules=[
+                oci.core.models.IngressSecurityRule(
+                    protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK", is_stateless=False,
+                    tcp_options=oci.core.models.TcpOptions(
+                        destination_port_range=oci.core.models.PortRange(min=22, max=22)
+                    ),
+                )
+            ],
+            egress_security_rules=[
+                oci.core.models.EgressSecurityRule(
+                    protocol="all", destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
+                )
+            ],
+        )
+    )
+    normalized = normalize.normalize_security_list(raw)
+    assert len(normalized.ingress_rules) == 1
+    assert normalized.ingress_rules[0].direction == "ingress"
+    assert normalized.ingress_rules[0].source == "0.0.0.0/0"
+    assert normalized.ingress_rules[0].tcp_port_range == normalize.PortRange(min=22, max=22)
+    assert len(normalized.egress_rules) == 1
+    assert normalized.egress_rules[0].direction == "egress"
+    assert normalized.egress_rules[0].destination == "0.0.0.0/0"
+
+
+def test_normalize_network_security_group_preserves_joined_security_rules() -> None:
+    raw = _stamp(oci.core.models.NetworkSecurityGroup(id="nsg1", compartment_id="c1"))
+    rules = [
+        oci.core.models.SecurityRule(
+            direction="INGRESS", protocol="6", source="203.0.113.0/24", source_type="CIDR_BLOCK",
+            tcp_options=oci.core.models.TcpOptions(
+                destination_port_range=oci.core.models.PortRange(min=3389, max=3389)
+            ),
+        )
+    ]
+    normalized = normalize.normalize_network_security_group(raw, security_rules=rules)
+    assert len(normalized.security_rules) == 1
+    rule = normalized.security_rules[0]
+    assert rule.direction == "ingress"  # normalized to lowercase
+    assert rule.source == "203.0.113.0/24"
+    assert rule.tcp_port_range == normalize.PortRange(min=3389, max=3389)
+
+
+def test_normalize_internet_gateway_preserves_enabled_and_vcn() -> None:
+    raw = _stamp(
+        oci.core.models.InternetGateway(id="igw1", compartment_id="c1", is_enabled=True, vcn_id="vcn1")
+    )
+    normalized = normalize.normalize_internet_gateway(raw)
+    assert normalized.is_enabled is True
+    assert normalized.vcn_id == "vcn1"
 
 
 class TestClassifyWindows:

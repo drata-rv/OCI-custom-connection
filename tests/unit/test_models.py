@@ -89,7 +89,7 @@ def test_operation_record_to_dict() -> None:
 
 
 def test_metric_and_resource_key_lists_match_schema_counts() -> None:
-    # guards against drift from schemas/oci-snapshot-1.0.0.json
+    # guards against drift from src/oci_drata/schemas/oci-snapshot-1.0.0.json
     from oci_drata.validation.schema import load_schema
 
     schema = load_schema()

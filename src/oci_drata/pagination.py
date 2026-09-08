@@ -75,10 +75,14 @@ def stamp_region(items: Iterable[Any], region: str) -> list[Any]:
 
 
 def operations_complete(operations: Iterable["OperationResult"]) -> bool:
-    """Domain is complete when nothing in it failed. ``unsupported`` and
-    ``skipped`` are not failures -- only ``failed`` blocks completeness."""
+    """Domain is complete when nothing in it failed or was unsupported. ``skipped`` is not a
+    failure -- it means the whole service was disabled by configuration, a deliberate scope
+    decision, not missing evidence. ``unsupported`` means OCI/the SDK didn't return what an
+    assertion needs and is treated as a blocking gap, same as ``failed`` -- fail-closed, since
+    no operation in this collector is currently classified as optional/enrichment-only with a
+    defined force-unknown fallback for its dependent findings."""
 
-    return all(op.status != "failed" for op in operations)
+    return all(op.status not in ("failed", "unsupported") for op in operations)
 
 
 class _RetryExhausted(Exception):

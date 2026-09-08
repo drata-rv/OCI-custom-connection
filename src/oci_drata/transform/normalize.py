@@ -12,8 +12,15 @@ from oci_drata.models import (
     CommonResource,
     DatabaseResource,
     Instance,
+    InternetGateway,
     IpsecConnection,
     IpsecTunnel,
+    NetworkSecurityGroup,
+    PortRange,
+    RouteRule,
+    RouteTable,
+    SecurityList,
+    SecurityRule,
     Vnic,
     Volume,
 )
@@ -111,6 +118,76 @@ def normalize_vnic(raw: Any) -> Vnic:
     )
 
 
+def _port_range(options: Any) -> PortRange | None:
+    port_range = getattr(options, "destination_port_range", None)
+    if port_range is None:
+        return None
+    return PortRange(min=getattr(port_range, "min", None), max=getattr(port_range, "max", None))
+
+
+def normalize_route_rule(raw: Any) -> RouteRule:
+    return RouteRule(
+        destination=getattr(raw, "destination", None),
+        destination_type=getattr(raw, "destination_type", None),
+        network_entity_id=getattr(raw, "network_entity_id", None),
+        description=getattr(raw, "description", None),
+    )
+
+
+def normalize_route_table(raw: Any) -> RouteTable:
+    return RouteTable(
+        **_common_fields(raw, source_type="route_table"),
+        route_rules=tuple(normalize_route_rule(r) for r in getattr(raw, "route_rules", None) or ()),
+    )
+
+
+def _security_rule(raw: Any, *, direction: str) -> SecurityRule:
+    return SecurityRule(
+        direction=direction,
+        protocol=getattr(raw, "protocol", None),
+        source=getattr(raw, "source", None),
+        source_type=getattr(raw, "source_type", None),
+        destination=getattr(raw, "destination", None),
+        destination_type=getattr(raw, "destination_type", None),
+        is_stateless=getattr(raw, "is_stateless", None),
+        tcp_port_range=_port_range(getattr(raw, "tcp_options", None)),
+        udp_port_range=_port_range(getattr(raw, "udp_options", None)),
+        description=getattr(raw, "description", None),
+    )
+
+
+def normalize_security_list(raw: Any) -> SecurityList:
+    return SecurityList(
+        **_common_fields(raw, source_type="security_list"),
+        ingress_rules=tuple(
+            _security_rule(r, direction="ingress")
+            for r in getattr(raw, "ingress_security_rules", None) or ()
+        ),
+        egress_rules=tuple(
+            _security_rule(r, direction="egress")
+            for r in getattr(raw, "egress_security_rules", None) or ()
+        ),
+    )
+
+
+def normalize_network_security_group(raw: Any, *, security_rules: list[Any]) -> NetworkSecurityGroup:
+    return NetworkSecurityGroup(
+        **_common_fields(raw, source_type="network_security_group"),
+        security_rules=tuple(
+            _security_rule(r, direction=(getattr(r, "direction", None) or "unknown").lower())
+            for r in security_rules
+        ),
+    )
+
+
+def normalize_internet_gateway(raw: Any) -> InternetGateway:
+    return InternetGateway(
+        **_common_fields(raw, source_type="internet_gateway"),
+        is_enabled=getattr(raw, "is_enabled", None),
+        vcn_id=getattr(raw, "vcn_id", None),
+    )
+
+
 def normalize_volume(raw: Any, *, source_type: str) -> Volume:
     kms_key_id = getattr(raw, "kms_key_id", None)
     return Volume(
@@ -166,15 +243,84 @@ def normalize_db_backup_status(raw_database: Any) -> str:
     return "enabled" if enabled else "disabled"
 
 
-def normalize_autonomous_backup_status(raw_adb: Any) -> str:
-    """Autonomous DB has no explicit enable/disable flag; derives
-    enabled/disabled from backup_retention_period_in_days (>0 = enabled,
-    0 = disabled), unknown if absent."""
+def normalize_autonomous_database_posture(raw_adb: Any) -> dict[str, Any]:
+    """Autonomous Database has no auto_backup_enabled-style boolean (unlike Base DB's
+    DbBackupConfig) and public_endpoint is a hostname string, not a boolean -- deriving a
+    single compressed enabled/disabled or public/private verdict from either would guess.
+    Retains raw fields and derives only presence facts (public/private endpoint present,
+    access control configured, long-term schedule configured) rather than a status.
 
-    retention_days = getattr(raw_adb, "backup_retention_period_in_days", None)
-    if retention_days is None:
-        return "unknown"
-    return "enabled" if retention_days > 0 else "disabled"
+    AutonomousDatabaseSummary always declares these attributes; None means Oracle returned
+    no value for an existing resource (e.g. no public endpoint), not that the field is
+    unreachable -- so the presence facts below resolve to a definite bool, never unknown.
+    Raw non-presence fields (mtls_required, backup retention) pass through None as-is."""
+
+    public_endpoint_hostname = getattr(raw_adb, "public_endpoint", None) or None
+    private_endpoint = getattr(raw_adb, "private_endpoint", None)
+    whitelisted_ips = getattr(raw_adb, "whitelisted_ips", None) or ()
+    long_term_backup_schedule = getattr(raw_adb, "long_term_backup_schedule", None)
+
+    return {
+        "public_endpoint_hostname": public_endpoint_hostname,
+        "private_endpoint_configured": bool(private_endpoint),
+        "public_endpoint_present": bool(public_endpoint_hostname),
+        "access_control_enabled": bool(whitelisted_ips),
+        "allowed_source_count": len(whitelisted_ips),
+        "mtls_required": getattr(raw_adb, "is_mtls_connection_required", None),
+        "network_security_group_ids": tuple(getattr(raw_adb, "nsg_ids", None) or ()),
+        "backup_retention_days": getattr(raw_adb, "backup_retention_period_in_days", None),
+        "backup_retention_locked": getattr(raw_adb, "is_backup_retention_locked", None),
+        "long_term_backup_schedule_configured": long_term_backup_schedule is not None,
+    }
+
+
+def normalize_db_system_detail(raw_db_system: Any) -> dict[str, Any]:
+    """Raw base_db_system fields the review calls out as lost by generic normalization:
+    shape, version, OS patch level, node count, redundancy, subnet, NSGs."""
+
+    return {
+        "shape": getattr(raw_db_system, "shape", None),
+        "version": getattr(raw_db_system, "version", None),
+        "os_version": getattr(raw_db_system, "os_version", None),
+        "node_count": getattr(raw_db_system, "node_count", None),
+        "disk_redundancy": getattr(raw_db_system, "disk_redundancy", None),
+        "subnet_id": getattr(raw_db_system, "subnet_id", None),
+        "network_security_group_ids": tuple(getattr(raw_db_system, "nsg_ids", None) or ()),
+    }
+
+
+def normalize_database_detail(raw_database: Any) -> dict[str, Any]:
+    """Raw base_database fields the review calls out as lost: backup config detail beyond
+    the compressed enabled/disabled status, last/failed backup timestamps, patch version,
+    management config."""
+
+    backup_config = getattr(raw_database, "db_backup_config", None)
+    management_config = getattr(raw_database, "database_management_config", None)
+    return {
+        "last_backup_timestamp": normalize_timestamp(getattr(raw_database, "last_backup_timestamp", None)),
+        "last_failed_backup_timestamp": normalize_timestamp(
+            getattr(raw_database, "last_failed_backup_timestamp", None)
+        ),
+        "patch_version": getattr(raw_database, "patch_version", None),
+        "recovery_window_days": (
+            getattr(backup_config, "recovery_window_in_days", None) if backup_config else None
+        ),
+        "database_management_status": (
+            getattr(management_config, "database_management_status", None) if management_config else None
+        ),
+    }
+
+
+def normalize_data_guard_detail(raw_dg: Any) -> dict[str, Any]:
+    """Raw data_guard fields the review calls out as lost: role, peer role, protection
+    mode, transport type -- previously only the bare bidirectional link survived."""
+
+    return {
+        "data_guard_role": getattr(raw_dg, "role", None),
+        "data_guard_peer_role": getattr(raw_dg, "peer_role", None),
+        "data_guard_protection_mode": getattr(raw_dg, "protection_mode", None),
+        "data_guard_transport_type": getattr(raw_dg, "transport_type", None),
+    }
 
 
 def normalize_database_resource(
@@ -183,8 +329,8 @@ def normalize_database_resource(
     database_type: str,
     source_type: str,
     backup_status: str = "not_applicable",
-    public_endpoint: bool | None = None,
     compartment_id: str | None = None,
+    detail_fields: Mapping[str, Any] | None = None,
 ) -> DatabaseResource:
     fields = _common_fields(raw, source_type=source_type)
     if compartment_id is not None:
@@ -192,8 +338,8 @@ def normalize_database_resource(
     return DatabaseResource(
         **fields,
         database_type=database_type,
-        public_endpoint=public_endpoint,
         backup_status=backup_status,
         kms_key_id=getattr(raw, "kms_key_id", None),
         # related_resource_ids filled in by transform.relationships.
+        **(detail_fields or {}),
     )

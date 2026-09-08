@@ -11,7 +11,7 @@
     "collectorVersion",
     "collectedAt",
     "snapshotStatus",
-    "snapshotFresh",
+    "freshnessThresholdHours",
     "tenancy",
     "scope",
     "manifest",
@@ -52,8 +52,10 @@
         "failed"
       ]
     },
-    "snapshotFresh": {
-      "type": "boolean"
+    "freshnessThresholdHours": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Configured decisions.freshnessHours at collection time. This record is not re-evaluated after upload -- Drata always displays whatever was last written, including after a later collector run fails and the prior record is left untouched by upsert-on-success. A reader (human, or a Custom Test authored in the Drata UI) must independently compute staleness as now - collectedAt > freshnessThresholdHours; no field in this record can self-report current freshness."
     },
     "tenancy": {
       "$ref": "#/definitions/tenancy"
@@ -537,25 +539,25 @@
         "routeTables": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/routeTable"
           }
         },
         "internetGateways": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/internetGateway"
           }
         },
         "securityLists": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/securityList"
           }
         },
         "networkSecurityGroups": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/networkSecurityGroup"
           }
         },
         "dbSystems": {
@@ -757,6 +759,112 @@
         }
       ]
     },
+    "portRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": ["integer", "null"] },
+        "max": { "type": ["integer", "null"] }
+      }
+    },
+    "routeRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "destinationType", "networkEntityId", "description"],
+      "properties": {
+        "destination": { "type": ["string", "null"] },
+        "destinationType": { "type": ["string", "null"] },
+        "networkEntityId": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] }
+      }
+    },
+    "securityRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction", "protocol", "source", "sourceType", "destination",
+        "destinationType", "isStateless", "tcpPortRange", "udpPortRange", "description"
+      ],
+      "properties": {
+        "direction": { "type": "string", "enum": ["ingress", "egress", "unknown"] },
+        "protocol": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "sourceType": { "type": ["string", "null"] },
+        "destination": { "type": ["string", "null"] },
+        "destinationType": { "type": ["string", "null"] },
+        "isStateless": { "type": ["boolean", "null"] },
+        "tcpPortRange": {
+          "anyOf": [{ "$ref": "#/definitions/portRange" }, { "type": "null" }]
+        },
+        "udpPortRange": {
+          "anyOf": [{ "$ref": "#/definitions/portRange" }, { "type": "null" }]
+        },
+        "description": { "type": ["string", "null"] }
+      }
+    },
+    "routeTable": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["routeRules"],
+          "properties": {
+            "routeRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/routeRule" }
+            }
+          }
+        }
+      ]
+    },
+    "securityList": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["ingressRules", "egressRules"],
+          "properties": {
+            "ingressRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/securityRule" }
+            },
+            "egressRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/securityRule" }
+            }
+          }
+        }
+      ]
+    },
+    "networkSecurityGroup": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["securityRules"],
+          "properties": {
+            "securityRules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/securityRule" }
+            }
+          }
+        }
+      ]
+    },
+    "internetGateway": {
+      "allOf": [
+        { "$ref": "#/definitions/commonResource" },
+        {
+          "type": "object",
+          "required": ["isEnabled", "vcnId"],
+          "properties": {
+            "isEnabled": { "type": ["boolean", "null"] },
+            "vcnId": { "type": ["string", "null"] }
+          }
+        }
+      ]
+    },
     "databaseResource": {
       "allOf": [
         {
@@ -766,10 +874,34 @@
           "type": "object",
           "required": [
             "databaseType",
-            "publicEndpoint",
             "backupStatus",
             "kmsKeyId",
-            "relatedResourceIds"
+            "relatedResourceIds",
+            "publicEndpointHostname",
+            "privateEndpointConfigured",
+            "publicEndpointPresent",
+            "accessControlEnabled",
+            "allowedSourceCount",
+            "mtlsRequired",
+            "networkSecurityGroupIds",
+            "backupRetentionDays",
+            "backupRetentionLocked",
+            "longTermBackupScheduleConfigured",
+            "shape",
+            "version",
+            "osVersion",
+            "nodeCount",
+            "diskRedundancy",
+            "subnetId",
+            "lastBackupTimestamp",
+            "lastFailedBackupTimestamp",
+            "patchVersion",
+            "recoveryWindowDays",
+            "databaseManagementStatus",
+            "dataGuardRole",
+            "dataGuardPeerRole",
+            "dataGuardProtectionMode",
+            "dataGuardTransportType"
           ],
           "properties": {
             "databaseType": {
@@ -781,12 +913,6 @@
                 "autonomous_database",
                 "backup",
                 "data_guard"
-              ]
-            },
-            "publicEndpoint": {
-              "type": [
-                "boolean",
-                "null"
               ]
             },
             "backupStatus": {
@@ -806,6 +932,133 @@
             },
             "relatedResourceIds": {
               "$ref": "#/definitions/stringArray"
+            },
+            "publicEndpointHostname": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw public_endpoint hostname/URL, null if not applicable or not configured."
+            },
+            "privateEndpointConfigured": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if a private_endpoint is configured; null if not applicable/unknown."
+            },
+            "publicEndpointPresent": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if publicEndpointHostname is non-empty; null if not applicable/unknown."
+            },
+            "accessControlEnabled": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if an allowed-source (whitelisted IP) ACL is configured; null if not applicable/unknown."
+            },
+            "allowedSourceCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Autonomous Database only. Count of configured allowed-source entries (whitelisted IPs); not the raw IP list."
+            },
+            "mtlsRequired": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw is_mtls_connection_required; null if not applicable/unknown."
+            },
+            "networkSecurityGroupIds": {
+              "$ref": "#/definitions/stringArray",
+              "description": "Autonomous Database and base_db_system. Empty array if not applicable."
+            },
+            "backupRetentionDays": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw backup_retention_period_in_days; null if not applicable/unknown."
+            },
+            "backupRetentionLocked": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. Raw is_backup_retention_locked; null if not applicable/unknown."
+            },
+            "longTermBackupScheduleConfigured": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Autonomous Database only. True if long_term_backup_schedule is present; null if not applicable/unknown."
+            },
+            "shape": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw shape."
+            },
+            "version": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw Grid Infrastructure/DB version."
+            },
+            "osVersion": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw os_version."
+            },
+            "nodeCount": {
+              "type": ["integer", "null"],
+              "description": "base_db_system only. Raw node_count."
+            },
+            "diskRedundancy": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw disk_redundancy."
+            },
+            "subnetId": {
+              "type": ["string", "null"],
+              "description": "base_db_system only. Raw subnet_id."
+            },
+            "lastBackupTimestamp": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw last_backup_timestamp, RFC3339 UTC."
+            },
+            "lastFailedBackupTimestamp": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw last_failed_backup_timestamp, RFC3339 UTC."
+            },
+            "patchVersion": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw patch_version."
+            },
+            "recoveryWindowDays": {
+              "type": ["integer", "null"],
+              "description": "base_database only. Raw db_backup_config.recovery_window_in_days."
+            },
+            "databaseManagementStatus": {
+              "type": ["string", "null"],
+              "description": "base_database only. Raw database_management_config.database_management_status."
+            },
+            "dataGuardRole": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw role."
+            },
+            "dataGuardPeerRole": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw peer_role."
+            },
+            "dataGuardProtectionMode": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw protection_mode."
+            },
+            "dataGuardTransportType": {
+              "type": ["string", "null"],
+              "description": "data_guard only. Raw transport_type."
             }
           }
         }

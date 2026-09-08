@@ -1,4 +1,4 @@
-"""Validates aggregate record against schemas/oci-snapshot-1.0.0.json via jsonschema Draft-07.
+"""Validates aggregate record against oci_drata/schemas/oci-snapshot-1.0.0.json via jsonschema Draft-07.
 AJV and Draft-07 differ on allOf/additionalProperties interaction; recheck if schema changes.
 """
 
@@ -12,7 +12,8 @@ from typing import Any
 
 import jsonschema
 
-DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent.parent / "schemas" / "oci-snapshot-1.0.0.json"
+SCHEMA_RESOURCE_PACKAGE = "oci_drata.schemas"
+SCHEMA_RESOURCE_NAME = "oci-snapshot-1.0.0.json"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -30,10 +31,13 @@ class SchemaValidationResult:
     errors: tuple[SchemaValidationError, ...]
 
 
-def load_schema(path: Path | str = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
-    schema_path = Path(path)
-    with schema_path.open("r", encoding="utf-8") as fh:
-        schema = json.load(fh)
+def load_schema(path: Path | str | None = None) -> dict[str, Any]:
+    if path is not None:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            schema = json.load(fh)
+    else:
+        resource = importlib.resources.files(SCHEMA_RESOURCE_PACKAGE).joinpath(SCHEMA_RESOURCE_NAME)
+        schema = json.loads(resource.read_text(encoding="utf-8"))
     jsonschema.Draft7Validator.check_schema(schema)
     return schema
 

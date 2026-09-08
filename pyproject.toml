@@ -23,6 +23,7 @@ dev = [
     "mypy>=1.10,<2",
     "types-PyYAML",
     "types-jsonschema",
+    "build>=1.2,<2",
 ]
 
 [project.scripts]
@@ -30,6 +31,9 @@ oci-drata = "oci_drata.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"oci_drata.schemas" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

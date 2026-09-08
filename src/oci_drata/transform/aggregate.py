@@ -38,7 +38,7 @@ from oci_drata.transform import normalize, relationships
 from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposure
 from oci_drata.transform.vpn_posture import derive_vpn_posture
 
-DERIVATION_VERSION = "1.0.0"
+DERIVATION_VERSION = "1.1.0"
 SCHEMA_VERSION = "1.0.0"
 COLLECTOR_VERSION = "0.1.0"
 
@@ -134,15 +134,13 @@ def build_snapshot(
     ]
     vcns = [normalize.normalize_common(v, source_type="vcn") for v in networking.vcns]
     subnets = [normalize.normalize_common(s, source_type="subnet") for s in networking.subnets]
-    route_tables = [normalize.normalize_common(r, source_type="route_table") for r in networking.route_tables]
-    internet_gateways = [
-        normalize.normalize_common(g, source_type="internet_gateway") for g in networking.internet_gateways
-    ]
-    security_lists = [
-        normalize.normalize_common(s, source_type="security_list") for s in networking.security_lists
-    ]
+    route_tables = [normalize.normalize_route_table(r) for r in networking.route_tables]
+    internet_gateways = [normalize.normalize_internet_gateway(g) for g in networking.internet_gateways]
+    security_lists = [normalize.normalize_security_list(s) for s in networking.security_lists]
     network_security_groups = [
-        normalize.normalize_common(n, source_type="network_security_group")
+        normalize.normalize_network_security_group(
+            n, security_rules=networking.nsg_security_rules_by_nsg_id.get(n.id, [])
+        )
         for n in networking.network_security_groups
     ]
     boot_volume_attachments = [
@@ -170,7 +168,10 @@ def build_snapshot(
 
     # -- Base + Autonomous Database ----------------------------------------
     db_systems = [
-        normalize.normalize_database_resource(s, database_type="base_db_system", source_type="db_system")
+        normalize.normalize_database_resource(
+            s, database_type="base_db_system", source_type="db_system",
+            detail_fields=normalize.normalize_db_system_detail(s),
+        )
         for s in database_base.db_systems
     ]
     db_homes = [
@@ -181,6 +182,7 @@ def build_snapshot(
         normalize.normalize_database_resource(
             d, database_type="base_database", source_type="database",
             backup_status=normalize.normalize_db_backup_status(d),
+            detail_fields=normalize.normalize_database_detail(d),
         )
         for d in database_base.databases
     ]
@@ -192,6 +194,7 @@ def build_snapshot(
         normalize.normalize_database_resource(
             g, database_type="data_guard", source_type="data_guard_association",
             compartment_id="",  # backfilled by resolve_base_database_relationships
+            detail_fields=normalize.normalize_data_guard_detail(g),
         )
         for g in database_base.data_guard_associations
     ]
@@ -210,8 +213,8 @@ def build_snapshot(
     autonomous_databases = [
         normalize.normalize_database_resource(
             a, database_type="autonomous_database", source_type="autonomous_database",
-            backup_status=normalize.normalize_autonomous_backup_status(a),
-            public_endpoint=getattr(a, "public_endpoint", None),
+            backup_status="not_applicable",  # no reliable enabled/disabled signal -- see posture fields
+            detail_fields=normalize.normalize_autonomous_database_posture(a),
         )
         for a in autonomous_database.autonomous_databases
     ]
@@ -221,7 +224,8 @@ def build_snapshot(
     ]
     autonomous_dg = [
         normalize.normalize_database_resource(
-            g, database_type="data_guard", source_type="data_guard_association", compartment_id=""
+            g, database_type="data_guard", source_type="data_guard_association", compartment_id="",
+            detail_fields=normalize.normalize_data_guard_detail(g),
         )
         for g in autonomous_database.autonomous_database_dataguard_associations
     ]
@@ -354,7 +358,7 @@ def build_snapshot(
         "baseDatabaseCount": len(base_databases),
         "autonomousDatabaseCount": len(autonomous_databases),
         "databasePublicEndpointCount": sum(
-            1 for a in autonomous_databases if a.public_endpoint is True
+            1 for a in autonomous_databases if a.public_endpoint_present is True
         ),
         "databaseBackupUnknownCount": sum(
             1 for d in (*base_databases, *autonomous_databases) if d.backup_status == "unknown"
@@ -437,7 +441,7 @@ def build_snapshot(
         "collectorVersion": COLLECTOR_VERSION,
         "collectedAt": normalize.normalize_timestamp(completed_at),
         "snapshotStatus": "complete",  # overwritten by the caller once completeness is decided
-        "snapshotFresh": True,
+        "freshnessThresholdHours": app_config.decisions.freshness_hours,
         "tenancy": tenancy_dict,
         "scope": {
             "expectedRegions": list(app_config.oci.regions.allow),
