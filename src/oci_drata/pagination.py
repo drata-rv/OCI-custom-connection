@@ -14,7 +14,7 @@ import dataclasses
 import logging
 import random
 import time
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Iterable, TypeVar
 
 import oci
 
@@ -65,6 +65,16 @@ class OperationResult:
     @property
     def ok(self) -> bool:
         return self.status == "success"
+
+
+def operations_complete(operations: Iterable["OperationResult"]) -> bool:
+    """A domain is complete when nothing in it failed. ``unsupported``
+    (e.g. an operation absent from the pinned SDK version, or Exadata
+    detection halting further database collection) and ``skipped`` (a
+    service module disabled via configuration) are not failures -- only
+    ``failed`` blocks completeness, per spec section 10."""
+
+    return all(op.status != "failed" for op in operations)
 
 
 class _RetryExhausted(Exception):
@@ -143,6 +153,12 @@ def paginate(
     page_token: str | None = None
     while True:
         kwargs = dict(call_kwargs)
+        # compartment_id is captured separately so it always lands in the
+        # manifest even for operations that don't take one (e.g. get_tenancy
+        # keyed by tenancy_id); forward it to the call itself here, since
+        # nearly every OCI list_*/get_* operation requires it as a named arg.
+        if compartment_id is not None:
+            kwargs.setdefault("compartment_id", compartment_id)
         if page_token is not None:
             kwargs["page"] = page_token
         try:
