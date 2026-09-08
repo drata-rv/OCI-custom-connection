@@ -128,7 +128,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Exhaust every `opc-next-page` | `pagination.py::paginate` | `test_pagination.py::test_paginate_exhausts_multiple_pages_including_empty_page_with_token` |
 | Dynamic regional client construction | `oci_auth.py::regional_client` | exercised by every collector test |
 | Verify regions subscribed + READY | `collection/discovery.py::_resolve_regions`, `_discovery_region` (bootstraps from the OCI SDK config file's own validated region, not `oci.regions.allow[0]`, so an invalid/unsubscribed first entry fails with a clean diagnostic instead of a raw connection error) | `tests/unit/test_discovery.py` |
-| Compartment allow/deny, deterministic | `collection/discovery.py` | same |
+| Compartment allow/deny, deterministic, subtree-exclusion (`collection/discovery.py::_expand_to_subtrees` -- excluding a compartment excludes its whole subtree, not just the exact configured OCID; overlapping configured roots dedupe by id instead of producing duplicate entries) | `collection/discovery.py` | `tests/unit/test_discovery.py` |
 | Bounded concurrency + retry w/ jitter | `pagination.py::RetryPolicy` (per-call), `cli.py::_run_independent_collectors` (`ThreadPoolExecutor`, cross-collector) | `test_pagination.py` (retry), `test_cli.py` (concurrency wiring) |
 | Preserve unknown enum values | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum`) | — |
 | Normalize timestamps to UTC RFC3339 | `transform/normalize.py::normalize_timestamp` | `test_normalize_and_relationships.py` (4 cases incl. non-UTC conversion, naive-datetime rejection) |

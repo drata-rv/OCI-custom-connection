@@ -91,6 +91,7 @@ def discover(
     approved_regions, unready_regions = _resolve_regions(app_config, region_sub_op)
 
     all_compartments: list[Any] = []
+    seen_compartment_ids: set[str] = set()
     for root in app_config.oci.compartments.roots:
         root_id = tenancy_ocid if root == "tenancy" else root
         op = paginate(
@@ -105,14 +106,20 @@ def discover(
         )
         operations.append(op)
         # Compartments aren't regional; stamped with discovery region only to satisfy schema's non-null region field.
-        all_compartments.extend(stamp_region(op.items, region))
+        for c in stamp_region(op.items, region):
+            # Overlapping configured roots (e.g. an ancestor and one of its own descendants
+            # both listed) would otherwise walk the same compartment's subtree twice.
+            if c.id not in seen_compartment_ids:
+                seen_compartment_ids.add(c.id)
+                all_compartments.append(c)
 
     # list_compartments never returns the root itself; roots stay in scope separately.
     root_ids = {
         (tenancy_ocid if root == "tenancy" else root) for root in app_config.oci.compartments.roots
     }
 
-    excluded = set(app_config.oci.compartments.exclude_ocids)
+    excluded_configured = set(app_config.oci.compartments.exclude_ocids)
+    excluded = _expand_to_subtrees(all_compartments, excluded_configured)
     inaccessible = tuple(sorted(c.id for c in all_compartments if not getattr(c, "is_accessible", True)))
     active_ids = {
         c.id for c in all_compartments if getattr(c, "lifecycle_state", None) == "ACTIVE"
@@ -148,6 +155,30 @@ def discover(
         availability_domains_by_region=availability_domains_by_region,
         operations=operations,
     )
+
+
+def _expand_to_subtrees(all_compartments: list[Any], seed_ids: set[str]) -> set[str]:
+    """Expands a set of excluded compartment OCIDs to include every descendant, computed
+    from each compartment's own compartment_id (its parent) as returned by
+    list_compartments. Excluding a parent while leaving its children in scope is the exact
+    surprising/unsafe case this closes -- exclusion must apply to the whole subtree, not
+    just the exact OCID configured."""
+
+    children_by_parent: dict[str, list[str]] = {}
+    for c in all_compartments:
+        parent_id = getattr(c, "compartment_id", None)
+        if parent_id:
+            children_by_parent.setdefault(parent_id, []).append(c.id)
+
+    expanded = set(seed_ids)
+    frontier = list(seed_ids)
+    while frontier:
+        current = frontier.pop()
+        for child_id in children_by_parent.get(current, ()):
+            if child_id not in expanded:
+                expanded.add(child_id)
+                frontier.append(child_id)
+    return expanded
 
 
 def _resolve_regions(
