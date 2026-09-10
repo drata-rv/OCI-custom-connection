@@ -22,7 +22,7 @@ to MVP scope.
 | 14 | Upload only complete snapshots | `validation/completeness.py`, `cli.py::run` | `tests/integration/test_end_to_end.py`, `test_cli.py` |
 | 15 | Preserve last known-good record | `cli.py::run` (upload gated on `decision.should_upload`; no call means Drata's existing record is untouched by construction) | `tests/integration/test_cli.py::test_incomplete_run_blocks_upload` |
 | 16 | Dry-run mode + sanitized collection report | `cli.py` | `tests/integration/test_cli.py::test_dry_run_writes_sanitized_snapshot_and_report` |
-| 17 | Unit + mocked integration tests, no live credentials | `tests/unit/*`, `tests/integration/*` | 119 tests, all mocked, `pytest` runs with no OCI/Drata credentials present |
+| 17 | Unit + mocked integration tests, no live credentials | `tests/unit/*`, `tests/integration/*` | 221 tests, all mocked, `pytest` runs with no OCI/Drata credentials present |
 | 18 | Documentation | `README.md`, this file | — |
 
 ## 2. OCI API operations
@@ -160,6 +160,7 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Signer repr never leaks account metadata | `oci_auth.py::TenancySigner.__repr__` allowlists `authentication_type`/`region` only (previously blocklisted only `pass_phrase`, leaking tenancy/user OCIDs, key fingerprint, and the private key's filesystem path into any log line or exception traceback that formatted the object) | `tests/unit/test_oci_auth.py` |
 | Config fields fail closed on the wrong type/range, not a loose coercion | `config.py::_require_bool`/`_require_int`/`_require_port_list`/`_require_cidr_list`/`_check_known_keys` — a quoted `"false"` (`bool("false") is True`), a zero/negative id, an out-of-range port, a malformed CIDR, or an unrecognized/typo'd key now fails at config-load time with a field path, instead of silently coercing or being ignored | `tests/unit/test_config.py` |
 | Drata `baseUrl` is allowlisted, not arbitrary | `config.py::_validate_drata_base_url` requires `https`, no embedded credentials/query/fragment/`..`, and hostname `public-api.drata.com` unless `drata.allowAlternateHost: true` is set explicitly (logs a warning when used) — the bearer token can't be sent to an unintended host via a tampered or typo'd config | `tests/unit/test_config.py` |
+| Drata delivery honors `Retry-After`, closes its own session, captures a request id | `delivery/drata.py::_retry_after_seconds` (seconds or HTTP-date form, capped at `max_delay_seconds` regardless of what the server asked for), `_request_id` (`X-Request-Id`/`X-Request-ID`/`Request-Id`/`X-Correlation-Id`, whichever is present, on every non-transport-failure `DeliveryResult`), and `upsert_record` only calls `.close()` on a `requests.Session` it created itself, never one the caller passed in. `timeout_seconds` is now a parameter (was hardcoded to 30). | `tests/unit/test_drata_delivery.py` |
 | Output files restricted to the process owner | `cli.py::_prepare_restricted_output_dir`/`_write_restricted` — the output directory is `0700` (tightened even if it pre-exists with looser permissions) and every written file is `0600` from the moment it's created (`os.open` with the mode set at creation, not a write-then-chmod window); both refuse a pre-existing symlink at that path rather than following it | `tests/integration/test_cli.py` |
 
 ## 5. Assumptions and simplifications

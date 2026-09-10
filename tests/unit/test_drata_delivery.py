@@ -21,8 +21,14 @@ def drata_config(monkeypatch: pytest.MonkeyPatch) -> DrataConfig:
     )
 
 
-def _response(status_code: int, text: str = "{}") -> MagicMock:
-    return MagicMock(status_code=status_code, text=text)
+def _response(status_code: int, text: str = "{}", headers: dict | None = None) -> MagicMock:
+    """headers defaults to a real (empty) dict, not an unset MagicMock attribute --
+    response.headers.get(...) on an unconfigured MagicMock returns another MagicMock,
+    which is truthy and even survives float() (MagicMock's __float__ default is 1.0),
+    silently masking what response.headers.get(...) actually does on a real
+    requests.Response (returns None for an absent header)."""
+
+    return MagicMock(status_code=status_code, text=text, headers=headers or {})
 
 
 def test_initial_upsert_201_is_created(drata_config: DrataConfig) -> None:
@@ -148,3 +154,114 @@ def test_transport_exception_exhaustion_returns_transport_error(drata_config: Dr
     assert result.error_class == "transport"
     assert result.attempts == 3
     assert session.post.call_count == 3
+
+
+def test_retry_after_seconds_form_is_honored(drata_config: DrataConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P2: a 429 with Retry-After must sleep for (approximately) that long, not the
+    generic jitter policy -- honoring the server's own throttling guidance."""
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("oci_drata.delivery.drata.time.sleep", lambda s: sleeps.append(s))
+
+    session = MagicMock()
+    session.post.side_effect = [
+        _response(429, "slow down", headers={"Retry-After": "7"}),
+        _response(201),
+    ]
+    result = upsert_record(drata_config, {"id": "x"}, session=session, max_delay_seconds=30.0)
+    assert result.uploaded is True
+    assert sleeps == [7.0]
+
+
+def test_retry_after_capped_at_max_delay_seconds(drata_config: DrataConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server-directed delay longer than our own safety cap must be capped, not
+    obeyed verbatim -- a misbehaving or compromised server shouldn't be able to stall
+    this indefinitely."""
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("oci_drata.delivery.drata.time.sleep", lambda s: sleeps.append(s))
+
+    session = MagicMock()
+    session.post.side_effect = [
+        _response(429, "slow down", headers={"Retry-After": "9999"}),
+        _response(201),
+    ]
+    result = upsert_record(drata_config, {"id": "x"}, session=session, max_delay_seconds=5.0)
+    assert result.uploaded is True
+    assert sleeps == [5.0]
+
+
+def test_malformed_retry_after_falls_back_to_jitter(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.side_effect = [
+        _response(429, "slow down", headers={"Retry-After": "not-a-number-or-date"}),
+        _response(201),
+    ]
+    result = upsert_record(
+        drata_config, {"id": "x"}, session=session,
+        base_delay_seconds=0.001, max_delay_seconds=0.002,
+    )
+    assert result.uploaded is True
+    assert result.attempts == 2
+
+
+def test_retry_after_http_date_form_is_honored(drata_config: DrataConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    import datetime
+    import email.utils
+
+    fixed_now = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
+
+    class _FixedDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr("oci_drata.delivery.drata.datetime.datetime", _FixedDatetime)
+    sleeps: list[float] = []
+    monkeypatch.setattr("oci_drata.delivery.drata.time.sleep", lambda s: sleeps.append(s))
+
+    retry_at = fixed_now + datetime.timedelta(seconds=10)
+    session = MagicMock()
+    session.post.side_effect = [
+        _response(429, "slow down", headers={"Retry-After": email.utils.format_datetime(retry_at, usegmt=True)}),
+        _response(201),
+    ]
+    result = upsert_record(drata_config, {"id": "x"}, session=session, max_delay_seconds=30.0)
+    assert result.uploaded is True
+    assert sleeps == [pytest.approx(10.0, abs=0.01)]
+
+
+def test_request_id_captured_from_response_header(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201, headers={"X-Request-Id": "req-abc123"})
+    result = upsert_record(drata_config, {"id": "x"}, session=session)
+    assert result.request_id == "req-abc123"
+
+
+def test_request_id_none_when_header_absent(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    result = upsert_record(drata_config, {"id": "x"}, session=session)
+    assert result.request_id is None
+
+
+def test_caller_provided_session_is_never_closed(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    upsert_record(drata_config, {"id": "x"}, session=session)
+    session.close.assert_not_called()
+
+
+def test_internally_created_session_is_closed(drata_config: DrataConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    created_session = MagicMock()
+    created_session.post.return_value = _response(201)
+    monkeypatch.setattr("oci_drata.delivery.drata.requests.Session", lambda: created_session)
+    upsert_record(drata_config, {"id": "x"})
+    created_session.close.assert_called_once()
+
+
+def test_timeout_seconds_is_passed_through_to_post(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    upsert_record(drata_config, {"id": "x"}, session=session, timeout_seconds=45.0)
+    assert session.post.call_args.kwargs["timeout"] == 45.0
