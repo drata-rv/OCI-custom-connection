@@ -35,7 +35,11 @@ from oci_drata.pagination import OperationResult
 from oci_drata.transform import findings as findings_mod
 from oci_drata.transform import normalize, relationships
 from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposure
-from oci_drata.transform.lifecycle import exclude_referencing, split_by_lifecycle
+from oci_drata.transform.lifecycle import (
+    exclude_lifecycle_cascade,
+    exclude_referencing,
+    split_by_lifecycle,
+)
 from oci_drata.transform.vpn_posture import derive_vpn_posture
 
 DERIVATION_VERSION = "1.3.0"
@@ -184,16 +188,56 @@ def build_snapshot(
     )
 
     # -- Base + Autonomous Database ----------------------------------------
+    # Cascading lifecycle exclusion: a terminated parent's children are excluded with
+    # it (db_system -> db_home -> database -> backup/data_guard), not just resources
+    # terminated in their own right -- otherwise a child of an excluded parent would
+    # surface as an unresolved relationship (parent not found) instead of correctly
+    # reflecting that its whole lineage is gone. See transform/lifecycle.py.
+    excluded_lifecycle_ids: dict[str, list[str]] = {}
+
+    def _track_excluded(label: str, excluded_raw: list[Any]) -> None:
+        if excluded_raw:
+            excluded_lifecycle_ids.setdefault(label, []).extend(r.id for r in excluded_raw)
+
+    kept_db_systems_raw, excluded_db_systems_raw = exclude_lifecycle_cascade(
+        database_base.db_systems, parent_excluded_ids=set(), parent_id_field=None
+    )
+    _track_excluded("db_system", excluded_db_systems_raw)
+    excluded_db_system_ids = {s.id for s in excluded_db_systems_raw}
+
+    kept_db_homes_raw, excluded_db_homes_raw = exclude_lifecycle_cascade(
+        database_base.db_homes, parent_excluded_ids=excluded_db_system_ids, parent_id_field="db_system_id"
+    )
+    _track_excluded("db_home", excluded_db_homes_raw)
+    excluded_db_home_ids = {h.id for h in excluded_db_homes_raw}
+
+    kept_databases_raw, excluded_databases_raw = exclude_lifecycle_cascade(
+        database_base.databases, parent_excluded_ids=excluded_db_home_ids, parent_id_field="db_home_id"
+    )
+    _track_excluded("database", excluded_databases_raw)
+    excluded_database_ids = {d.id for d in excluded_databases_raw}
+
+    kept_base_backups_raw, excluded_base_backups_raw = exclude_lifecycle_cascade(
+        database_base.backups, parent_excluded_ids=excluded_database_ids, parent_id_field="database_id"
+    )
+    _track_excluded("backup", excluded_base_backups_raw)
+
+    kept_base_dg_raw, excluded_base_dg_raw = exclude_lifecycle_cascade(
+        database_base.data_guard_associations,
+        parent_excluded_ids=excluded_database_ids, parent_id_field="database_id",
+    )
+    _track_excluded("data_guard_association", excluded_base_dg_raw)
+
     db_systems = [
         normalize.normalize_database_resource(
             s, database_type="base_db_system", source_type="db_system",
             detail_fields=normalize.normalize_db_system_detail(s),
         )
-        for s in database_base.db_systems
+        for s in kept_db_systems_raw
     ]
     db_homes = [
         normalize.normalize_database_resource(h, database_type="db_home", source_type="db_home")
-        for h in database_base.db_homes
+        for h in kept_db_homes_raw
     ]
     base_databases = [
         normalize.normalize_database_resource(
@@ -201,11 +245,11 @@ def build_snapshot(
             backup_status=normalize.normalize_db_backup_status(d),
             detail_fields=normalize.normalize_database_detail(d),
         )
-        for d in database_base.databases
+        for d in kept_databases_raw
     ]
     base_backups = [
         normalize.normalize_database_resource(b, database_type="backup", source_type="backup")
-        for b in database_base.backups
+        for b in kept_base_backups_raw
     ]
     base_dg = [
         normalize.normalize_database_resource(
@@ -213,19 +257,44 @@ def build_snapshot(
             compartment_id="",  # backfilled by resolve_base_database_relationships
             detail_fields=normalize.normalize_data_guard_detail(g),
         )
-        for g in database_base.data_guard_associations
+        for g in kept_base_dg_raw
     ]
     (db_systems, db_homes, base_databases, base_backups, base_dg, unresolved) = (
         relationships.resolve_base_database_relationships(
-            raw_db_systems=database_base.db_systems, db_systems=db_systems,
-            raw_db_homes=database_base.db_homes, db_homes=db_homes,
-            raw_databases=database_base.databases, databases=base_databases,
-            raw_backups=database_base.backups, backups=base_backups,
-            raw_data_guard_associations=database_base.data_guard_associations,
+            raw_db_systems=kept_db_systems_raw, db_systems=db_systems,
+            raw_db_homes=kept_db_homes_raw, db_homes=db_homes,
+            raw_databases=kept_databases_raw, databases=base_databases,
+            raw_backups=kept_base_backups_raw, backups=base_backups,
+            raw_data_guard_associations=kept_base_dg_raw,
             data_guard_associations=base_dg,
         )
     )
     all_unresolved.extend(unresolved)
+
+    kept_autonomous_databases_raw, excluded_autonomous_databases_raw = exclude_lifecycle_cascade(
+        autonomous_database.autonomous_databases, parent_excluded_ids=set(), parent_id_field=None
+    )
+    _track_excluded("autonomous_database", excluded_autonomous_databases_raw)
+    excluded_adb_ids = {a.id for a in excluded_autonomous_databases_raw}
+    kept_adb_ids = {a.id for a in kept_autonomous_databases_raw}
+
+    kept_autonomous_backups_raw, excluded_autonomous_backups_raw = exclude_lifecycle_cascade(
+        autonomous_database.autonomous_database_backups,
+        parent_excluded_ids=excluded_adb_ids, parent_id_field="autonomous_database_id",
+    )
+    _track_excluded("autonomous_database_backup", excluded_autonomous_backups_raw)
+
+    kept_autonomous_dg_raw, excluded_autonomous_dg_raw = exclude_lifecycle_cascade(
+        autonomous_database.autonomous_database_dataguard_associations,
+        parent_excluded_ids=excluded_adb_ids, parent_id_field="autonomous_database_id",
+    )
+    _track_excluded("autonomous_database_dataguard_association", excluded_autonomous_dg_raw)
+
+    kept_peers_by_adb_id = {
+        adb_id: peers
+        for adb_id, peers in autonomous_database.autonomous_database_peers_by_adb_id.items()
+        if adb_id in kept_adb_ids
+    }
 
     autonomous_databases = [
         normalize.normalize_database_resource(
@@ -233,29 +302,27 @@ def build_snapshot(
             backup_status="not_applicable",  # no reliable enabled/disabled signal -- see posture fields
             detail_fields=normalize.normalize_autonomous_database_posture(a),
         )
-        for a in autonomous_database.autonomous_databases
+        for a in kept_autonomous_databases_raw
     ]
     autonomous_backups = [
         normalize.normalize_database_resource(b, database_type="backup", source_type="backup")
-        for b in autonomous_database.autonomous_database_backups
+        for b in kept_autonomous_backups_raw
     ]
     autonomous_dg = [
         normalize.normalize_database_resource(
             g, database_type="data_guard", source_type="data_guard_association", compartment_id="",
             detail_fields=normalize.normalize_data_guard_detail(g),
         )
-        for g in autonomous_database.autonomous_database_dataguard_associations
+        for g in kept_autonomous_dg_raw
     ]
     (autonomous_databases, autonomous_backups, autonomous_dg, unresolved) = (
         relationships.resolve_autonomous_database_relationships(
             autonomous_databases=autonomous_databases,
-            raw_autonomous_database_backups=autonomous_database.autonomous_database_backups,
+            raw_autonomous_database_backups=kept_autonomous_backups_raw,
             autonomous_database_backups=autonomous_backups,
-            raw_autonomous_database_dataguard_associations=(
-                autonomous_database.autonomous_database_dataguard_associations
-            ),
+            raw_autonomous_database_dataguard_associations=kept_autonomous_dg_raw,
             autonomous_database_dataguard_associations=autonomous_dg,
-            autonomous_database_peers_by_adb_id=autonomous_database.autonomous_database_peers_by_adb_id,
+            autonomous_database_peers_by_adb_id=kept_peers_by_adb_id,
         )
     )
     all_unresolved.extend(unresolved)
@@ -264,10 +331,21 @@ def build_snapshot(
     data_guard_associations = base_dg + autonomous_dg
 
     # -- VPN -----------------------------------------------------------
-    ipsec_connections = [normalize.normalize_ipsec_connection(c) for c in vpn.ip_sec_connections]
+    kept_connections_raw, excluded_connections_raw = split_by_lifecycle(vpn.ip_sec_connections)
+    _track_excluded("ipsec_connection", excluded_connections_raw)
+    excluded_connection_ids = {c.id for c in excluded_connections_raw}
+
+    ipsec_connections = [normalize.normalize_ipsec_connection(c) for c in kept_connections_raw]
     ipsec_tunnels: list[Any] = []
     tunnels_by_connection_id_normalized: dict[str, list[Any]] = {}
+    all_excluded_tunnels_raw: list[Any] = []
     for connection_id, raw_tunnels in vpn.tunnels_by_connection_id.items():
+        if connection_id in excluded_connection_ids:
+            # Whole connection excluded -- its tunnels go with it, not tracked
+            # individually (already covered by the ipsec_connection exclusion above).
+            continue
+        kept_tunnels_raw, excluded_tunnels_raw = split_by_lifecycle(raw_tunnels)
+        all_excluded_tunnels_raw.extend(excluded_tunnels_raw)
         fallback_compartment_id = next(
             (c.compartment_id for c in ipsec_connections if c.id == connection_id), ""
         )
@@ -275,10 +353,11 @@ def build_snapshot(
             normalize.normalize_ipsec_tunnel(
                 t, ipsec_connection_id=connection_id, fallback_compartment_id=fallback_compartment_id
             )
-            for t in raw_tunnels
+            for t in kept_tunnels_raw
         ]
         tunnels_by_connection_id_normalized[connection_id] = normalized_tunnels
         ipsec_tunnels.extend(normalized_tunnels)
+    _track_excluded("ipsec_connection_tunnel", all_excluded_tunnels_raw)
 
     ipsec_connections = derive_vpn_posture(
         ipsec_connections,
@@ -287,9 +366,18 @@ def build_snapshot(
         minimum_up_tunnel_count=app_config.decisions.minimum_up_vpn_tunnel_count,
     )
     cpes = [normalize.normalize_common(c, source_type="cpe") for c in vpn.cpes]
-    drgs = [normalize.normalize_common(d, source_type="drg") for d in vpn.drgs]
+
+    kept_drgs_raw, excluded_drgs_raw = split_by_lifecycle(vpn.drgs)
+    _track_excluded("drg", excluded_drgs_raw)
+    excluded_drg_ids = {d.id for d in excluded_drgs_raw}
+    drgs = [normalize.normalize_common(d, source_type="drg") for d in kept_drgs_raw]
+
+    kept_drg_attachments_raw, excluded_drg_attachments_raw = exclude_lifecycle_cascade(
+        vpn.drg_attachments, parent_excluded_ids=excluded_drg_ids, parent_id_field="drg_id"
+    )
+    _track_excluded("drg_attachment", excluded_drg_attachments_raw)
     drg_attachments = [
-        normalize.normalize_common(a, source_type="drg_attachment") for a in vpn.drg_attachments
+        normalize.normalize_common(a, source_type="drg_attachment") for a in kept_drg_attachments_raw
     ]
 
     # -- Findings --------------------------------------------------------
@@ -311,21 +399,21 @@ def build_snapshot(
 
     # -- Warnings ----------------------------------------------------------
     warnings: list[Message] = []
-    for label, excluded_raw in (
-        ("instance", excluded_instances_raw),
-        ("boot_volume", excluded_boot_volumes_raw),
-        ("block_volume", excluded_block_volumes_raw),
-    ):
-        if excluded_raw:
+    excluded_lifecycle_ids["instance"] = [i.id for i in excluded_instances_raw]
+    excluded_lifecycle_ids["boot_volume"] = [v.id for v in excluded_boot_volumes_raw]
+    excluded_lifecycle_ids["block_volume"] = [v.id for v in excluded_block_volumes_raw]
+    for label, ids in excluded_lifecycle_ids.items():
+        if ids:
             warnings.append(
                 Message(
                     code="LIFECYCLE_EXCLUDED",
                     message=(
-                        f"{len(excluded_raw)} {label}(s) excluded from evidence: "
-                        "lifecycle_state is TERMINATED or TERMINATING"
+                        f"{len(ids)} {label}(s) excluded from evidence: "
+                        "lifecycle_state is TERMINATED or TERMINATING, or a parent in "
+                        "this resource's chain was"
                     ),
                     severity="info",
-                    resource_ids=tuple(sorted(i.id for i in excluded_raw)),
+                    resource_ids=tuple(sorted(ids)),
                 )
             )
     if exadata.detected:

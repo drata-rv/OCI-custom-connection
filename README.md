@@ -286,15 +286,18 @@ See the cited module docstrings for detail.
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
   "unless explicitly noncritical" escape hatch isn't implemented.
-* **Lifecycle-state exclusion (TERMINATED/TERMINATING) is implemented
-  only for compute instances and boot/block volumes**
-  (`transform/lifecycle.py`). DB systems/databases/autonomous
-  databases/VPN resources still retain every lifecycle state returned
-  by OCI — extending exclusion there needs the same correlated
-  attachment/relationship filtering (see `lifecycle.py`'s own
-  docstring) applied to each resource's parent/child chain, not done
-  yet. Excluded resources are never silently dropped: a
-  `LIFECYCLE_EXCLUDED` entry in `warnings` reports the count and ids.
+* **Lifecycle-state exclusion (TERMINATED/TERMINATING)** covers compute
+  instances, boot/block volumes, the full base DB chain (db system → db
+  home → database → backup/Data Guard association), the autonomous DB
+  chain (autonomous database → backup/Data Guard association), and VPN
+  (IPSec connection → tunnel, DRG → DRG attachment) — see
+  `transform/lifecycle.py::exclude_lifecycle_cascade`. Exclusion is
+  cascading: a terminated parent's children go with it even when the
+  child's own lifecycle state looks fine, so a resource never surfaces
+  as an unresolved relationship (parent not found) instead of correctly
+  reflecting that its whole lineage is gone. Excluded resources are
+  never silently dropped: a `LIFECYCLE_EXCLUDED` entry in `warnings`
+  reports the count and ids per resource type.
 * **Bounded per-item concurrency (`pagination.py::run_concurrently`) is
   applied only to `collection/compute.py`'s per-VNIC-attachment
   enrichment.** `networking.py` (per-NSG rule/membership calls),
