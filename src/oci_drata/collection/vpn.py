@@ -20,10 +20,16 @@ from oci_drata.pagination import (
     call_once,
     operations_complete,
     paginate,
+    run_concurrently,
     stamp_region,
 )
 
 _SERVICE = "virtual_network"
+
+# P2-1: bounds the per-connection (tunnel listing + enrichment) and per-DRG (route
+# table/rule) enrichment fan-out within one region+compartment iteration. Independent
+# of runtime.maxConcurrency, which bounds concurrency *between* collectors.
+_PER_ITEM_CONCURRENCY = 8
 
 # Missing any of these on a tunnel triggers a per-tunnel get_ip_sec_connection_tunnel call.
 _TUNNEL_REQUIRED_FIELDS: tuple[str, ...] = ("status", "routing", "ike_version", "bgp_session_info")
@@ -100,18 +106,27 @@ def collect_vpn(
             region_connections = stamp_region(ipsc_op.items, region)
             ip_sec_connections.extend(region_connections)
 
-            for connection in region_connections:
+            # P2-1: list_ip_sec_connection_tunnels + per-tunnel get_ip_sec_connection_tunnel
+            # enrichment was a fully serial per-connection loop. Each connection's work is
+            # independent and safe to run concurrently (pagination.run_concurrently); the
+            # per-tunnel enrichment sub-loop stays sequential within one connection's
+            # worker -- it's typically 1-2 tunnels, the real gain is across connections.
+            def _process_connection(
+                connection: Any, *, _client: Any = client, _region: str = region,
+                _compartment_id: str = compartment_id,
+            ) -> tuple[list[OperationResult], str, list[Any]]:
+                ops: list[OperationResult] = []
                 # list_ip_sec_connection_tunnels rejects compartment_id -- omit it.
                 tunnels_op = paginate(
                     service=_SERVICE,
                     operation="list_ip_sec_connection_tunnels",
-                    call=client.list_ip_sec_connection_tunnels,
-                    region=region,
+                    call=_client.list_ip_sec_connection_tunnels,
+                    region=_region,
                     ipsc_id=connection.id,
                     retry_policy=retry_policy,
                 )
-                operations.append(tunnels_op)
-                tunnels = stamp_region(tunnels_op.items, region)
+                ops.append(tunnels_op)
+                tunnels = stamp_region(tunnels_op.items, _region)
 
                 for index, tunnel in enumerate(tunnels):
                     if not _tunnel_needs_enrichment(tunnel):
@@ -119,19 +134,25 @@ def collect_vpn(
                     tunnel_op = call_once(
                         service=_SERVICE,
                         operation="get_ip_sec_connection_tunnel",
-                        call=client.get_ip_sec_connection_tunnel,
-                        region=region,
-                        compartment_id=compartment_id,
+                        call=_client.get_ip_sec_connection_tunnel,
+                        region=_region,
+                        compartment_id=_compartment_id,
                         ipsc_id=connection.id,
                         tunnel_id=tunnel.id,
                         retry_policy=retry_policy,
                     )
-                    operations.append(tunnel_op)
+                    ops.append(tunnel_op)
                     if tunnel_op.ok and tunnel_op.items:
-                        tunnels[index] = stamp_region(tunnel_op.items, region)[0]
+                        tunnels[index] = stamp_region(tunnel_op.items, _region)[0]
 
+                return ops, connection.id, tunnels
+
+            for ops, connection_id, tunnels in run_concurrently(
+                region_connections, _process_connection, max_workers=_PER_ITEM_CONCURRENCY
+            ):
+                operations.extend(ops)
                 # Tunnels carry no back-reference to their connection -- keyed by connection id here.
-                tunnels_by_connection_id.setdefault(connection.id, []).extend(tunnels)
+                tunnels_by_connection_id.setdefault(connection_id, []).extend(tunnels)
 
             cpe_op = paginate(
                 service=_SERVICE,
@@ -175,30 +196,46 @@ def collect_vpn(
                 if attachment.drg_id and _is_ipsec_tunnel_attachment(attachment)
             }
 
-            for drg_id in sorted(vpn_relevant_drg_ids):
+            # P2-1: list_drg_route_tables + per-route-table list_drg_route_rules per DRG,
+            # same pattern -- each DRG's work is independent; the per-route-table rule
+            # listing stays sequential within one DRG's worker.
+            def _process_drg(
+                drg_id: str, *, _client: Any = client, _region: str = region
+            ) -> tuple[list[OperationResult], str, list[Any], dict[str, list[Any]]]:
+                ops: list[OperationResult] = []
                 route_table_op = paginate(
                     service=_SERVICE,
                     operation="list_drg_route_tables",
-                    call=client.list_drg_route_tables,
-                    region=region,
+                    call=_client.list_drg_route_tables,
+                    region=_region,
                     drg_id=drg_id,
                     retry_policy=retry_policy,
                 )
-                operations.append(route_table_op)
+                ops.append(route_table_op)
                 route_tables = route_table_op.items
-                drg_route_tables_by_drg_id.setdefault(drg_id, []).extend(route_tables)
 
+                rules_by_table_id: dict[str, list[Any]] = {}
                 for table in route_tables:
                     rule_op = paginate(
                         service=_SERVICE,
                         operation="list_drg_route_rules",
-                        call=client.list_drg_route_rules,
-                        region=region,
+                        call=_client.list_drg_route_rules,
+                        region=_region,
                         drg_route_table_id=table.id,
                         retry_policy=retry_policy,
                     )
-                    operations.append(rule_op)
-                    drg_route_rules_by_route_table_id.setdefault(table.id, []).extend(rule_op.items)
+                    ops.append(rule_op)
+                    rules_by_table_id.setdefault(table.id, []).extend(rule_op.items)
+
+                return ops, drg_id, route_tables, rules_by_table_id
+
+            for ops, drg_id, route_tables, rules_by_table_id in run_concurrently(
+                sorted(vpn_relevant_drg_ids), _process_drg, max_workers=_PER_ITEM_CONCURRENCY
+            ):
+                operations.extend(ops)
+                drg_route_tables_by_drg_id.setdefault(drg_id, []).extend(route_tables)
+                for table_id, rules in rules_by_table_id.items():
+                    drg_route_rules_by_route_table_id.setdefault(table_id, []).extend(rules)
 
     return VpnCollectionResult(
         ip_sec_connections=ip_sec_connections,

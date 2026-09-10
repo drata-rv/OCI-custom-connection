@@ -18,8 +18,14 @@ from oci_drata.pagination import (
     RetryPolicy,
     operations_complete,
     paginate,
+    run_concurrently,
     stamp_region,
 )
+
+# P2-1: bounds the per-db_system/per-db_home/per-database enrichment fan-out within one
+# region iteration. Independent of runtime.maxConcurrency, which bounds concurrency
+# *between* collectors.
+_PER_ITEM_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -92,62 +98,87 @@ def collect_database_base(
             region_db_systems.extend(stamp_region(op.items, region))
         db_systems.extend(region_db_systems)
 
-        region_db_homes: list[Any] = []
-        for db_system in region_db_systems:
-            # list_db_homes requires compartment_id positionally; db_system_id scopes by DB system.
+        # P2-1: list_db_homes per db_system was a fully serial loop. Each db_system's
+        # call is independent (pagination.run_concurrently).
+        def _list_db_homes(
+            db_system: Any, *, _client: Any = client, _region: str = region
+        ) -> tuple[OperationResult, list[Any]]:
             op = paginate(
                 service="database",
                 operation="list_db_homes",
-                call=client.list_db_homes,
-                region=region,
+                call=_client.list_db_homes,
+                region=_region,
                 compartment_id=db_system.compartment_id,
                 db_system_id=db_system.id,
                 retry_policy=retry_policy,
             )
+            return op, stamp_region(op.items, _region)
+
+        region_db_homes: list[Any] = []
+        for op, items in run_concurrently(
+            region_db_systems, _list_db_homes, max_workers=_PER_ITEM_CONCURRENCY
+        ):
             operations.append(op)
-            region_db_homes.extend(stamp_region(op.items, region))
+            region_db_homes.extend(items)
         db_homes.extend(region_db_homes)
 
-        region_databases: list[Any] = []
-        for db_home in region_db_homes:
-            # list_databases requires compartment_id positionally; db_home_id scopes by DB home.
+        # P2-1: list_databases per db_home, same pattern.
+        def _list_databases(
+            db_home: Any, *, _client: Any = client, _region: str = region
+        ) -> tuple[OperationResult, list[Any]]:
             op = paginate(
                 service="database",
                 operation="list_databases",
-                call=client.list_databases,
-                region=region,
+                call=_client.list_databases,
+                region=_region,
                 compartment_id=db_home.compartment_id,
                 db_home_id=db_home.id,
                 retry_policy=retry_policy,
             )
+            return op, stamp_region(op.items, _region)
+
+        region_databases: list[Any] = []
+        for op, items in run_concurrently(
+            region_db_homes, _list_databases, max_workers=_PER_ITEM_CONCURRENCY
+        ):
             operations.append(op)
-            region_databases.extend(stamp_region(op.items, region))
+            region_databases.extend(items)
         databases.extend(region_databases)
 
-        for database in region_databases:
+        # P2-1: list_backups + list_data_guard_associations per database, same pattern.
+        def _list_backups_and_dg(
+            database: Any, *, _client: Any = client, _region: str = region
+        ) -> tuple[list[OperationResult], list[Any], list[Any]]:
             # list_backups: database_id alone is sufficient scope.
             # list_data_guard_associations rejects compartment_id (unknown-kwargs ValueError) -- never pass it.
             backup_op = paginate(
                 service="database",
                 operation="list_backups",
-                call=client.list_backups,
-                region=region,
+                call=_client.list_backups,
+                region=_region,
                 database_id=database.id,
                 retry_policy=retry_policy,
             )
-            operations.append(backup_op)
-            backups.extend(stamp_region(backup_op.items, region))
-
             dg_op = paginate(
                 service="database",
                 operation="list_data_guard_associations",
-                call=client.list_data_guard_associations,
-                region=region,
+                call=_client.list_data_guard_associations,
+                region=_region,
                 database_id=database.id,
                 retry_policy=retry_policy,
             )
-            operations.append(dg_op)
-            data_guard_associations.extend(stamp_region(dg_op.items, region))
+            return (
+                [backup_op, dg_op],
+                stamp_region(backup_op.items, _region),
+                stamp_region(dg_op.items, _region),
+            )
+
+        for ops, backup_items, dg_items in run_concurrently(
+            region_databases, _list_backups_and_dg, max_workers=_PER_ITEM_CONCURRENCY
+        ):
+            operations.extend(ops)
+            backups.extend(backup_items)
+            data_guard_associations.extend(dg_items)
 
     return DatabaseBaseCollectionResult(
         db_systems=db_systems,

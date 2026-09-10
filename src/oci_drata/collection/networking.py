@@ -19,8 +19,14 @@ from oci_drata.pagination import (
     RetryPolicy,
     operations_complete,
     paginate,
+    run_concurrently,
     stamp_region,
 )
+
+# P2-1: bounds the per-NSG enrichment fan-out (list_network_security_group_security_rules/
+# _vnics per NSG) within one region+compartment iteration. Independent of
+# runtime.maxConcurrency, which bounds concurrency *between* collectors.
+_PER_NSG_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -152,34 +158,49 @@ def collect_networking(
             region_nsgs = stamp_region(nsgs_op.items, region)
             network_security_groups.extend(region_nsgs)
 
-            for nsg in region_nsgs:
+            # P2-1: list_network_security_group_security_rules/_vnics per NSG was a
+            # fully serial loop. Each NSG's pair of calls is independent and safe to run
+            # concurrently -- each worker returns its own data, this thread merges
+            # sequentially, so nothing needs a lock (see pagination.run_concurrently).
+            def _process_nsg(
+                nsg: Any, *, _vnet_client: Any = vnet_client, _region: str = region
+            ) -> tuple[list[OperationResult], str | None, list[Any], list[Any]]:
                 nsg_id = getattr(nsg, "id", None)
                 if not nsg_id:
-                    continue
+                    return [], None, [], []
 
+                ops: list[OperationResult] = []
                 # list_network_security_group_security_rules/_vnics reject
                 # compartment_id -- omit it; passing it raises ValueError.
                 rules_op = paginate(
                     service="virtual_network",
                     operation="list_network_security_group_security_rules",
-                    call=vnet_client.list_network_security_group_security_rules,
-                    region=region,
+                    call=_vnet_client.list_network_security_group_security_rules,
+                    region=_region,
                     network_security_group_id=nsg_id,
                     retry_policy=retry_policy,
                 )
-                operations.append(rules_op)
-                nsg_security_rules_by_nsg_id[nsg_id] = rules_op.items
+                ops.append(rules_op)
 
                 nsg_vnics_op = paginate(
                     service="virtual_network",
                     operation="list_network_security_group_vnics",
-                    call=vnet_client.list_network_security_group_vnics,
-                    region=region,
+                    call=_vnet_client.list_network_security_group_vnics,
+                    region=_region,
                     network_security_group_id=nsg_id,
                     retry_policy=retry_policy,
                 )
-                operations.append(nsg_vnics_op)
-                nsg_vnics_by_nsg_id[nsg_id] = nsg_vnics_op.items
+                ops.append(nsg_vnics_op)
+
+                return ops, nsg_id, rules_op.items, nsg_vnics_op.items
+
+            for ops, nsg_id, rule_items, vnic_items in run_concurrently(
+                region_nsgs, _process_nsg, max_workers=_PER_NSG_CONCURRENCY
+            ):
+                operations.extend(ops)
+                if nsg_id is not None:
+                    nsg_security_rules_by_nsg_id[nsg_id] = rule_items
+                    nsg_vnics_by_nsg_id[nsg_id] = vnic_items
 
     return NetworkingCollectionResult(
         vcns=vcns,
