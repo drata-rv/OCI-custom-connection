@@ -27,11 +27,15 @@ to MVP scope.
 
 ## 2. OCI API operations
 
-Every operation below is also enforced at build time by
+Every operation below is enforced twice: at build time by
 `tests/unit/test_operation_allowlist.py`, which AST-scans every file under
 `src/oci_drata/collection/` and fails if any OCI client method referenced
 is not in `security.ALLOWED_OCI_OPERATIONS`, or matches
-`FORBIDDEN_OPERATION_PREFIXES`/`FORBIDDEN_OPERATIONS`.
+`FORBIDDEN_OPERATION_PREFIXES`/`FORBIDDEN_OPERATIONS`; and at runtime by
+`security.GuardedOciClient`, which every client `oci_auth.regional_client()`
+returns is wrapped in — an operation outside the allowlist raises the
+moment it's actually called, catching a dynamically resolved or aliased
+name the static scan can't see.
 
 ### 5.1 Discovery — `collection/discovery.py`
 
@@ -149,8 +153,9 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | OCI private key file permissions | `oci_auth.py::build_signer` rejects group/world-readable key files |
 | Secrets never via CLI args | `cli.py` has no argument that accepts one |
 | Redact secrets from logs/exceptions | `logging.py::RedactingFilter`, `redaction.py` |
-| Never call OCI mutation ops | `security.py::FORBIDDEN_OPERATION_PREFIXES`, enforced by `test_operation_allowlist.py` |
-| Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same test |
+| Never call OCI mutation ops | `security.py::FORBIDDEN_OPERATION_PREFIXES`, enforced statically by `test_operation_allowlist.py` and at runtime by `GuardedOciClient` (`tests/unit/test_security.py`) |
+| Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same static + runtime enforcement |
+| Fail closed on an OCI operation outside the allowlist, even if dynamically resolved | `security.py::GuardedOciClient` — wraps every client `oci_auth.regional_client()` returns; blocks any `list_*`/`get_*` name not in `ALLOWED_OCI_OPERATIONS` and any forbidden-prefixed/exact-named call regardless of name shape, at the moment of the call | `tests/unit/test_security.py`, `tests/unit/test_oci_auth.py::test_regional_client_returns_a_guarded_client` |
 | Never retrieve unrestricted instance metadata | No `get_windows_instance_initial_credentials` or metadata-service call anywhere in `collection/` |
 | Signer repr never leaks account metadata | `oci_auth.py::TenancySigner.__repr__` allowlists `authentication_type`/`region` only (previously blocklisted only `pass_phrase`, leaking tenancy/user OCIDs, key fingerprint, and the private key's filesystem path into any log line or exception traceback that formatted the object) | `tests/unit/test_oci_auth.py` |
 | Config fields fail closed on the wrong type/range, not a loose coercion | `config.py::_require_bool`/`_require_int`/`_require_port_list`/`_require_cidr_list`/`_check_known_keys` — a quoted `"false"` (`bool("false") is True`), a zero/negative id, an out-of-range port, a malformed CIDR, or an unrecognized/typo'd key now fails at config-load time with a field path, instead of silently coercing or being ignored | `tests/unit/test_config.py` |

@@ -42,7 +42,7 @@ schema + size validation → completeness decision → Drata upsert
 | Validation | `src/oci_drata/validation/*.py` |
 | Delivery | `src/oci_drata/delivery/drata.py` |
 | Entry point | `src/oci_drata/cli.py` |
-| Security allowlist | `src/oci_drata/security.py`, enforced by `tests/unit/test_operation_allowlist.py` |
+| Security allowlist | `src/oci_drata/security.py`, enforced twice: statically by `tests/unit/test_operation_allowlist.py` (AST scan at build time) and at runtime by `GuardedOciClient` (every OCI client `regional_client()` returns is wrapped; an operation outside the allowlist raises the moment it's called, not just when the static scan sees it) |
 
 Every `list_*`/`get_*` call goes through `pagination.paginate()` or
 `pagination.call_once()`, with one exception —
@@ -164,8 +164,10 @@ Notes:
 * Never grant `manage`, `all-resources`, any secret-family / Vault
   secret-content permission, or any IPSec shared-secret permission. This
   collector never calls a mutating, wallet, credential, or shared-secret
-  operation, enforced by `security.py`'s allowlist and
-  `test_operation_allowlist.py`.
+  operation, enforced both statically (`test_operation_allowlist.py`) and
+  at runtime (`security.py::GuardedOciClient` — every OCI client is
+  wrapped, and blocks any such operation the moment it's called, even if
+  resolved dynamically or through an alias the static scan wouldn't see).
 
 ## 5. Execution
 

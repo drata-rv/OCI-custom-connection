@@ -9,11 +9,12 @@ import dataclasses
 import stat
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, cast
 
 import oci
 
 from oci_drata.config import AppConfig
+from oci_drata.security import GuardedOciClient
 
 T = TypeVar("T")
 
@@ -105,6 +106,14 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
 
 def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySigner, *, region: str) -> T:
     """Construct an OCI SDK client bound to one region; region is always
-    caller-supplied, never hard-coded."""
+    caller-supplied, never hard-coded.
 
-    return client_cls(signer.region_config(region))
+    Returns a GuardedOciClient wrapping the real client, not the client itself --
+    runtime defense in depth alongside test_operation_allowlist.py's static AST scan
+    (see security.py). Cast back to T: GuardedOciClient proxies every attribute access
+    transparently (as Any), so this is honest about intent, not a type-safety hole --
+    an unrecognized operation still raises at the point of the call itself, just as a
+    runtime error rather than a caught-by-mypy one, exactly like a raw OCI client call
+    already was."""
+
+    return cast(T, GuardedOciClient(client_cls(signer.region_config(region))))

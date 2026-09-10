@@ -1,11 +1,17 @@
-"""Allow/deny lists enforcing read-only, least-privilege OCI access.
+"""Allow/deny lists enforcing read-only, least-privilege OCI access, enforced twice:
 
-``tests/unit/test_operation_allowlist.py`` ast-scans ``src/oci_drata/collection``
-and fails the build on any call not in :data:`ALLOWED_OCI_OPERATIONS` or matching
-:data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS`.
+- ``tests/unit/test_operation_allowlist.py`` ast-scans ``src/oci_drata/collection`` at
+  build time and fails on any call not in :data:`ALLOWED_OCI_OPERATIONS` or matching
+  :data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS`.
+- :class:`GuardedOciClient` (returned by ``oci_auth.regional_client``) checks every
+  ``list_*``/``get_*`` attribute access against the same allow/deny lists at the moment
+  of the call, not just at CI time -- catches a dynamically resolved or aliased method
+  name the static AST scan can't see (``getattr(client, name)()``, a rebound method).
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 # Mutation/lifecycle/credential-retrieval prefixes; forbidden regardless of allowlist membership.
 FORBIDDEN_OPERATION_PREFIXES: tuple[str, ...] = (
@@ -135,3 +141,50 @@ def is_forbidden_operation(name: str) -> bool:
 
 def is_allowed_operation(name: str) -> bool:
     return name in ALLOWED_OCI_OPERATIONS and not is_forbidden_operation(name)
+
+
+class OciOperationNotAllowedError(Exception):
+    """Raised by GuardedOciClient when a list_*/get_*-shaped attribute access resolves
+    to a name outside ALLOWED_OCI_OPERATIONS, or matches a forbidden name/prefix."""
+
+
+class GuardedOciClient:
+    """Wraps a raw OCI SDK client object; every ``list_*``/``get_*`` attribute access is
+    checked against the allow/deny lists above at the moment of access, fail-closed on
+    anything not explicitly allowed. Any other attribute (non-operation methods,
+    internal client state) passes through untouched -- this only narrows the operation
+    surface, it never changes behavior for an allowed call.
+
+    Defense in depth alongside test_operation_allowlist.py's static AST scan: this
+    catches a name the scan can't see because it's resolved dynamically
+    (``getattr(client, name)()``) or through an alias, not just a literal
+    ``client.list_x(...)`` call site.
+    """
+
+    def __init__(self, client: Any) -> None:
+        object.__setattr__(self, "_client", client)
+
+    def __getattr__(self, name: str) -> Any:
+        client = object.__getattribute__(self, "_client")
+        attr = getattr(client, name)
+        if not callable(attr):
+            return attr
+        # Checked regardless of name shape -- a mutation-shaped call (create_*,
+        # terminate_*, ...) resolved dynamically (getattr(client, name)()) must be
+        # blocked here too, not only when it matches the list_/get_ check below.
+        if is_forbidden_operation(name):
+            raise OciOperationNotAllowedError(
+                f"OCI operation {name!r} is forbidden (mutation/lifecycle/credential-"
+                f"retrieval-shaped) -- refusing to call it"
+            )
+        if (name.startswith("list_") or name.startswith("get_")) and not is_allowed_operation(name):
+            raise OciOperationNotAllowedError(
+                f"OCI operation {name!r} is not in the read-only allowlist "
+                f"(security.ALLOWED_OCI_OPERATIONS) -- refusing to call it"
+            )
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise OciOperationNotAllowedError(
+            f"refusing to set attribute {name!r} on a guarded OCI client"
+        )
