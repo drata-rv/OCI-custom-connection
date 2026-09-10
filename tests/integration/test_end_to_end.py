@@ -296,6 +296,12 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert instances[0]["exposedAdministrativePorts"] == [3389]
     assert result.record["metrics"]["internetExposedWindowsVmCount"] == 1
 
+    exposure_finding = next(
+        f for f in result.record["findings"] if f["assertionId"] == "OCI-COMPUTE-ADMIN-PORT-EXPOSURE"
+    )
+    assert exposure_finding["status"] == "fail"
+    assert "evaluatedAdministrativePorts=[22, 3389]" in exposure_finding["reason"]
+
     lifecycle_warning = next(
         w for w in result.record["warnings"]
         if w["code"] == "LIFECYCLE_EXCLUDED" and "instance" in w["message"]
@@ -350,7 +356,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert adb["backupRetentionLocked"] is False
     assert result.record["metrics"]["databasePublicEndpointCount"] == 1
     public_endpoint_finding = next(
-        f for f in result.record["findings"] if f["assertionId"] == "OCI-DATABASE-PUBLIC-ENDPOINT"
+        f for f in result.record["findings"] if f["assertionId"] == "OCI-ADB-PUBLIC-ENDPOINT-PRESENT"
     )
     assert public_endpoint_finding["status"] == "fail"
 

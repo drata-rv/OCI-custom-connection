@@ -208,7 +208,7 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   `longTermBackupScheduleConfigured`, `publicEndpointPresent`,
   `privateEndpointConfigured`, `accessControlEnabled`,
   `allowedSourceCount`, `mtlsRequired`, `networkSecurityGroupIds`) rather
-  than compressed into one guessed verdict. `OCI-DATABASE-PUBLIC-ENDPOINT`
+  than compressed into one guessed verdict. `OCI-ADB-PUBLIC-ENDPOINT-PRESENT`
   findings key off `publicEndpointPresent` only, not effective
   reachability — an ADB with a public endpoint can still be access-
   restricted by an ACL or a private endpoint; this MVP surfaces that
@@ -262,7 +262,7 @@ is:
    (`aggregate.py::derive_record_id` would need a type discriminant),
    splitting `schemas/oci-snapshot-1.0.0.json`'s `resources`/`metrics`
    sections into per-type schemas, and re-deriving cross-type findings
-   (e.g. `OCI-COMPUTE-PUBLIC-EXPOSURE`, which joins instances against
+   (e.g. `OCI-COMPUTE-ADMIN-PORT-EXPOSURE`, which joins instances against
    VNICs/subnets/security lists) from data that would now live in
    separate records — Custom Tests that currently read one record would
    need to read several.

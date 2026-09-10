@@ -38,7 +38,7 @@ from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposur
 from oci_drata.transform.lifecycle import exclude_referencing, split_by_lifecycle
 from oci_drata.transform.vpn_posture import derive_vpn_posture
 
-DERIVATION_VERSION = "1.2.0"
+DERIVATION_VERSION = "1.3.0"
 SCHEMA_VERSION = "1.0.0"
 COLLECTOR_VERSION = "0.1.0"
 
@@ -294,7 +294,9 @@ def build_snapshot(
 
     # -- Findings --------------------------------------------------------
     all_findings: list[Finding] = [
-        *findings_mod.compute_exposure_findings(instances),
+        *findings_mod.compute_exposure_findings(
+            instances, administrative_ports=app_config.decisions.administrative_ports
+        ),
         *findings_mod.volume_customer_managed_key_findings(
             [v for v in (*boot_volumes, *block_volumes) if v.attached_instance_ids],
             required=app_config.decisions.require_customer_managed_volume_keys,

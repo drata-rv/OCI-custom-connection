@@ -275,6 +275,13 @@ See the cited module docstrings for detail.
   — public exposure, customer-managed-key (when required by config),
   database public endpoint, VPN redundancy — not an exhaustive control
   catalog. Custom Tests remain manually authored in the Drata UI per spec.
+  Each assertion name states its exact predicate
+  (`OCI-COMPUTE-ADMIN-PORT-EXPOSURE` checks the *configured administrative
+  ports* only, not general exposure; `OCI-ADB-PUBLIC-ENDPOINT-PRESENT`
+  checks endpoint *presence*, not effective reachability through an
+  ACL/private endpoint/NSGs) — a Custom Test author should read the
+  assertion name as that literal predicate, not a broader guarantee.
+  Effective ADB reachability derivation is not implemented.
 * **No noncritical-relationship classification**
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
