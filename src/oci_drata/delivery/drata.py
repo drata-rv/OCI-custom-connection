@@ -1,9 +1,10 @@
 """Drata Custom Connection upsert client.
 
-POSTs ``record`` to the connection's records endpoint; 200/201 both mean
-success (upsert by the record's ``id``). Failures never raise -- returned
-as ``DeliveryResult`` with ``error_class``: auth/validation are non-retryable,
-429/5xx get bounded retry.
+POSTs ``{"data": record}`` to
+``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
+200/201 both mean success (upsert by the record's own ``id`` field inside
+``data``). Failures never raise -- returned as ``DeliveryResult`` with
+``error_class``: auth/validation are non-retryable, 429/5xx get bounded retry.
 """
 
 from __future__ import annotations

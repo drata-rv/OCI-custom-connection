@@ -44,12 +44,14 @@ schema + size validation → completeness decision → Drata upsert
 | Entry point | `src/oci_drata/cli.py` |
 | Security allowlist | `src/oci_drata/security.py`, enforced by `tests/unit/test_operation_allowlist.py` |
 
-Every OCI SDK call goes through `pagination.paginate()` (`list_*`) or
-`pagination.call_once()` (`get_*`) — pagination, bounded retry with
-full-jitter exponential backoff, and `opc-request-id` capture happen
-exactly once, not per collector. Collectors return raw OCI SDK objects;
-`transform/normalize.py` is the only place raw fields get allowlisted into
-the schema's shape.
+Every `list_*`/`get_*` call goes through `pagination.paginate()` or
+`pagination.call_once()`, with one exception —
+`collection/compute.py::_lookup_public_ip` implements its own retry loop to
+treat a 404 (no public IP assigned) as a synthetic success rather than a
+domain failure. Pagination, bounded retry with full-jitter exponential
+backoff, and `opc-request-id` capture happen in one place, not per
+collector. Collectors return raw OCI SDK objects; `transform/normalize.py`
+is the only place raw fields get allowlisted into the schema's shape.
 
 ## 2. Setup
 

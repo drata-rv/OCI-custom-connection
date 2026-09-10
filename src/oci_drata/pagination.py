@@ -1,7 +1,10 @@
 """Reusable OCI list/get-operation execution: pagination, bounded retry with
 backoff+jitter, and a per-operation result feeding ``manifest.operations``.
-Every OCI SDK call goes through :func:`paginate` (``list_*``) or
-:func:`call_once` (``get_*``).
+Every ``list_*``/``get_*`` call in ``collection/`` goes through :func:`paginate`
+or :func:`call_once`, with one exception:
+``collection/compute.py::_lookup_public_ip`` implements its own retry loop
+to treat a 404 (no public IP assigned) as a synthetic success rather than a
+domain failure, a case neither wrapper supports.
 """
 
 from __future__ import annotations
@@ -110,7 +113,9 @@ def run_concurrently(items: list[T], fn: Callable[[T], R], *, max_workers: int) 
     them alongside whatever data the caller needs) and must not mutate shared state --
     the caller merges every result back into shared dicts/lists sequentially on the
     calling thread after every future completes, so no lock is needed anywhere in this
-    module or its callers. Order of `items` is not preserved in the returned list."""
+    module or its callers. ThreadPoolExecutor.map() does return results in the same
+    order as `items` regardless of completion order -- callers just don't need to rely
+    on that, since each result already carries everything needed to merge it back."""
 
     if not items:
         return []
