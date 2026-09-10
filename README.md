@@ -208,6 +208,11 @@ Windows VM scenario.
 | Symptom | Likely cause |
 |---|---|
 | `configuration error: ... field name suggests a credential` | A literal secret in `config.yaml` instead of a `secretRef`. Move it to an env var or mounted file. |
+| `configuration error: ... expected true or false (unquoted), got ...` | A boolean field was quoted in YAML (e.g. `compute: "false"`) — YAML parses that as the string `"false"`, and `bool("false")` is `True` in Python, so this is rejected rather than silently flipped. Remove the quotes. |
+| `configuration error: ... must be >= 1, got 0` | `drata.connectionId`/`resourceId` are still the example file's placeholder `0`. Replace with the real IDs from the Drata Custom Connection. |
+| `configuration error: ... is not a valid CIDR` | `decisions.publicSourceCidrs` has a malformed entry. This is checked at config-load time specifically so a typo here can't silently make every exposure finding resolve to `not_exposed` (an empty/broken reference set has nothing to compare against). |
+| `configuration error: drata.baseUrl ...` | `drata.baseUrl` must be `https`, have no embedded credentials/query/fragment, and its hostname must be `public-api.drata.com` unless `drata.allowAlternateHost: true` is set explicitly — a deliberate allowlist so a tampered or typo'd URL can't send the bearer token to an unintended host. |
+| `configuration error: $: unrecognized field(s) ...` | A typo'd or unexpected top-level/nested config key. Check spelling against `config.example.yaml`. |
 | `AuthError: OCI private key file must not be group/world accessible` | `chmod 600` the key file `oci.authentication.configFile` points at. |
 | `AuthError: OCI SDK config tenancy does not match configured oci.expectedTenancyOcid` | The `~/.oci/config` profile points at a different tenancy than `config.yaml` expects — a fail-closed guard against pointing the collector at the wrong tenancy. |
 | `snapshotStatus: incomplete`, reasons mention `not subscribed/READY` | A region in `oci.regions.allow` isn't actually subscribed in this tenancy, or `list_region_subscriptions` itself failed. |

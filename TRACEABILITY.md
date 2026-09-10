@@ -153,6 +153,8 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same test |
 | Never retrieve unrestricted instance metadata | No `get_windows_instance_initial_credentials` or metadata-service call anywhere in `collection/` |
 | Signer repr never leaks account metadata | `oci_auth.py::TenancySigner.__repr__` allowlists `authentication_type`/`region` only (previously blocklisted only `pass_phrase`, leaking tenancy/user OCIDs, key fingerprint, and the private key's filesystem path into any log line or exception traceback that formatted the object) | `tests/unit/test_oci_auth.py` |
+| Config fields fail closed on the wrong type/range, not a loose coercion | `config.py::_require_bool`/`_require_int`/`_require_port_list`/`_require_cidr_list`/`_check_known_keys` — a quoted `"false"` (`bool("false") is True`), a zero/negative id, an out-of-range port, a malformed CIDR, or an unrecognized/typo'd key now fails at config-load time with a field path, instead of silently coercing or being ignored | `tests/unit/test_config.py` |
+| Drata `baseUrl` is allowlisted, not arbitrary | `config.py::_validate_drata_base_url` requires `https`, no embedded credentials/query/fragment/`..`, and hostname `public-api.drata.com` unless `drata.allowAlternateHost: true` is set explicitly (logs a warning when used) — the bearer token can't be sent to an unintended host via a tampered or typo'd config | `tests/unit/test_config.py` |
 
 ## 5. Assumptions and simplifications
 

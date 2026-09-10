@@ -92,6 +92,8 @@ def test_dry_run_writes_sanitized_snapshot_and_report(
     raw["oci"]["expectedTenancyOcid"] = "ocid1.tenancy.oc1..aaaaaaaatest"
     raw["oci"]["regions"]["allow"] = ["us-ashburn-1"]
     raw["drata"]["recordId"] = "oci-snapshot-test0123456789abcdef01234567"
+    raw["drata"]["connectionId"] = 101
+    raw["drata"]["resourceId"] = 202
     config_path.write_text(yaml.safe_dump(raw))
     monkeypatch.setenv("DRATA_API_TOKEN", "unused")
 
