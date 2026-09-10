@@ -38,7 +38,12 @@ decisions:
   requireCustomerManagedDatabaseKeys: false
 
 drata:
+  # baseUrl hostname must be public-api.drata.com unless allowAlternateHost: true is set
+  # explicitly (e.g. a regional/dedicated Drata instance) -- see README §4.
   baseUrl: https://public-api.drata.com/public/v2
+  # connectionId/resourceId must both be replaced with real positive IDs from the
+  # customer's own Drata Custom Connection -- 0 is a deliberate placeholder that fails
+  # config load immediately if left unedited, rather than only failing at upload time.
   connectionId: 0
   resourceId: 0
   recordId: oci-snapshot-replace-with-derived-id

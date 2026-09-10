@@ -22,16 +22,20 @@ to MVP scope.
 | 14 | Upload only complete snapshots | `validation/completeness.py`, `cli.py::run` | `tests/integration/test_end_to_end.py`, `test_cli.py` |
 | 15 | Preserve last known-good record | `cli.py::run` (upload gated on `decision.should_upload`; no call means Drata's existing record is untouched by construction) | `tests/integration/test_cli.py::test_incomplete_run_blocks_upload` |
 | 16 | Dry-run mode + sanitized collection report | `cli.py` | `tests/integration/test_cli.py::test_dry_run_writes_sanitized_snapshot_and_report` |
-| 17 | Unit + mocked integration tests, no live credentials | `tests/unit/*`, `tests/integration/*` | 119 tests, all mocked, `pytest` runs with no OCI/Drata credentials present |
+| 17 | Unit + mocked integration tests, no live credentials | `tests/unit/*`, `tests/integration/*` | 221 tests, all mocked, `pytest` runs with no OCI/Drata credentials present |
 | 18 | Documentation | `README.md`, this file | — |
 
 ## 2. OCI API operations
 
-Every operation below is also enforced at build time by
+Every operation below is enforced twice: at build time by
 `tests/unit/test_operation_allowlist.py`, which AST-scans every file under
 `src/oci_drata/collection/` and fails if any OCI client method referenced
 is not in `security.ALLOWED_OCI_OPERATIONS`, or matches
-`FORBIDDEN_OPERATION_PREFIXES`/`FORBIDDEN_OPERATIONS`.
+`FORBIDDEN_OPERATION_PREFIXES`/`FORBIDDEN_OPERATIONS`; and at runtime by
+`security.GuardedOciClient`, which every client `oci_auth.regional_client()`
+returns is wrapped in — an operation outside the allowlist raises the
+moment it's actually called, catching a dynamically resolved or aliased
+name the static scan can't see.
 
 ### 5.1 Discovery — `collection/discovery.py`
 
@@ -131,7 +135,8 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | Compartment allow/deny, deterministic, subtree-exclusion (`collection/discovery.py::_expand_to_subtrees` -- excluding a compartment excludes its whole subtree, not just the exact configured OCID; overlapping configured roots dedupe by id instead of producing duplicate entries) | `collection/discovery.py` | `tests/unit/test_discovery.py` |
 | Bounded concurrency + retry w/ jitter, OCI-aware retryability | `pagination.py::RetryPolicy` (per-call), `is_retryable_service_error` (mirrors the OCI SDK's own `TimeoutConnectionAndServiceErrorRetryChecker` defaults: 409 retried only for `IncorrectState`/`LockConflict`, 429 always, 5xx except 501 always — not a blanket status-code list), `cli.py::_run_independent_collectors` (`ThreadPoolExecutor`, cross-collector). Backoff delays actually slept are recorded per operation (`retryDelaysSeconds` in `manifest.operations[]`), not just applied silently. `collection/compute.py::_lookup_public_ip` shares the same classification for its 404-as-success special case. | `test_pagination.py` (retryability classification, backoff-delay capture), `test_cli.py` (concurrency wiring) |
 | Never crash/drop a resource over an unrecognized enum value | `models.py` (all enum-shaped fields typed `str`, never a closed Python `Enum` — but this only preserves whatever the OCI SDK hands us: the SDK's own enum-typed property setters silently coerce any value outside their known set to the sentinel `"UNKNOWN_ENUM_VALUE"` before our code sees it, so a genuinely novel state's real name is already lost one layer down, not recoverable here) | `test_normalize_and_relationships.py::test_normalize_common_does_not_crash_on_unrecognized_lifecycle_state` |
-| Exclude terminated/terminating resources from evidence, never silently | `transform/lifecycle.py::split_by_lifecycle`/`exclude_referencing` (instances, boot/block volumes only — see README §9); excluded counts/ids reported via a `LIFECYCLE_EXCLUDED` warning, never dropped without a trace | `tests/unit/test_lifecycle.py`, `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (terminated instance + its own attachment excluded without tripping a false unresolved-relationship) |
+| Bounded per-item concurrency within one collector (P2-1) | `pagination.py::run_concurrently` (generic bounded map; each worker is self-contained and returns its own data, the caller merges sequentially -- no lock needed). `cli.py::_run_independent_collectors`'s `ThreadPoolExecutor` bounds concurrency *between* compute/storage/networking/database/vpn; it doesn't touch the serial per-item loop *within* one of them -- that's what `run_concurrently` is for. Applied to every collector with a per-item enrichment fan-out: `compute.py` (per-VNIC-attachment `get_vnic`/`list_private_ips`/`get_public_ip_by_private_ip_id`), `networking.py` (per-NSG `list_network_security_group_security_rules`/`_vnics`), `database_base.py` (per-db_system `list_db_homes`, per-db_home `list_databases`, per-database `list_backups`+`list_data_guard_associations`), `database_autonomous.py` (per-ADB backup/DataGuard/peer calls), and `vpn.py` (per-connection tunnel listing + enrichment, per-DRG route table/rule listing) | `tests/unit/test_compute_collector.py`, `test_networking_collector.py`, `test_database_base_collector.py`, `test_database_autonomous_collector.py`, `test_vpn_collector.py` |
+| Exclude terminated/terminating resources from evidence, never silently, with cascading parent/child exclusion | `transform/lifecycle.py::split_by_lifecycle`/`exclude_referencing`/`exclude_lifecycle_cascade` — covers instances, boot/block volumes, the full base DB chain (db_system → db_home → database → backup/data_guard), the autonomous DB chain (autonomous_database → backup/data_guard), and VPN (ipsec_connection → tunnel, drg → drg_attachment); excluded counts/ids reported per resource type via a `LIFECYCLE_EXCLUDED` warning, never dropped without a trace | `tests/unit/test_lifecycle.py`, `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (terminated instance + its own attachment, terminated db_system + its orphaned db_home, terminated ipsec_connection + its own tunnel — none trip a false unresolved-relationship) |
 | Normalize timestamps to UTC RFC3339 | `transform/normalize.py::normalize_timestamp` | `test_normalize_and_relationships.py` (4 cases incl. non-UTC conversion, naive-datetime rejection) |
 | Deterministic output ordering | `transform/aggregate.py::_sorted_dicts` (every array sorted by id/assertionId) | `test_end_to_end.py::test_complete_collection_produces_one_schema_valid_record` (same-input-same-output assertion) |
 | Block upload on failure/unsupported/unresolved/schema/oversize/Exadata | `validation/completeness.py`, `pagination.py::operations_complete` (`unsupported` blocks like `failed`; `skipped` — a disabled service — does not) | `test_end_to_end.py` (3 blocking scenarios), `test_cli.py`, `test_pagination.py::test_operations_complete_ignores_skipped_but_blocks_on_unsupported` |
@@ -148,14 +153,35 @@ operation — verified by `test_operation_allowlist.py::test_no_secret_or_creden
 | OCI private key file permissions | `oci_auth.py::build_signer` rejects group/world-readable key files |
 | Secrets never via CLI args | `cli.py` has no argument that accepts one |
 | Redact secrets from logs/exceptions | `logging.py::RedactingFilter`, `redaction.py` |
-| Never call OCI mutation ops | `security.py::FORBIDDEN_OPERATION_PREFIXES`, enforced by `test_operation_allowlist.py` |
-| Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same test |
+| Never call OCI mutation ops | `security.py::FORBIDDEN_OPERATION_PREFIXES`, enforced statically by `test_operation_allowlist.py` and at runtime by `GuardedOciClient` (`tests/unit/test_security.py`) |
+| Never retrieve secrets/wallets/shared secrets | `security.py::FORBIDDEN_OPERATIONS` (exact-name denylist), same static + runtime enforcement |
+| Fail closed on an OCI operation outside the allowlist, even if dynamically resolved | `security.py::GuardedOciClient` — wraps every client `oci_auth.regional_client()` returns; blocks any `list_*`/`get_*` name not in `ALLOWED_OCI_OPERATIONS` and any forbidden-prefixed/exact-named call regardless of name shape, at the moment of the call | `tests/unit/test_security.py`, `tests/unit/test_oci_auth.py::test_regional_client_returns_a_guarded_client` |
 | Never retrieve unrestricted instance metadata | No `get_windows_instance_initial_credentials` or metadata-service call anywhere in `collection/` |
+| Signer repr never leaks account metadata | `oci_auth.py::TenancySigner.__repr__` allowlists `authentication_type`/`region` only (previously blocklisted only `pass_phrase`, leaking tenancy/user OCIDs, key fingerprint, and the private key's filesystem path into any log line or exception traceback that formatted the object) | `tests/unit/test_oci_auth.py` |
+| Config fields fail closed on the wrong type/range, not a loose coercion | `config.py::_require_bool`/`_require_int`/`_require_port_list`/`_require_cidr_list`/`_check_known_keys` — a quoted `"false"` (`bool("false") is True`), a zero/negative id, an out-of-range port, a malformed CIDR, or an unrecognized/typo'd key now fails at config-load time with a field path, instead of silently coercing or being ignored | `tests/unit/test_config.py` |
+| Drata `baseUrl` is allowlisted, not arbitrary | `config.py::_validate_drata_base_url` requires `https`, no embedded credentials/query/fragment/`..`, and hostname `public-api.drata.com` unless `drata.allowAlternateHost: true` is set explicitly (logs a warning when used) — the bearer token can't be sent to an unintended host via a tampered or typo'd config | `tests/unit/test_config.py` |
+| Drata delivery honors `Retry-After`, closes its own session, captures a request id | `delivery/drata.py::_retry_after_seconds` (seconds or HTTP-date form, capped at `max_delay_seconds` regardless of what the server asked for), `_request_id` (`X-Request-Id`/`X-Request-ID`/`Request-Id`/`X-Correlation-Id`, whichever is present, on every non-transport-failure `DeliveryResult`), and `upsert_record` only calls `.close()` on a `requests.Session` it created itself, never one the caller passed in. `timeout_seconds` is now a parameter (was hardcoded to 30). | `tests/unit/test_drata_delivery.py` |
+| Output files restricted to the process owner | `cli.py::_prepare_restricted_output_dir`/`_write_restricted` — the output directory is `0700` (tightened even if it pre-exists with looser permissions) and every written file is `0600` from the moment it's created (`os.open` with the mode set at creation, not a write-then-chmod window); both refuse a pre-existing symlink at that path rather than following it | `tests/integration/test_cli.py` |
 
 ## 5. Assumptions and simplifications
 
 See `README.md §9` for the user-facing version. Implementation-level detail:
 
+* Every resource definition in `schemas/oci-snapshot-1.0.0.json` (`instance`,
+  `vnic`, `volume`, `routeTable`, `securityList`, `networkSecurityGroup`,
+  `internetGateway`, `databaseResource`, `ipsecConnection`, `ipsecTunnel`) is
+  a single flat object with its own `additionalProperties: false`, not an
+  `allOf`/`$ref` composition over `commonResource`. `additionalProperties`
+  only reliably rejects unexpected fields within one schema's own local
+  `properties` — a type-specific branch composed via `allOf` can accept a
+  field outside its own declared set regardless of a sibling branch's
+  restriction, and `commonResource` itself had to stay
+  `additionalProperties: true` for the composition to validate at all,
+  making every resource type permissive to drift/typo'd fields. `commonResource`
+  is still `additionalProperties: false` and still used directly (not via
+  `allOf`) for resource types with no fields beyond it (compartments, images,
+  private/public IPs, VCNs, subnets, attachments, CPEs, DRGs, DRG
+  attachments).
 * `paginate()`/`call_once()` are the single point where `compartment_id` is
   forwarded into the actual OCI call — several operations
   (`list_data_guard_associations`, `list_autonomous_database_peers`,
@@ -182,7 +208,7 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   `longTermBackupScheduleConfigured`, `publicEndpointPresent`,
   `privateEndpointConfigured`, `accessControlEnabled`,
   `allowedSourceCount`, `mtlsRequired`, `networkSecurityGroupIds`) rather
-  than compressed into one guessed verdict. `OCI-DATABASE-PUBLIC-ENDPOINT`
+  than compressed into one guessed verdict. `OCI-ADB-PUBLIC-ENDPOINT-PRESENT`
   findings key off `publicEndpointPresent` only, not effective
   reachability — an ADB with a public endpoint can still be access-
   restricted by an ACL or a private endpoint; this MVP surfaces that
@@ -213,3 +239,38 @@ See `README.md §9` for the user-facing version. Implementation-level detail:
   is no separate lighter-weight summary shape in the OCI SDK for either),
   so `kms_key_id` is authoritative; a null `kms_key_id` is a known fact
   (no customer-managed key), not an unresolvable unknown.
+
+## 6. Single-record scaling ceiling (P2-2)
+
+This MVP upserts exactly one aggregate record per tenancy (spec
+requirement 11) — a deliberate constraint, not an oversight. It has a
+hard ceiling: `runtime.maxPayloadBytes` (default in
+`config.example.yaml`), enforced by `validation/size.py::check_payload_size`
+after the full record is built. `PayloadSizeResult.near_budget` (default
+80% of the budget) surfaces an early warning in `collection-report.json`
+(`payloadNearBudget`) and the logs *before* it becomes a hard
+`snapshotStatus: failed` — it is not baked into the uploaded record
+itself, since that would change the record's own measured size.
+
+If a tenancy's resource count outgrows the ceiling, the migration path
+is:
+
+1. **Per-resource-type records** — one Drata Custom Connection record
+   per top-level `resources.*` array (e.g. a separate record for
+   instances, another for databases) instead of one record nesting all
+   of them. Requires: a distinct `recordId` per resource type
+   (`aggregate.py::derive_record_id` would need a type discriminant),
+   splitting `schemas/oci-snapshot-1.0.0.json`'s `resources`/`metrics`
+   sections into per-type schemas, and re-deriving cross-type findings
+   (e.g. `OCI-COMPUTE-ADMIN-PORT-EXPOSURE`, which joins instances against
+   VNICs/subnets/security lists) from data that would now live in
+   separate records — Custom Tests that currently read one record would
+   need to read several.
+2. **Multiple domain records** — a coarser split (e.g. one record for
+   compute+storage+networking, one for database, one for VPN) trading
+   less schema churn for a less granular ceiling fix; still requires
+   distinct `recordId`s and updating any Custom Test that spans domains.
+
+Neither is implemented — this MVP keeps the single-record constraint per
+spec and only adds the early-warning signal above. Revisit if a real
+deployment's resource count approaches `payloadBudgetBytes` in practice.

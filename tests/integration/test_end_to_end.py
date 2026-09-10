@@ -206,8 +206,18 @@ def _database_base_populated() -> DatabaseBaseCollectionResult:
         id="ocid1.dgassociation.oc1..dg1", database_id="ocid1.database.oc1..db1",
         role="PRIMARY", peer_role="STANDBY", protection_mode="MAXIMUM_AVAILABILITY", transport_type="SYNC",
     ))
+    # P1: a terminated db_system with a live-looking db_home child -- the db_home must be
+    # cascade-excluded (its parent is gone), not surface as an unresolved relationship.
+    terminated_db_system = _stamp(oci.database.models.DbSystemSummary(
+        id="ocid1.dbsystem.oc1..sysold", compartment_id=COMPARTMENT_OCID, lifecycle_state="TERMINATED",
+    ))
+    orphaned_db_home = _stamp(oci.database.models.DbHomeSummary(
+        id="ocid1.dbhome.oc1..homeold", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
+        db_system_id="ocid1.dbsystem.oc1..sysold",
+    ))
     return DatabaseBaseCollectionResult(
-        db_systems=[db_system], db_homes=[], databases=[database], backups=[],
+        db_systems=[db_system, terminated_db_system], db_homes=[orphaned_db_home],
+        databases=[database], backups=[],
         data_guard_associations=[dg], operations=[_empty_ok("database")],
     )
 
@@ -243,8 +253,18 @@ def _vpn_non_redundant() -> VpnCollectionResult:
         cpe_id="ocid1.cpe.oc1..cpe1", drg_id="ocid1.drg.oc1..drg1",
     ))
     tunnel = _stamp(oci.core.models.IPSecConnectionTunnel(id="ocid1.tunnel.oc1..t1", compartment_id=COMPARTMENT_OCID, status="UP"))
+    # P1: a terminated connection's own tunnel must be excluded with it, not surfaced
+    # as a tunnel for a connection that no longer exists in the output.
+    terminated_connection = _stamp(oci.core.models.IPSecConnection(
+        id="ocid1.ipsecconnection.oc1..cold", compartment_id=COMPARTMENT_OCID,
+        cpe_id="ocid1.cpe.oc1..cpe1", drg_id="ocid1.drg.oc1..drg1", lifecycle_state="TERMINATED",
+    ))
+    orphaned_tunnel = _stamp(oci.core.models.IPSecConnectionTunnel(
+        id="ocid1.tunnel.oc1..told", compartment_id=COMPARTMENT_OCID, status="DOWN",
+    ))
     return VpnCollectionResult(
-        ip_sec_connections=[connection], tunnels_by_connection_id={connection.id: [tunnel]},
+        ip_sec_connections=[connection, terminated_connection],
+        tunnels_by_connection_id={connection.id: [tunnel], terminated_connection.id: [orphaned_tunnel]},
         cpes=[_stamp(oci.core.models.Cpe(id="ocid1.cpe.oc1..cpe1", compartment_id=COMPARTMENT_OCID))],
         drgs=[_stamp(oci.core.models.Drg(id="ocid1.drg.oc1..drg1", compartment_id=COMPARTMENT_OCID))],
         drg_attachments=[], drg_route_tables_by_drg_id={}, drg_route_rules_by_route_table_id={},
@@ -296,6 +316,12 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert instances[0]["exposedAdministrativePorts"] == [3389]
     assert result.record["metrics"]["internetExposedWindowsVmCount"] == 1
 
+    exposure_finding = next(
+        f for f in result.record["findings"] if f["assertionId"] == "OCI-COMPUTE-ADMIN-PORT-EXPOSURE"
+    )
+    assert exposure_finding["status"] == "fail"
+    assert "evaluatedAdministrativePorts=[22, 3389]" in exposure_finding["reason"]
+
     lifecycle_warning = next(
         w for w in result.record["warnings"]
         if w["code"] == "LIFECYCLE_EXCLUDED" and "instance" in w["message"]
@@ -307,6 +333,13 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
 
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
+
+    # P1: terminated connection + its own tunnel excluded together, cascade, not just
+    # resources terminated in their own right.
+    connection_ids = {c["id"] for c in result.record["resources"]["ipsecConnections"]}
+    assert connection_ids == {"ocid1.ipsecconnection.oc1..c1"}
+    tunnel_ids = {t["id"] for t in result.record["resources"]["ipsecTunnels"]}
+    assert tunnel_ids == {"ocid1.tunnel.oc1..t1"}
 
     route_table = result.record["resources"]["routeTables"][0]
     assert route_table["routeRules"] == [
@@ -339,6 +372,20 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert data_guard["dataGuardRole"] == "PRIMARY"
     assert data_guard["dataGuardProtectionMode"] == "MAXIMUM_AVAILABILITY"
 
+    # P1: terminated db_system + its orphaned (but not itself terminated) db_home
+    # excluded together via cascade -- and critically, this does NOT trip an unresolved
+    # relationship (the db_home's own db_system_id pointing at a "missing" db_system),
+    # since decision.snapshot_status == "complete" is already asserted above.
+    db_system_ids = {s["id"] for s in result.record["resources"]["dbSystems"]}
+    assert db_system_ids == {"ocid1.dbsystem.oc1..sys1"}
+    assert result.record["resources"]["dbHomes"] == []
+    lifecycle_labels = {
+        w["message"].split()[1] for w in result.record["warnings"] if w["code"] == "LIFECYCLE_EXCLUDED"
+    }
+    # The orphaned tunnel's exclusion isn't tracked separately -- it goes with its whole
+    # connection, already covered by the ipsec_connection warning below.
+    assert {"db_system(s)", "db_home(s)", "ipsec_connection(s)"} <= lifecycle_labels
+
     adb = result.record["resources"]["autonomousDatabases"][0]
     assert adb["backupStatus"] == "not_applicable"
     assert adb["publicEndpointHostname"] == "adb1.adb.us-ashburn-1.oraclecloudapps.com"
@@ -350,7 +397,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert adb["backupRetentionLocked"] is False
     assert result.record["metrics"]["databasePublicEndpointCount"] == 1
     public_endpoint_finding = next(
-        f for f in result.record["findings"] if f["assertionId"] == "OCI-DATABASE-PUBLIC-ENDPOINT"
+        f for f in result.record["findings"] if f["assertionId"] == "OCI-ADB-PUBLIC-ENDPOINT-PRESENT"
     )
     assert public_endpoint_finding["status"] == "fail"
 

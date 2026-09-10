@@ -20,8 +20,14 @@ from oci_drata.pagination import (
     RetryPolicy,
     operations_complete,
     paginate,
+    run_concurrently,
     stamp_region,
 )
+
+# P2-1: bounds the per-ADB enrichment fan-out (backups/dataguard/peers per autonomous
+# database) within one region iteration. Independent of runtime.maxConcurrency, which
+# bounds concurrency *between* collectors.
+_PER_ADB_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -102,42 +108,56 @@ def collect_autonomous_database(
             region_adbs.extend(stamp_region(op.items, region))
         autonomous_databases.extend(region_adbs)
 
-        for adb in region_adbs:
+        # P2-1: backups/dataguard/peers per ADB was a fully serial loop. Each ADB's
+        # triple of calls is independent and safe to run concurrently -- each worker
+        # returns its own data, this thread merges sequentially (pagination.run_concurrently).
+        def _process_adb(
+            adb: Any, *, _client: Any = client, _peers_call: Any = peers_call, _region: str = region
+        ) -> tuple[list[OperationResult], str, list[Any], list[Any], list[Any]]:
+            ops: list[OperationResult] = []
+
             # list_autonomous_database_backups: autonomous_database_id alone is sufficient scope.
             backup_op = paginate(
                 service="database",
                 operation="list_autonomous_database_backups",
-                call=client.list_autonomous_database_backups,
-                region=region,
+                call=_client.list_autonomous_database_backups,
+                region=_region,
                 autonomous_database_id=adb.id,
                 retry_policy=retry_policy,
             )
-            operations.append(backup_op)
-            autonomous_database_backups.extend(stamp_region(backup_op.items, region))
+            ops.append(backup_op)
 
             dg_op = paginate(
                 service="database",
                 operation="list_autonomous_database_dataguard_associations",
-                call=client.list_autonomous_database_dataguard_associations,
-                region=region,
+                call=_client.list_autonomous_database_dataguard_associations,
+                region=_region,
                 autonomous_database_id=adb.id,
                 retry_policy=retry_policy,
             )
-            operations.append(dg_op)
-            autonomous_database_dataguard_associations.extend(stamp_region(dg_op.items, region))
+            ops.append(dg_op)
 
             # Not region-stamped: peer's own `region` field may be a real different region
             # (e.g. cross-region Data Guard standby); stamping would overwrite it.
             peers_op = paginate(
                 service="database",
                 operation="list_autonomous_database_peers",
-                call=peers_call,
-                region=region,
+                call=_peers_call,
+                region=_region,
                 autonomous_database_id=adb.id,
                 retry_policy=retry_policy,
             )
-            operations.append(peers_op)
-            autonomous_database_peers_by_adb_id.setdefault(adb.id, []).extend(peers_op.items)
+            ops.append(peers_op)
+
+            return ops, adb.id, stamp_region(backup_op.items, _region), stamp_region(dg_op.items, _region), peers_op.items
+
+        for ops, adb_id, backup_items, dg_items, peer_items in run_concurrently(
+            region_adbs, _process_adb, max_workers=_PER_ADB_CONCURRENCY
+        ):
+            operations.extend(ops)
+            autonomous_database_backups.extend(backup_items)
+            autonomous_database_dataguard_associations.extend(dg_items)
+            autonomous_database_peers_by_adb_id.setdefault(adb_id, []).extend(peer_items)
 
     return AutonomousDatabaseCollectionResult(
         autonomous_databases=autonomous_databases,

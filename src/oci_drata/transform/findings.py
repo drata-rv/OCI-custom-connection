@@ -6,10 +6,18 @@ from __future__ import annotations
 
 from oci_drata.models import DatabaseResource, Finding, Instance, IpsecConnection, Volume
 
-DERIVATION_VERSION = "1.2.0"
+DERIVATION_VERSION = "1.3.0"
 
 
-def compute_exposure_findings(instances: list[Instance]) -> list[Finding]:
+def compute_exposure_findings(
+    instances: list[Instance], *, administrative_ports: tuple[int, ...]
+) -> list[Finding]:
+    """assertion_id and reason both name the exact predicate evaluated -- public
+    reachability of the *configured administrative ports* (decisions.administrativePorts),
+    not general public exposure on every port. The full configured port set is always in
+    the reason, not only the exposed subset, so a reader can see what was actually
+    checked even on a pass/unknown result, not just on a fail."""
+
     findings = []
     for instance in instances:
         status = {"exposed": "fail", "not_exposed": "pass", "unknown": "unknown"}[
@@ -17,7 +25,7 @@ def compute_exposure_findings(instances: list[Instance]) -> list[Finding]:
         ]
         findings.append(
             Finding(
-                assertion_id="OCI-COMPUTE-PUBLIC-EXPOSURE",
+                assertion_id="OCI-COMPUTE-ADMIN-PORT-EXPOSURE",
                 status=status,
                 resource_type="compute_instance",
                 resource_id=instance.id,
@@ -27,9 +35,9 @@ def compute_exposure_findings(instances: list[Instance]) -> list[Finding]:
                 observed=instance.effective_ingress_exposure,
                 expected="not_exposed",
                 reason=(
-                    f"administrative ports exposed: {list(instance.exposed_administrative_ports)}"
-                    if instance.effective_ingress_exposure == "exposed"
-                    else f"hasPublicAddress={instance.has_public_address}"
+                    f"evaluatedAdministrativePorts={list(administrative_ports)!r} "
+                    f"exposedAdministrativePorts={list(instance.exposed_administrative_ports)!r} "
+                    f"hasPublicAddress={instance.has_public_address!r}"
                 ),
                 source_ids=(instance.id, *instance.vnic_ids),
                 derivation_version=DERIVATION_VERSION,
@@ -96,11 +104,13 @@ def database_customer_managed_key_findings(
 
 
 def database_public_endpoint_findings(autonomous_databases: list[DatabaseResource]) -> list[Finding]:
-    """Flags on publicEndpointPresent only (does a public endpoint hostname exist), not on
-    effective reachability -- an ADB can carry a public_endpoint hostname while access is
-    still restricted by an allow-list ACL or a private endpoint. accessControlEnabled and
-    privateEndpointConfigured are included in the reason for the reviewer to weigh, not
-    folded into the pass/fail verdict; this MVP doesn't resolve effective reachability."""
+    """assertion_id names exactly what's checked -- presence of a public endpoint
+    hostname, not effective reachability. An ADB can carry a public_endpoint hostname
+    while access is still restricted by an allow-list ACL or a private endpoint; this
+    MVP doesn't resolve effective reachability through those, so the reason makes that
+    explicit rather than letting a bare pass/fail imply a broader guarantee than the
+    derivation provides. accessControlEnabled/privateEndpointConfigured are included for
+    the reviewer to weigh, not folded into the verdict."""
 
     findings = []
     for adb in autonomous_databases:
@@ -110,7 +120,7 @@ def database_public_endpoint_findings(autonomous_databases: list[DatabaseResourc
             status = "fail" if adb.public_endpoint_present else "pass"
         findings.append(
             Finding(
-                assertion_id="OCI-DATABASE-PUBLIC-ENDPOINT",
+                assertion_id="OCI-ADB-PUBLIC-ENDPOINT-PRESENT",
                 status=status,
                 resource_type=adb.database_type,
                 resource_id=adb.id,
@@ -122,7 +132,9 @@ def database_public_endpoint_findings(autonomous_databases: list[DatabaseResourc
                 reason=(
                     f"publicEndpointPresent={adb.public_endpoint_present!r} "
                     f"accessControlEnabled={adb.access_control_enabled!r} "
-                    f"privateEndpointConfigured={adb.private_endpoint_configured!r}"
+                    f"privateEndpointConfigured={adb.private_endpoint_configured!r} "
+                    f"(checks endpoint presence only -- effective reachability through "
+                    f"ACL/private-endpoint/NSGs is not resolved by this derivation)"
                 ),
                 source_ids=(adb.id,),
                 derivation_version=DERIVATION_VERSION,

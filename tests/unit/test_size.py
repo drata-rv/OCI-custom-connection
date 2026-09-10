@@ -27,3 +27,27 @@ def test_payload_exceeds_budget_boundary() -> None:
 
     over = check_payload_size(record, max_bytes=len(serialize_deterministic(record)) - 1)
     assert not over.within_budget
+
+
+def test_near_budget_is_false_when_comfortably_under() -> None:
+    result = check_payload_size({"id": "x"}, max_bytes=10_000)
+    assert result.near_budget is False
+
+
+def test_near_budget_is_true_when_close_but_still_within() -> None:
+    """P2-2: an early warning before the hard ceiling blocks upload outright."""
+    record = {"data": "x" * 850}
+    size = len(serialize_deterministic(record))
+    result = check_payload_size(record, max_bytes=int(size / 0.9))  # ~90% of budget used
+    assert result.within_budget
+    assert result.near_budget is True
+
+
+def test_near_budget_is_false_once_actually_over_budget() -> None:
+    """Over budget is already surfaced via within_budget=False -- near_budget is
+    specifically the "not yet over, but should be watched" signal, not a superset."""
+    record = {"data": "x" * 850}
+    size = len(serialize_deterministic(record))
+    result = check_payload_size(record, max_bytes=size - 1)
+    assert result.within_budget is False
+    assert result.near_budget is False

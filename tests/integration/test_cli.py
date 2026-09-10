@@ -5,6 +5,7 @@ OCI-client-mock level coverage lives in test_end_to_end.py.
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -92,6 +93,8 @@ def test_dry_run_writes_sanitized_snapshot_and_report(
     raw["oci"]["expectedTenancyOcid"] = "ocid1.tenancy.oc1..aaaaaaaatest"
     raw["oci"]["regions"]["allow"] = ["us-ashburn-1"]
     raw["drata"]["recordId"] = "oci-snapshot-test0123456789abcdef01234567"
+    raw["drata"]["connectionId"] = 101
+    raw["drata"]["resourceId"] = 202
     config_path.write_text(yaml.safe_dump(raw))
     monkeypatch.setenv("DRATA_API_TOKEN", "unused")
 
@@ -103,6 +106,39 @@ def test_dry_run_writes_sanitized_snapshot_and_report(
     snapshot = json.loads((tmp_path / "out" / "snapshot.json").read_text())
     assert snapshot["id"] == "oci-snapshot-test0123456789abcdef01234567"
     patched_collectors.assert_not_called()
+
+    out_dir = tmp_path / "out"
+    assert stat.S_IMODE(out_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((out_dir / "collection-report.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((out_dir / "snapshot.json").stat().st_mode) == 0o600
+
+
+def test_prepare_restricted_output_dir_tightens_preexisting_permissive_dir(tmp_path: Path) -> None:
+    """mkdir's mode only applies at creation -- a directory left over from an older,
+    less restrictive run (or created by another process) must still be tightened."""
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(mode=0o755)
+    cli._prepare_restricted_output_dir(out_dir)
+    assert stat.S_IMODE(out_dir.stat().st_mode) == 0o700
+
+
+def test_prepare_restricted_output_dir_refuses_symlink(tmp_path: Path) -> None:
+    real_target = tmp_path / "elsewhere"
+    real_target.mkdir()
+    symlink = tmp_path / "out"
+    symlink.symlink_to(real_target)
+    with pytest.raises(RuntimeError, match="symlink"):
+        cli._prepare_restricted_output_dir(symlink)
+
+
+def test_write_restricted_refuses_symlink(tmp_path: Path) -> None:
+    real_target = tmp_path / "elsewhere.json"
+    real_target.write_text("{}")
+    symlink = tmp_path / "snapshot.json"
+    symlink.symlink_to(real_target)
+    with pytest.raises(OSError):
+        cli._write_restricted(symlink, b"{}")
 
 
 def test_main_returns_config_error_exit_code(tmp_path: Path) -> None:

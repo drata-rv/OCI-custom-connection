@@ -12,6 +12,7 @@ import dataclasses
 import datetime
 import json
 import logging
+import os
 import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +46,33 @@ EXIT_OK = 0
 EXIT_BLOCKED = 1
 EXIT_CONFIG_ERROR = 2
 EXIT_UNEXPECTED = 3
+
+
+def _prepare_restricted_output_dir(out_dir: Path) -> None:
+    """Output holds OCI inventory -- OCIDs, topology, IP addressing, security rules,
+    findings. Not secret, but operationally sensitive; owner-only by default rather than
+    left at the process umask's default (typically group/world-readable).
+
+    Refuses a pre-existing symlink at this path rather than silently following it and
+    writing wherever it points."""
+
+    if out_dir.is_symlink():
+        raise RuntimeError(f"refusing to use {out_dir} as an output directory: it is a symlink")
+    out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(out_dir, 0o700)  # mkdir's mode is only applied on creation, not to a pre-existing dir
+
+
+def _write_restricted(path: Path, data: bytes) -> None:
+    """Creates the file with owner-only permissions from the moment it exists -- no
+    write-then-chmod window where it's briefly at the process umask's default -- and
+    refuses to follow a pre-existing symlink at this path."""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -182,6 +210,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         "payloadBytes": size_result.byte_size,
         "payloadBudgetBytes": size_result.max_bytes,
         "withinPayloadBudget": size_result.within_budget,
+        "payloadNearBudget": size_result.near_budget,
         "snapshotStatus": decision.snapshot_status,
         "completenessReasons": list(decision.reasons),
         "dryRun": dry_run,
@@ -189,6 +218,14 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
 
     if not schema_result.valid:
         logger.error("schema validation failed", extra={"errors": report["schemaErrors"]})
+
+    if size_result.near_budget:
+        # Early warning before the hard payload ceiling blocks upload outright -- see
+        # PayloadSizeResult's docstring and TRACEABILITY.md for the migration path.
+        logger.warning(
+            "payload approaching size budget",
+            extra={"payloadBytes": size_result.byte_size, "payloadBudgetBytes": size_result.max_bytes},
+        )
 
     uploaded = False
     if dry_run:
@@ -251,10 +288,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_UNEXPECTED
 
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "collection-report.json").write_text(json.dumps(result.report, indent=2, sort_keys=True))
+    _prepare_restricted_output_dir(out_dir)
+    _write_restricted(
+        out_dir / "collection-report.json",
+        json.dumps(result.report, indent=2, sort_keys=True).encode("utf-8"),
+    )
     if dry_run and result.record is not None:
-        (out_dir / "snapshot.json").write_bytes(serialize_deterministic(result.record))
+        _write_restricted(out_dir / "snapshot.json", serialize_deterministic(result.record))
 
     print(json.dumps(result.report, indent=2, sort_keys=True))
     return result.exit_code

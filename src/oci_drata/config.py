@@ -7,8 +7,11 @@ OCI_DRATA__-prefixed env vars override non-secret settings after YAML load, befo
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
+import logging
 import os
 import stat
+import urllib.parse
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -22,7 +25,10 @@ from oci_drata.redaction import (
     is_forbidden_key,
 )
 
+logger = logging.getLogger(__name__)
+
 ENV_OVERRIDE_PREFIX = "OCI_DRATA__"
+DEFAULT_DRATA_HOSTNAME = "public-api.drata.com"
 
 
 class ConfigError(Exception):
@@ -275,6 +281,7 @@ class DrataConfig:
     resource_id: int
     record_id: str
     api_token_secret_ref: SecretRef
+    allow_alternate_host: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -300,15 +307,154 @@ def _require(mapping: Mapping[str, Any], key: str, *, context: str) -> Any:
     return mapping[key]
 
 
+def _require_bool(mapping: Mapping[str, Any], key: str, *, context: str) -> bool:
+    """YAML only produces a real bool for an unquoted true/false literal -- a quoted
+    "false" parses as the string "false", and bool("false") is True. Reject anything
+    that isn't already a native bool instead of coercing it."""
+
+    value = _require(mapping, key, context=context)
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"{context}.{key}: expected true or false (unquoted), got {value!r} "
+            f"({type(value).__name__}) -- a quoted string is not a boolean"
+        )
+    return value
+
+
+def _require_int(
+    mapping: Mapping[str, Any],
+    key: str,
+    *,
+    context: str,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = _require(mapping, key, context=context)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{context}.{key}: expected an integer, got {value!r}")
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{context}.{key}: must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{context}.{key}: must be <= {maximum}, got {value}")
+    return value
+
+
+def _require_port_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[int, ...]:
+    raw_list = _require(mapping, key, context=context)
+    if not isinstance(raw_list, list) or not raw_list:
+        raise ConfigError(f"{context}.{key}: must be a non-empty list of ports")
+    ports = []
+    for item in raw_list:
+        if isinstance(item, bool) or not isinstance(item, int) or not (1 <= item <= 65535):
+            raise ConfigError(f"{context}.{key}: {item!r} is not a valid port (1-65535)")
+        ports.append(item)
+    return tuple(ports)
+
+
+def _require_cidr_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[str, ...]:
+    """Fails at config-load time, before any OCI collection, rather than letting a
+    malformed or empty entry silently make transform.exposure.ExposureConfig's reference
+    set empty -- which would make every exposure check resolve to not_exposed regardless
+    of what the collected security rules actually allow."""
+
+    raw_list = _require(mapping, key, context=context)
+    if not isinstance(raw_list, list) or not raw_list:
+        raise ConfigError(f"{context}.{key}: must be a non-empty list of CIDRs")
+    cidrs = []
+    for item in raw_list:
+        if not isinstance(item, str):
+            raise ConfigError(f"{context}.{key}: {item!r} is not a CIDR string")
+        try:
+            ipaddress.ip_network(item, strict=False)
+        except ValueError as exc:
+            raise ConfigError(f"{context}.{key}: {item!r} is not a valid CIDR: {exc}") from exc
+        cidrs.append(item)
+    return tuple(cidrs)
+
+
+def _check_known_keys(mapping: Any, allowed: frozenset[str], *, context: str) -> None:
+    if not isinstance(mapping, Mapping):
+        return
+    unknown = set(mapping) - allowed
+    if unknown:
+        raise ConfigError(
+            f"{context}: unrecognized field(s) {sorted(unknown)!r} -- check for a typo "
+            f"against the documented field names in config.example.yaml"
+        )
+
+
+def _validate_drata_base_url(url: str, *, allow_alternate_host: bool) -> None:
+    """Fails before the API token is ever resolved or sent anywhere -- a tampered or
+    typo'd baseUrl must not silently become a place the bearer token gets POSTed to."""
+
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https":
+        raise ConfigError(f"drata.baseUrl must use https, got {url!r}")
+    if parsed.username or parsed.password:
+        raise ConfigError("drata.baseUrl must not embed credentials")
+    if parsed.query or parsed.fragment:
+        raise ConfigError("drata.baseUrl must not include a query string or fragment")
+    if not parsed.hostname:
+        raise ConfigError(f"drata.baseUrl has no hostname: {url!r}")
+    if ".." in parsed.path.split("/"):
+        raise ConfigError(f"drata.baseUrl path must not contain '..': {url!r}")
+    if parsed.hostname != DEFAULT_DRATA_HOSTNAME:
+        if not allow_alternate_host:
+            raise ConfigError(
+                f"drata.baseUrl hostname {parsed.hostname!r} is not the expected "
+                f"{DEFAULT_DRATA_HOSTNAME!r} -- set drata.allowAlternateHost: true to "
+                f"explicitly opt in if this deployment genuinely targets a different "
+                f"Drata endpoint (e.g. a regional or dedicated instance)"
+            )
+        logger.warning(
+            "drata.baseUrl targets a non-default host",
+            extra={"hostname": parsed.hostname},
+        )
+
+
+_TOP_LEVEL_KEYS = frozenset({"deployment", "oci", "decisions", "drata", "runtime"})
+_DEPLOYMENT_KEYS = frozenset({"name", "snapshotDisplayName"})
+_OCI_KEYS = frozenset(
+    {"authentication", "expectedTenancyOcid", "regions", "compartments", "services"}
+)
+_OCI_AUTH_KEYS = frozenset({"type", "configFile", "profile", "privateKeyPassphraseSecretRef"})
+_OCI_REGIONS_KEYS = frozenset({"allow"})
+_OCI_COMPARTMENTS_KEYS = frozenset({"roots", "excludeOcids"})
+_OCI_SERVICES_KEYS = frozenset(
+    {
+        "compute", "networkExposure", "blockStorage", "baseDatabase",
+        "autonomousDatabase", "exadataDetection", "siteToSiteVpn",
+    }
+)
+_DECISIONS_KEYS = frozenset(
+    {
+        "administrativePorts", "publicSourceCidrs", "minimumVpnTunnelCount",
+        "minimumUpVpnTunnelCount", "freshnessHours", "requireCustomerManagedVolumeKeys",
+        "requireCustomerManagedDatabaseKeys",
+    }
+)
+_DRATA_KEYS = frozenset(
+    {"baseUrl", "connectionId", "resourceId", "recordId", "apiTokenSecretRef", "allowAlternateHost"}
+)
+_RUNTIME_KEYS = frozenset({"maxPayloadBytes", "maxConcurrency", "logLevel", "dryRun"})
+_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
 def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
+    _check_known_keys(raw, _TOP_LEVEL_KEYS, context="$")
+
     dep = _require(raw, "deployment", context="$")
+    _check_known_keys(dep, _DEPLOYMENT_KEYS, context="deployment")
     deployment = DeploymentConfig(
         name=_require(dep, "name", context="deployment"),
         snapshot_display_name=_require(dep, "snapshotDisplayName", context="deployment"),
     )
 
     oci_raw = _require(raw, "oci", context="$")
+    _check_known_keys(oci_raw, _OCI_KEYS, context="oci")
+
     auth_raw = _require(oci_raw, "authentication", context="oci")
+    _check_known_keys(auth_raw, _OCI_AUTH_KEYS, context="oci.authentication")
     authentication = OciAuthenticationConfig(
         type=_require(auth_raw, "type", context="oci.authentication"),
         config_file=_require(auth_raw, "configFile", context="oci.authentication"),
@@ -318,30 +464,37 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
             context="oci.authentication.privateKeyPassphraseSecretRef",
         ),
     )
+
     regions_raw = _require(oci_raw, "regions", context="oci")
+    _check_known_keys(regions_raw, _OCI_REGIONS_KEYS, context="oci.regions")
     regions = OciRegionsConfig(allow=tuple(_require(regions_raw, "allow", context="oci.regions")))
     if not regions.allow:
         raise ConfigError("oci.regions.allow must list at least one region")
 
     compartments_raw = _require(oci_raw, "compartments", context="oci")
+    _check_known_keys(compartments_raw, _OCI_COMPARTMENTS_KEYS, context="oci.compartments")
+    roots = tuple(_require(compartments_raw, "roots", context="oci.compartments"))
+    if not roots:
+        raise ConfigError("oci.compartments.roots must list at least one root")
     compartments = OciCompartmentsConfig(
-        roots=tuple(_require(compartments_raw, "roots", context="oci.compartments")),
+        roots=roots,
         exclude_ocids=tuple(compartments_raw.get("excludeOcids") or ()),
     )
 
     services_raw = _require(oci_raw, "services", context="oci")
+    _check_known_keys(services_raw, _OCI_SERVICES_KEYS, context="oci.services")
     services = OciServicesConfig(
-        compute=bool(_require(services_raw, "compute", context="oci.services")),
-        network_exposure=bool(_require(services_raw, "networkExposure", context="oci.services")),
-        block_storage=bool(_require(services_raw, "blockStorage", context="oci.services")),
-        base_database=bool(_require(services_raw, "baseDatabase", context="oci.services")),
-        autonomous_database=bool(
-            _require(services_raw, "autonomousDatabase", context="oci.services")
+        compute=_require_bool(services_raw, "compute", context="oci.services"),
+        network_exposure=_require_bool(services_raw, "networkExposure", context="oci.services"),
+        block_storage=_require_bool(services_raw, "blockStorage", context="oci.services"),
+        base_database=_require_bool(services_raw, "baseDatabase", context="oci.services"),
+        autonomous_database=_require_bool(
+            services_raw, "autonomousDatabase", context="oci.services"
         ),
-        exadata_detection=bool(
-            _require(services_raw, "exadataDetection", context="oci.services")
+        exadata_detection=_require_bool(
+            services_raw, "exadataDetection", context="oci.services"
         ),
-        site_to_site_vpn=bool(_require(services_raw, "siteToSiteVpn", context="oci.services")),
+        site_to_site_vpn=_require_bool(services_raw, "siteToSiteVpn", context="oci.services"),
     )
 
     oci_config = OciConfig(
@@ -353,29 +506,31 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
     )
 
     decisions_raw = _require(raw, "decisions", context="$")
+    _check_known_keys(decisions_raw, _DECISIONS_KEYS, context="decisions")
     decisions = DecisionsConfig(
-        administrative_ports=tuple(
-            int(p) for p in _require(decisions_raw, "administrativePorts", context="decisions")
+        administrative_ports=_require_port_list(
+            decisions_raw, "administrativePorts", context="decisions"
         ),
-        public_source_cidrs=tuple(
-            _require(decisions_raw, "publicSourceCidrs", context="decisions")
+        public_source_cidrs=_require_cidr_list(
+            decisions_raw, "publicSourceCidrs", context="decisions"
         ),
-        minimum_vpn_tunnel_count=int(
-            _require(decisions_raw, "minimumVpnTunnelCount", context="decisions")
+        minimum_vpn_tunnel_count=_require_int(
+            decisions_raw, "minimumVpnTunnelCount", context="decisions", minimum=0
         ),
-        minimum_up_vpn_tunnel_count=int(
-            _require(decisions_raw, "minimumUpVpnTunnelCount", context="decisions")
+        minimum_up_vpn_tunnel_count=_require_int(
+            decisions_raw, "minimumUpVpnTunnelCount", context="decisions", minimum=0
         ),
-        freshness_hours=int(_require(decisions_raw, "freshnessHours", context="decisions")),
-        require_customer_managed_volume_keys=bool(
-            _require(decisions_raw, "requireCustomerManagedVolumeKeys", context="decisions")
+        freshness_hours=_require_int(decisions_raw, "freshnessHours", context="decisions", minimum=1),
+        require_customer_managed_volume_keys=_require_bool(
+            decisions_raw, "requireCustomerManagedVolumeKeys", context="decisions"
         ),
-        require_customer_managed_database_keys=bool(
-            _require(decisions_raw, "requireCustomerManagedDatabaseKeys", context="decisions")
+        require_customer_managed_database_keys=_require_bool(
+            decisions_raw, "requireCustomerManagedDatabaseKeys", context="decisions"
         ),
     )
 
     drata_raw = _require(raw, "drata", context="$")
+    _check_known_keys(drata_raw, _DRATA_KEYS, context="drata")
     api_token_secret_ref = _parse_secret_ref(
         _require(drata_raw, "apiTokenSecretRef", context="drata"),
         context="drata.apiTokenSecretRef",
@@ -383,20 +538,31 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
     if api_token_secret_ref is None:
         raise ConfigError("drata.apiTokenSecretRef is required")
 
+    base_url = _require(drata_raw, "baseUrl", context="drata")
+    allow_alternate_host = bool(drata_raw.get("allowAlternateHost", False))
+    _validate_drata_base_url(base_url, allow_alternate_host=allow_alternate_host)
+
     drata = DrataConfig(
-        base_url=_require(drata_raw, "baseUrl", context="drata"),
-        connection_id=int(_require(drata_raw, "connectionId", context="drata")),
-        resource_id=int(_require(drata_raw, "resourceId", context="drata")),
+        base_url=base_url,
+        connection_id=_require_int(drata_raw, "connectionId", context="drata", minimum=1),
+        resource_id=_require_int(drata_raw, "resourceId", context="drata", minimum=1),
         record_id=_require(drata_raw, "recordId", context="drata"),
         api_token_secret_ref=api_token_secret_ref,
+        allow_alternate_host=allow_alternate_host,
     )
 
     runtime_raw = _require(raw, "runtime", context="$")
+    _check_known_keys(runtime_raw, _RUNTIME_KEYS, context="runtime")
+    log_level = _require(runtime_raw, "logLevel", context="runtime")
+    if not isinstance(log_level, str) or log_level.upper() not in _LOG_LEVELS:
+        raise ConfigError(
+            f"runtime.logLevel: expected one of {sorted(_LOG_LEVELS)!r}, got {log_level!r}"
+        )
     runtime = RuntimeConfig(
-        max_payload_bytes=int(_require(runtime_raw, "maxPayloadBytes", context="runtime")),
-        max_concurrency=int(_require(runtime_raw, "maxConcurrency", context="runtime")),
-        log_level=str(_require(runtime_raw, "logLevel", context="runtime")),
-        dry_run=bool(_require(runtime_raw, "dryRun", context="runtime")),
+        max_payload_bytes=_require_int(runtime_raw, "maxPayloadBytes", context="runtime", minimum=1),
+        max_concurrency=_require_int(runtime_raw, "maxConcurrency", context="runtime", minimum=1),
+        log_level=log_level.upper(),
+        dry_run=_require_bool(runtime_raw, "dryRun", context="runtime"),
     )
 
     return AppConfig(

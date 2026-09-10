@@ -42,14 +42,16 @@ schema + size validation → completeness decision → Drata upsert
 | Validation | `src/oci_drata/validation/*.py` |
 | Delivery | `src/oci_drata/delivery/drata.py` |
 | Entry point | `src/oci_drata/cli.py` |
-| Security allowlist | `src/oci_drata/security.py`, enforced by `tests/unit/test_operation_allowlist.py` |
+| Security allowlist | `src/oci_drata/security.py`, enforced twice: statically by `tests/unit/test_operation_allowlist.py` (AST scan at build time) and at runtime by `GuardedOciClient` (every OCI client `regional_client()` returns is wrapped; an operation outside the allowlist raises the moment it's called, not just when the static scan sees it) |
 
-Every OCI SDK call goes through `pagination.paginate()` (`list_*`) or
-`pagination.call_once()` (`get_*`) — pagination, bounded retry with
-full-jitter exponential backoff, and `opc-request-id` capture happen
-exactly once, not per collector. Collectors return raw OCI SDK objects;
-`transform/normalize.py` is the only place raw fields get allowlisted into
-the schema's shape.
+Every `list_*`/`get_*` call goes through `pagination.paginate()` or
+`pagination.call_once()`, with one exception —
+`collection/compute.py::_lookup_public_ip` implements its own retry loop to
+treat a 404 (no public IP assigned) as a synthetic success rather than a
+domain failure. Pagination, bounded retry with full-jitter exponential
+backoff, and `opc-request-id` capture happen in one place, not per
+collector. Collectors return raw OCI SDK objects; `transform/normalize.py`
+is the only place raw fields get allowlisted into the schema's shape.
 
 ## 2. Setup
 
@@ -162,8 +164,10 @@ Notes:
 * Never grant `manage`, `all-resources`, any secret-family / Vault
   secret-content permission, or any IPSec shared-secret permission. This
   collector never calls a mutating, wallet, credential, or shared-secret
-  operation, enforced by `security.py`'s allowlist and
-  `test_operation_allowlist.py`.
+  operation, enforced both statically (`test_operation_allowlist.py`) and
+  at runtime (`security.py::GuardedOciClient` — every OCI client is
+  wrapped, and blocks any such operation the moment it's called, even if
+  resolved dynamically or through an alias the static scan wouldn't see).
 
 ## 5. Execution
 
@@ -208,6 +212,11 @@ Windows VM scenario.
 | Symptom | Likely cause |
 |---|---|
 | `configuration error: ... field name suggests a credential` | A literal secret in `config.yaml` instead of a `secretRef`. Move it to an env var or mounted file. |
+| `configuration error: ... expected true or false (unquoted), got ...` | A boolean field was quoted in YAML (e.g. `compute: "false"`) — YAML parses that as the string `"false"`, and `bool("false")` is `True` in Python, so this is rejected rather than silently flipped. Remove the quotes. |
+| `configuration error: ... must be >= 1, got 0` | `drata.connectionId`/`resourceId` are still the example file's placeholder `0`. Replace with the real IDs from the Drata Custom Connection. |
+| `configuration error: ... is not a valid CIDR` | `decisions.publicSourceCidrs` has a malformed entry. This is checked at config-load time specifically so a typo here can't silently make every exposure finding resolve to `not_exposed` (an empty/broken reference set has nothing to compare against). |
+| `configuration error: drata.baseUrl ...` | `drata.baseUrl` must be `https`, have no embedded credentials/query/fragment, and its hostname must be `public-api.drata.com` unless `drata.allowAlternateHost: true` is set explicitly — a deliberate allowlist so a tampered or typo'd URL can't send the bearer token to an unintended host. |
+| `configuration error: $: unrecognized field(s) ...` | A typo'd or unexpected top-level/nested config key. Check spelling against `config.example.yaml`. |
 | `AuthError: OCI private key file must not be group/world accessible` | `chmod 600` the key file `oci.authentication.configFile` points at. |
 | `AuthError: OCI SDK config tenancy does not match configured oci.expectedTenancyOcid` | The `~/.oci/config` profile points at a different tenancy than `config.yaml` expects — a fail-closed guard against pointing the collector at the wrong tenancy. |
 | `snapshotStatus: incomplete`, reasons mention `not subscribed/READY` | A region in `oci.regions.allow` isn't actually subscribed in this tenancy, or `list_region_subscriptions` itself failed. |
@@ -216,6 +225,7 @@ Windows VM scenario.
 | `snapshotStatus: failed`, reason mentions schema | The record itself didn't validate — this should not happen against unmodified collector code; check `collection-report.json`'s `schemaErrors` and file an issue rather than working around it. |
 | Drata upload returns `error_class: auth` | Bearer token invalid/expired, or wrong `connectionId`/`resourceId`. The local snapshot is still `complete`; only delivery failed — nothing was overwritten in Drata. |
 | Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
+| Log line `payload approaching size budget`, `collection-report.json`'s `payloadNearBudget: true` | Serialized record is at/above 80% of `runtime.maxPayloadBytes` but still under it — upload still proceeds. Early warning before this tenancy's resource count hits the hard ceiling and uploads start failing; see [TRACEABILITY.md §6](TRACEABILITY.md#6-single-record-scaling-ceiling-p2-2) for the migration path if that happens. |
 
 ## 8. Deployment acceptance checklist
 
@@ -245,6 +255,9 @@ From spec §13, adapted as a literal checklist:
       known-good Drata record untouched.
 - [ ] No secret-bearing field appears in `out/snapshot.json`,
       `collection-report.json`, or logs.
+- [ ] `out/` and everything written to it are owner-only (`0700`/`0600`) —
+      the CLI enforces this itself; this step just confirms the host's
+      filesystem didn't override it (e.g. an unusual mount option).
 - [ ] Deployment technical and compliance owners have reviewed
       `out/snapshot.json` for readability before any manual Custom Test is
       published against it.
@@ -262,19 +275,29 @@ See the cited module docstrings for detail.
   — public exposure, customer-managed-key (when required by config),
   database public endpoint, VPN redundancy — not an exhaustive control
   catalog. Custom Tests remain manually authored in the Drata UI per spec.
+  Each assertion name states its exact predicate
+  (`OCI-COMPUTE-ADMIN-PORT-EXPOSURE` checks the *configured administrative
+  ports* only, not general exposure; `OCI-ADB-PUBLIC-ENDPOINT-PRESENT`
+  checks endpoint *presence*, not effective reachability through an
+  ACL/private endpoint/NSGs) — a Custom Test author should read the
+  assertion name as that literal predicate, not a broader guarantee.
+  Effective ADB reachability derivation is not implemented.
 * **No noncritical-relationship classification**
   (`validation/completeness.py`) — every unresolved relationship blocks
   upload by default, matching spec §10's stated default, but the spec's
   "unless explicitly noncritical" escape hatch isn't implemented.
-* **Lifecycle-state exclusion (TERMINATED/TERMINATING) is implemented
-  only for compute instances and boot/block volumes**
-  (`transform/lifecycle.py`). DB systems/databases/autonomous
-  databases/VPN resources still retain every lifecycle state returned
-  by OCI — extending exclusion there needs the same correlated
-  attachment/relationship filtering (see `lifecycle.py`'s own
-  docstring) applied to each resource's parent/child chain, not done
-  yet. Excluded resources are never silently dropped: a
-  `LIFECYCLE_EXCLUDED` entry in `warnings` reports the count and ids.
+* **Lifecycle-state exclusion (TERMINATED/TERMINATING)** covers compute
+  instances, boot/block volumes, the full base DB chain (db system → db
+  home → database → backup/Data Guard association), the autonomous DB
+  chain (autonomous database → backup/Data Guard association), and VPN
+  (IPSec connection → tunnel, DRG → DRG attachment) — see
+  `transform/lifecycle.py::exclude_lifecycle_cascade`. Exclusion is
+  cascading: a terminated parent's children go with it even when the
+  child's own lifecycle state looks fine, so a resource never surfaces
+  as an unresolved relationship (parent not found) instead of correctly
+  reflecting that its whole lineage is gone. Excluded resources are
+  never silently dropped: a `LIFECYCLE_EXCLUDED` entry in `warnings`
+  reports the count and ids per resource type.
 * **Operations within an enabled domain have no required/optional
   distinction** (`pagination.py::operations_complete`) — any operation
   failure (even a non-essential enrichment call) blocks that entire
