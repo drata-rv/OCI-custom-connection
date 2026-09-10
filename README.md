@@ -253,6 +253,9 @@ From spec §13, adapted as a literal checklist:
       known-good Drata record untouched.
 - [ ] No secret-bearing field appears in `out/snapshot.json`,
       `collection-report.json`, or logs.
+- [ ] `out/` and everything written to it are owner-only (`0700`/`0600`) —
+      the CLI enforces this itself; this step just confirms the host's
+      filesystem didn't override it (e.g. an unusual mount option).
 - [ ] Deployment technical and compliance owners have reviewed
       `out/snapshot.json` for readability before any manual Custom Test is
       published against it.
