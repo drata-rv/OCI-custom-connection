@@ -4,14 +4,6 @@ Read-only Oracle Cloud Infrastructure configuration-evidence collector that
 normalizes findings into one schema-valid JSON record and upserts it into
 an existing Drata Custom Connection.
 
-Requirement/API traceability: [TRACEABILITY.md](TRACEABILITY.md).
-
-**Status: MVP, functionally complete, not yet run against a live tenancy.**
-Every module is covered by mocked unit/integration tests; nothing here has
-been exercised against real OCI or Drata APIs. Run the acceptance checklist
-in [§8](#8-deployment-acceptance-checklist) against a real tenancy before
-relying on this for evidence.
-
 ## Contents
 
 1. [Architecture](#1-architecture)
