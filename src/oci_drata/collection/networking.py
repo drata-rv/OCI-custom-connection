@@ -23,9 +23,8 @@ from oci_drata.pagination import (
     stamp_region,
 )
 
-# P2-1: bounds the per-NSG enrichment fan-out (list_network_security_group_security_rules/
-# _vnics per NSG) within one region+compartment iteration. Independent of
-# runtime.maxConcurrency, which bounds concurrency *between* collectors.
+# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
+# pagination.run_concurrently).
 _PER_NSG_CONCURRENCY = 8
 
 
@@ -158,10 +157,8 @@ def collect_networking(
             region_nsgs = stamp_region(nsgs_op.items, region)
             network_security_groups.extend(region_nsgs)
 
-            # P2-1: list_network_security_group_security_rules/_vnics per NSG was a
-            # fully serial loop. Each NSG's pair of calls is independent and safe to run
-            # concurrently -- each worker returns its own data, this thread merges
-            # sequentially, so nothing needs a lock (see pagination.run_concurrently).
+            # Each NSG's pair of calls is independent -- workers return their own data,
+            # this thread merges sequentially after, so nothing needs a lock.
             def _process_nsg(
                 nsg: Any, *, _vnet_client: Any = vnet_client, _region: str = region
             ) -> tuple[list[OperationResult], str | None, list[Any], list[Any]]:

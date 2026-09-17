@@ -39,7 +39,7 @@ decisions:
 
 drata:
   # baseUrl hostname must be public-api.drata.com unless allowAlternateHost: true is set
-  # explicitly (e.g. a regional/dedicated Drata instance) -- see README §4.
+  # explicitly (e.g. a regional/dedicated Drata instance) -- see README §7.
   baseUrl: https://public-api.drata.com/public/v2
   # connectionId/resourceId must both be replaced with real positive IDs from the
   # customer's own Drata Custom Connection -- 0 is a deliberate placeholder that fails

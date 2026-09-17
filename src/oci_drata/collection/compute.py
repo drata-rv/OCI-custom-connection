@@ -25,10 +25,8 @@ from oci_drata.pagination import (
     stamp_region,
 )
 
-# P2-1: bounds the per-VNIC-attachment enrichment fan-out (get_vnic/list_private_ips/
-# get_public_ip_by_private_ip_id per attachment) within one region+compartment iteration.
-# Independent of runtime.maxConcurrency, which bounds concurrency *between* collectors
-# (cli.py::_run_independent_collectors), not the serial per-item loop within one of them.
+# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
+# pagination.run_concurrently).
 _PER_ATTACHMENT_CONCURRENCY = 8
 
 
@@ -132,14 +130,13 @@ def collect_compute(
             region_attachments = stamp_region(attachments_op.items, region)
             vnic_attachments.extend(region_attachments)
 
-            # P2-1: get_vnic/list_private_ips/get_public_ip_by_private_ip_id per attachment
-            # was a fully serial N+1 loop. Each attachment's chain is independent and safe
-            # to run concurrently -- workers only read the vnics cache (never write it) and
-            # return their own data; this thread merges every result back sequentially, so
-            # nothing here needs a lock. Two attachments racing on the same not-yet-cached
-            # vnic_id within one batch can cause one harmless duplicate get_vnic call (both
-            # see the cache miss before either writes it back) -- never a correctness issue,
-            # only ever one redundant read of already-public OCI data.
+            # Each attachment's chain is independent -- workers only read the vnics cache
+            # (never write it) and return their own data; this thread merges every result
+            # back sequentially, so nothing here needs a lock. Two attachments racing on
+            # the same not-yet-cached vnic_id within one batch can cause one harmless
+            # duplicate get_vnic call (both see the cache miss before either writes it
+            # back) -- never a correctness issue, only ever one redundant read of
+            # already-public OCI data.
             def _process_attachment(
                 attachment: Any,
                 *,

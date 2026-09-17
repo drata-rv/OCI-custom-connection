@@ -24,9 +24,8 @@ from oci_drata.pagination import (
     stamp_region,
 )
 
-# P2-1: bounds the per-ADB enrichment fan-out (backups/dataguard/peers per autonomous
-# database) within one region iteration. Independent of runtime.maxConcurrency, which
-# bounds concurrency *between* collectors.
+# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
+# pagination.run_concurrently).
 _PER_ADB_CONCURRENCY = 8
 
 
@@ -108,9 +107,6 @@ def collect_autonomous_database(
             region_adbs.extend(stamp_region(op.items, region))
         autonomous_databases.extend(region_adbs)
 
-        # P2-1: backups/dataguard/peers per ADB was a fully serial loop. Each ADB's
-        # triple of calls is independent and safe to run concurrently -- each worker
-        # returns its own data, this thread merges sequentially (pagination.run_concurrently).
         def _process_adb(
             adb: Any, *, _client: Any = client, _peers_call: Any = peers_call, _region: str = region
         ) -> tuple[list[OperationResult], str, list[Any], list[Any], list[Any]]:

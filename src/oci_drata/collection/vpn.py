@@ -26,9 +26,8 @@ from oci_drata.pagination import (
 
 _SERVICE = "virtual_network"
 
-# P2-1: bounds the per-connection (tunnel listing + enrichment) and per-DRG (route
-# table/rule) enrichment fan-out within one region+compartment iteration. Independent
-# of runtime.maxConcurrency, which bounds concurrency *between* collectors.
+# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
+# pagination.run_concurrently).
 _PER_ITEM_CONCURRENCY = 8
 
 # Missing any of these on a tunnel triggers a per-tunnel get_ip_sec_connection_tunnel call.
@@ -106,11 +105,9 @@ def collect_vpn(
             region_connections = stamp_region(ipsc_op.items, region)
             ip_sec_connections.extend(region_connections)
 
-            # P2-1: list_ip_sec_connection_tunnels + per-tunnel get_ip_sec_connection_tunnel
-            # enrichment was a fully serial per-connection loop. Each connection's work is
-            # independent and safe to run concurrently (pagination.run_concurrently); the
-            # per-tunnel enrichment sub-loop stays sequential within one connection's
-            # worker -- it's typically 1-2 tunnels, the real gain is across connections.
+            # Each connection's work is independent; the per-tunnel enrichment sub-loop
+            # stays sequential within one connection's worker -- typically 1-2 tunnels,
+            # the real gain is across connections.
             def _process_connection(
                 connection: Any, *, _client: Any = client, _region: str = region,
                 _compartment_id: str = compartment_id,
@@ -196,9 +193,8 @@ def collect_vpn(
                 if attachment.drg_id and _is_ipsec_tunnel_attachment(attachment)
             }
 
-            # P2-1: list_drg_route_tables + per-route-table list_drg_route_rules per DRG,
-            # same pattern -- each DRG's work is independent; the per-route-table rule
-            # listing stays sequential within one DRG's worker.
+            # Each DRG's work is independent; the per-route-table rule listing stays
+            # sequential within one DRG's worker.
             def _process_drg(
                 drg_id: str, *, _client: Any = client, _region: str = region
             ) -> tuple[list[OperationResult], str, list[Any], dict[str, list[Any]]]:

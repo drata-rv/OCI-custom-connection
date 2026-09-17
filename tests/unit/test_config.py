@@ -223,9 +223,9 @@ def test_unknown_top_level_key_rejected(tmp_path: Path) -> None:
 
 
 def test_unknown_nested_key_rejected(tmp_path: Path) -> None:
-    """A typo'd optional field (e.g. excludeOcids misspelled) previously vanished
-    silently -- .get() on the correctly-spelled key just defaulted to empty, and the
-    typo'd key sat there unused. Now caught by the unknown-key check."""
+    """A typo'd optional field (e.g. excludeOcids misspelled) must be rejected -- .get()
+    on the correctly-spelled key would otherwise default to empty while the typo'd key
+    sits there unused."""
 
     raw = _valid_config_dict()
     raw["oci"]["compartments"]["excludeOcid"] = ["ocid1.compartment.oc1..typo"]

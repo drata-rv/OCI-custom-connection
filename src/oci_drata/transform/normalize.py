@@ -194,8 +194,7 @@ def normalize_volume(raw: Any, *, source_type: str) -> Volume:
     separate lighter-weight VolumeSummary in the OCI SDK) -- kms_key_id is returned
     authoritatively, so null means "no customer-managed key", a known fact, not an
     unresolvable unknown. customer_managed_key_present is therefore always a definite
-    bool, never None -- P1-4: a prior version treated absent-key as unknown, conflating it
-    with a genuinely unavailable field on a summary-shaped response, which this isn't."""
+    bool, never None."""
 
     kms_key_id = getattr(raw, "kms_key_id", None)
     return Volume(
@@ -320,8 +319,7 @@ def normalize_database_detail(raw_database: Any) -> dict[str, Any]:
 
 
 def normalize_data_guard_detail(raw_dg: Any) -> dict[str, Any]:
-    """Raw data_guard fields the review calls out as lost: role, peer role, protection
-    mode, transport type -- previously only the bare bidirectional link survived."""
+    """Data Guard role, peer role, protection mode, and transport type."""
 
     return {
         "data_guard_role": getattr(raw_dg, "role", None),

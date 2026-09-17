@@ -4,14 +4,6 @@ Read-only Oracle Cloud Infrastructure configuration-evidence collector that
 normalizes findings into one schema-valid JSON record and upserts it into
 an existing Drata Custom Connection.
 
-Requirement/API traceability: [TRACEABILITY.md](TRACEABILITY.md).
-
-**Status: MVP, functionally complete, not yet run against a live tenancy.**
-Every module is covered by mocked unit/integration tests; nothing here has
-been exercised against real OCI or Drata APIs. Run the acceptance checklist
-in [§8](#8-deployment-acceptance-checklist) against a real tenancy before
-relying on this for evidence.
-
 ## Contents
 
 1. [Architecture](#1-architecture)
@@ -37,7 +29,7 @@ schema + size validation → completeness decision → Drata upsert
 | Config/secrets | `src/oci_drata/config.py`, `redaction.py` |
 | Auth | `src/oci_drata/oci_auth.py` |
 | Pagination/retry | `src/oci_drata/pagination.py` |
-| Collectors | `src/oci_drata/collection/*.py` (one per spec §5.x section) |
+| Collectors | `src/oci_drata/collection/*.py` (one per OCI resource domain) |
 | Transform | `src/oci_drata/transform/*.py` |
 | Validation | `src/oci_drata/validation/*.py` |
 | Delivery | `src/oci_drata/delivery/drata.py` |
@@ -128,8 +120,8 @@ cannot target a credential-shaped field.
 IAM policy reference](https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/corepolicyreference.htm)
 and the Database service's policy reference before granting in
 production.** This list is derived from the collectors' actual OCI SDK
-calls (see [TRACEABILITY.md](TRACEABILITY.md)) and general OCI policy
-conventions — not from a live check against Oracle's policy verb tables.
+calls and general OCI policy conventions — not from a live check against
+Oracle's policy verb tables.
 
 Create a dedicated group (e.g. `oci-drata-collector`) and a dedicated
 API-signing user with no other access, then:
@@ -153,12 +145,11 @@ Notes:
 * `use network-security-groups` is required — Oracle's policy mapping
   requires it for `list_network_security_group_security_rules` and
   `list_network_security_group_vnics`, though this collector performs no
-  mutation. Spec §5.4 calls this out; do not widen it beyond
-  `network-security-groups`.
+  mutation. Do not widen it beyond `network-security-groups`.
 * `instance-family`/`virtual-network-family`/`volume-family`/
   `database-family` are OCI's own policy aggregate groupings; confirm they
   cover every specific resource type this collector reads (full list in
-  [TRACEABILITY.md](TRACEABILITY.md)) and narrow to individual resource
+  `security.py::ALLOWED_OCI_OPERATIONS`) and narrow to individual resource
   types (e.g. `instance`, `vnic`, `subnet`) if your organization's policy
   standard requires it instead of family-level grants.
 * Never grant `manage`, `all-resources`, any secret-family / Vault
@@ -221,15 +212,13 @@ Windows VM scenario.
 | `AuthError: OCI SDK config tenancy does not match configured oci.expectedTenancyOcid` | The `~/.oci/config` profile points at a different tenancy than `config.yaml` expects — a fail-closed guard against pointing the collector at the wrong tenancy. |
 | `snapshotStatus: incomplete`, reasons mention `not subscribed/READY` | A region in `oci.regions.allow` isn't actually subscribed in this tenancy, or `list_region_subscriptions` itself failed. |
 | `snapshotStatus: incomplete`, reasons mention a collector by name | That domain had a failed operation after retry exhaustion — check `collection-report.json`'s operations for `status: failed` and `errorCode`. Common cause: the policy in §4 doesn't cover a resource type this deployment actually uses. |
-| `snapshotStatus: incomplete`, reason mentions Exadata | Exadata (or Exadata-backed dedicated Autonomous) was detected. Per spec, this MVP never claims complete database coverage when Exadata is present — see [§9](#9-known-mvp-limitations). |
+| `snapshotStatus: incomplete`, reason mentions Exadata | Exadata (or Exadata-backed dedicated Autonomous) was detected. This tool never claims complete database coverage when Exadata is present — see [§9](#9-known-mvp-limitations). |
 | `snapshotStatus: failed`, reason mentions schema | The record itself didn't validate — this should not happen against unmodified collector code; check `collection-report.json`'s `schemaErrors` and file an issue rather than working around it. |
 | Drata upload returns `error_class: auth` | Bearer token invalid/expired, or wrong `connectionId`/`resourceId`. The local snapshot is still `complete`; only delivery failed — nothing was overwritten in Drata. |
 | Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
-| Log line `payload approaching size budget`, `collection-report.json`'s `payloadNearBudget: true` | Serialized record is at/above 80% of `runtime.maxPayloadBytes` but still under it — upload still proceeds. Early warning before this tenancy's resource count hits the hard ceiling and uploads start failing; see [TRACEABILITY.md §6](TRACEABILITY.md#6-single-record-scaling-ceiling-p2-2) for the migration path if that happens. |
+| Log line `payload approaching size budget`, `collection-report.json`'s `payloadNearBudget: true` | Serialized record is at/above 80% of `runtime.maxPayloadBytes` but still under it — upload still proceeds. Early warning before this tenancy's resource count hits the hard ceiling and uploads start failing; see `PayloadSizeResult`'s docstring (`validation/size.py`) for the migration path if that happens. |
 
 ## 8. Deployment acceptance checklist
-
-From spec §13, adapted as a literal checklist:
 
 - [ ] API-signing user authenticates; policy in §4 confirmed to grant no
       mutation permission.
@@ -274,7 +263,7 @@ See the cited module docstrings for detail.
 * **`findings[]` is a small, spec-anchored set** (`transform/findings.py`)
   — public exposure, customer-managed-key (when required by config),
   database public endpoint, VPN redundancy — not an exhaustive control
-  catalog. Custom Tests remain manually authored in the Drata UI per spec.
+  catalog. Custom Tests remain manually authored in the Drata UI.
   Each assertion name states its exact predicate
   (`OCI-COMPUTE-ADMIN-PORT-EXPOSURE` checks the *configured administrative
   ports* only, not general exposure; `OCI-ADB-PUBLIC-ENDPOINT-PRESENT`
@@ -284,8 +273,8 @@ See the cited module docstrings for detail.
   Effective ADB reachability derivation is not implemented.
 * **No noncritical-relationship classification**
   (`validation/completeness.py`) — every unresolved relationship blocks
-  upload by default, matching spec §10's stated default, but the spec's
-  "unless explicitly noncritical" escape hatch isn't implemented.
+  upload by default; an "unless explicitly noncritical" escape hatch isn't
+  implemented.
 * **Lifecycle-state exclusion (TERMINATED/TERMINATING)** covers compute
   instances, boot/block volumes, the full base DB chain (db system → db
   home → database → backup/Data Guard association), the autonomous DB
@@ -314,11 +303,9 @@ See the cited module docstrings for detail.
   Evaluate `now - collectedAt > freshnessThresholdHours` yourself: in a
   Custom Test authored in the Drata UI (this tool creates none), or in
   separate monitoring on the collector's own run cadence.
-* **Exadata detection is existence-only, no drill-down**, per spec §5.7 —
-  a tenancy with Exadata will show `snapshotStatus: incomplete`
-  indefinitely for the database domain until a phase-two decision is made
-  (spec §15).
-* **This MVP has not been run against a live OCI tenancy or Drata
-  connection.** Every scenario in this repo is a mocked unit/integration
-  test. Complete the checklist in §8 before treating its output as
-  compliance evidence.
+* **Exadata detection is existence-only, no drill-down** — a tenancy with
+  Exadata will show `snapshotStatus: incomplete` indefinitely for the
+  database domain until deeper detection is built.
+* **Every scenario in this repo's test suite is mocked.** Complete the
+  checklist in §8 against a real tenancy and Drata connection before
+  treating a deployment's output as compliance evidence.

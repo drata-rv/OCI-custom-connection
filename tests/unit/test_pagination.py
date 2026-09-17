@@ -89,7 +89,7 @@ def test_paginate_non_retryable_error_fails_immediately() -> None:
 
 
 def test_paginate_409_incorrect_state_is_retried() -> None:
-    """P1-5: 409 is not blanket-retryable -- only OCI's own documented transient codes are."""
+    """409 is not blanket-retryable -- only OCI's own documented transient codes are."""
     conflict = oci.exceptions.ServiceError(409, "IncorrectState", {}, {"message": "resource busy"})
     call = MagicMock(side_effect=[conflict, _response(["x"])])
     result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
@@ -98,8 +98,8 @@ def test_paginate_409_incorrect_state_is_retried() -> None:
 
 
 def test_paginate_409_other_code_is_not_retried() -> None:
-    """A 409 that isn't IncorrectState/LockConflict is a real conflict, not a transient one --
-    retrying it can't help and previously burned the full retry budget for nothing."""
+    """A 409 that isn't IncorrectState/LockConflict is a real conflict, not a transient
+    one -- retrying it can't help and would burn the full retry budget for nothing."""
     conflict = oci.exceptions.ServiceError(
         409, "NotAuthorizedOrResourceAlreadyExists", {}, {"message": "already exists"}
     )
@@ -128,7 +128,7 @@ def test_paginate_502_is_retried() -> None:
 
 
 def test_paginate_records_retry_delays_in_manifest() -> None:
-    """P1-5: backoff decisions must be visible in the manifest, not just applied silently."""
+    """backoff decisions must be visible in the manifest, not just applied silently."""
     throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
     call = MagicMock(side_effect=[throttle_error, throttle_error, _response(["x"])])
     result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())

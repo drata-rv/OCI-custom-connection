@@ -102,7 +102,7 @@ R = TypeVar("R")
 
 
 def run_concurrently(items: list[T], fn: Callable[[T], R], *, max_workers: int) -> list[R]:
-    """P2-1: bounded concurrent map, for the N+1 per-item enrichment calls within one
+    """Bounded concurrent map, for the N+1 per-item enrichment calls within one
     collector (get_vnic/list_private_ips/get_public_ip_by_private_ip_id per VNIC
     attachment, list_*_backups/_dataguard_associations per database, etc.) that a
     cross-collector ThreadPoolExecutor (see cli.py::_run_independent_collectors) doesn't

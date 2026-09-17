@@ -84,7 +84,7 @@ def test_normalize_vnic_requires_subnet_id() -> None:
 
 
 def test_normalize_volume_customer_managed_key_present() -> None:
-    """P1-4: list_volumes/list_boot_volumes return the full Volume/BootVolume type, not a
+    """list_volumes/list_boot_volumes return the full Volume/BootVolume type, not a
     lighter-weight summary -- kms_key_id is authoritative, so absent must resolve to a
     definite False (no CMK), never None/unknown."""
 
@@ -159,7 +159,7 @@ def test_normalize_autonomous_database_posture_no_endpoint_data_resolves_definit
 
 
 def test_normalize_autonomous_database_posture_public_endpoint_string_not_coerced_to_bool() -> None:
-    """Guards the exact P0-4 defect: a raw hostname string must never land in a bool field."""
+    """A raw hostname string must never land in a bool field."""
     raw = oci.database.models.AutonomousDatabaseSummary(id="a3", public_endpoint="host.example.com")
     posture = normalize.normalize_autonomous_database_posture(raw)
     assert posture["public_endpoint_hostname"] == "host.example.com"

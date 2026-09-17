@@ -39,11 +39,10 @@ class TenancySigner:
         return cfg
 
     def __repr__(self) -> str:
-        """P2-3: base_config carries tenancy/user OCIDs, key fingerprint, and the private
+        """base_config carries tenancy/user OCIDs, key fingerprint, and the private
         key's filesystem path -- account metadata that shouldn't appear in logs or
         exception tracebacks just because something formatted this object. Allowlist the
-        two fields safe to show rather than blocklist the sensitive ones (the prior
-        implementation blocklisted only pass_phrase and leaked everything else)."""
+        two fields safe to show rather than blocklist the sensitive ones."""
 
         return (
             "TenancySigner(authentication_type='api_signing_user', "

@@ -62,16 +62,16 @@ FORBIDDEN_OPERATIONS: frozenset[str] = frozenset(
     }
 )
 
-# Allowed list_*/get_* operations, grouped by spec section. Keep in sync with
-# TRACEABILITY.md and the collectors that call these names.
+# Allowed list_*/get_* operations, grouped by collector module. Keep in sync with
+# the collectors that call these names.
 ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
     {
-        # 5.1 Discovery
+        # Discovery (collection/discovery.py)
         "get_tenancy",
         "list_region_subscriptions",
         "list_compartments",
         "list_availability_domains",
-        # 5.2 Compute and Windows classification
+        # Compute and Windows classification (collection/compute.py)
         "list_instances",
         "get_instance",
         "get_image",
@@ -79,12 +79,12 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_vnic",
         "list_private_ips",
         "get_public_ip_by_private_ip_id",
-        # 5.3 Boot and block storage
+        # Boot and block storage (collection/storage.py)
         "list_boot_volumes",
         "list_boot_volume_attachments",
         "list_volumes",
         "list_volume_attachments",
-        # 5.4 Network exposure
+        # Network exposure (collection/networking.py)
         "list_vcns",
         "list_subnets",
         "list_route_tables",
@@ -93,7 +93,7 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_network_security_groups",
         "list_network_security_group_security_rules",
         "list_network_security_group_vnics",
-        # 5.5 Base Database Service
+        # Base Database Service (collection/database_base.py)
         "list_db_systems",
         "get_db_system",
         "list_db_homes",
@@ -104,7 +104,7 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_backup",
         "list_data_guard_associations",
         "get_data_guard_association",
-        # 5.6 Autonomous Database
+        # Autonomous Database (collection/database_autonomous.py)
         "list_autonomous_databases",
         "get_autonomous_database",
         "list_autonomous_database_backups",
@@ -112,12 +112,12 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_autonomous_database_dataguard_associations",
         "get_autonomous_database_dataguard_association",
         "list_autonomous_database_peers",
-        # 5.7 Exadata detection (minimal, no drill-down)
+        # Exadata detection, minimal, no drill-down (collection/exadata_detection.py)
         "list_cloud_vm_clusters",
         "list_exadata_infrastructures",
         "list_cloud_exadata_infrastructures",
         "list_autonomous_exadata_infrastructures",
-        # 5.8 Site-to-Site VPN
+        # Site-to-Site VPN (collection/vpn.py)
         "list_ip_sec_connections",
         "get_ip_sec_connection",
         "list_ip_sec_connection_tunnels",

@@ -60,12 +60,12 @@ def test_empty_resource_arrays_are_valid(schema: dict, sample_record: dict) -> N
 
 
 def test_unexpected_field_on_a_flattened_composed_resource_fails(schema: dict, sample_record: dict) -> None:
-    """P2-4 regression: instance is a flattened definition (commonResource's fields merged
-    directly in, no allOf/$ref composition) specifically so additionalProperties: false is
-    enforceable at all -- allOf composition over commonResource previously let a
-    type-specific branch accept any field outside its own declared set, and commonResource
-    itself had to stay permissive for the composition to validate. An accidental/typo'd/
-    drifted field on any concrete resource type must be caught, not silently accepted."""
+    """instance is a flattened definition (commonResource's fields merged
+    directly in, no allOf/$ref composition) so additionalProperties: false is
+    enforceable at all -- allOf composition over commonResource would let a
+    type-specific branch accept any field outside its own declared set. An
+    accidental/typo'd/drifted field on any concrete resource type must be caught, not
+    silently accepted."""
 
     from oci_drata.models import Instance
 

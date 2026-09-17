@@ -33,7 +33,7 @@ def discovery() -> SimpleNamespace:
 def test_collect_database_base_merges_concurrent_multi_level_results(
     monkeypatch: pytest.MonkeyPatch, discovery: SimpleNamespace
 ) -> None:
-    """P2-1 regression: list_db_homes/list_databases/(list_backups+list_data_guard_
+    """list_db_homes/list_databases/(list_backups+list_data_guard_
     associations) were each a fully serial per-item loop, one level per db_system/
     db_home/database. Two independent db_system->db_home->database chains (sys1/home1/
     db1 and sys2/home2/db2) must merge correctly at every level regardless of which

@@ -221,7 +221,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
 
     if size_result.near_budget:
         # Early warning before the hard payload ceiling blocks upload outright -- see
-        # PayloadSizeResult's docstring and TRACEABILITY.md for the migration path.
+        # PayloadSizeResult's docstring for the migration path.
         logger.warning(
             "payload approaching size budget",
             extra={"payloadBytes": size_result.byte_size, "payloadBudgetBytes": size_result.max_bytes},

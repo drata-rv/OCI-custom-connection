@@ -33,7 +33,7 @@ def discovery() -> SimpleNamespace:
 def test_collect_compute_merges_concurrent_vnic_attachment_results(
     monkeypatch: pytest.MonkeyPatch, discovery: SimpleNamespace
 ) -> None:
-    """P2-1 regression: the per-attachment get_vnic/list_private_ips/get_public_ip
+    """the per-attachment get_vnic/list_private_ips/get_public_ip
     enrichment loop was parallelized. Every attachment's data (across two here, one with
     a public IP and one without) must still be correctly merged into the shared
     vnics/private_ips/public_ips_by_private_ip_id structures regardless of which worker

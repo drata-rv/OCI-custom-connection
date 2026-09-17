@@ -1,1 +1,1 @@
-"""Drata Custom Connection delivery (spec section 9)."""
+"""Drata Custom Connection delivery."""

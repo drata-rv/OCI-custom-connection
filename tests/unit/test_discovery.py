@@ -12,7 +12,7 @@ def _compartment(id_: str, parent_id: str) -> SimpleNamespace:
 
 
 def test_discovery_region_uses_signer_config_region_not_allow_list_first_entry() -> None:
-    """P1-1 regression: bootstrapping from oci.regions.allow[0] fails before producing a
+    """bootstrapping from oci.regions.allow[0] fails before producing a
     useful diagnostic when that entry is misspelled/unsubscribed. The OCI SDK config
     file's own region is already validated (required + pattern-checked) before a
     TenancySigner exists, independent of the allow-list this call is meant to validate."""
@@ -47,9 +47,9 @@ def test_resolve_regions_splits_ready_and_unready() -> None:
 
 
 def test_expand_to_subtrees_excludes_descendants_not_just_the_configured_id() -> None:
-    """P1-2 regression: excluding a parent compartment must exclude its whole subtree.
-    Previously exclusion was exact-OCID-only -- a child compartment not itself listed in
-    exclude_ocids stayed in scope even though its parent was excluded."""
+    """excluding a parent compartment must exclude its whole subtree -- a child
+    compartment not itself listed in exclude_ocids must still be excluded when its
+    parent is."""
 
     tenancy = "ocid1.tenancy.oc1..t1"
     compartments = [

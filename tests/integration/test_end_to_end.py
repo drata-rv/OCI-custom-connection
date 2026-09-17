@@ -113,7 +113,7 @@ def _exposed_windows_compute() -> ComputeCollectionResult:
         id="ocid1.instance.oc1..vm1", compartment_id=COMPARTMENT_OCID, display_name="win-vm-1",
         lifecycle_state="RUNNING", image_id="ocid1.image.oc1..img1",
     ))
-    # P1-3: a terminated instance (with its own attachment) must be excluded from evidence,
+    # a terminated instance (with its own attachment) must be excluded from evidence,
     # and must not surface as an unresolved relationship via its own now-dropped attachment.
     terminated_instance = _stamp(oci.core.models.Instance(
         id="ocid1.instance.oc1..vmold", compartment_id=COMPARTMENT_OCID, display_name="old-vm",
@@ -170,8 +170,8 @@ def _storage() -> StorageCollectionResult:
         id="ocid1.bootvolumeattachment.oc1..bva1", compartment_id=COMPARTMENT_OCID,
         instance_id="ocid1.instance.oc1..vm1", boot_volume_id=boot_volume.id
     ))
-    # P1-3/P1-4 regression: an attachment to the terminated instance (see
-    # _exposed_windows_compute) must not leak into resources.bootVolumeAttachments.
+    # An attachment to the terminated instance (see _exposed_windows_compute) must not
+    # leak into resources.bootVolumeAttachments.
     old_attachment = _stamp(oci.core.models.BootVolumeAttachment(
         id="ocid1.bootvolumeattachment.oc1..bvaold", compartment_id=COMPARTMENT_OCID,
         instance_id="ocid1.instance.oc1..vmold", boot_volume_id=boot_volume.id
@@ -223,8 +223,8 @@ def _database_base_populated() -> DatabaseBaseCollectionResult:
 
 
 def _autonomous_database() -> AutonomousDatabaseCollectionResult:
-    # public_endpoint is a hostname string on the real SDK model, never a bool -- exercises
-    # the fix for the P0-4 defect where a raw string was stored into a boolean schema field.
+    # public_endpoint is a hostname string on the real SDK model, never a bool -- must not
+    # be stored into a boolean schema field.
     adb = _stamp(oci.database.models.AutonomousDatabaseSummary(
         id="ocid1.autonomousdatabase.oc1..adb1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
         public_endpoint="adb1.adb.us-ashburn-1.oraclecloudapps.com", is_dedicated=False,

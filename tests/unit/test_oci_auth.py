@@ -7,7 +7,7 @@ from oci_drata.security import OciOperationNotAllowedError
 
 
 def test_repr_allowlists_region_only_never_leaks_account_metadata() -> None:
-    """P2-3 regression: repr() must never expose tenancy/user OCIDs, key fingerprint, or
+    """repr() must never expose tenancy/user OCIDs, key fingerprint, or
     the private key's filesystem path -- account metadata that could end up in a log line
     or exception traceback just because something formatted this object."""
 
