@@ -5,9 +5,19 @@
       "path": "bootVolumes",
       "operator": "all",
       "value": {
-        "fact": "customerManagedKeyPresent",
-        "operator": "equal",
-        "value": true
+        "any": [
+          {
+            "fact": "attachedInstanceIds",
+            "path": "length",
+            "operator": "equal",
+            "value": 0
+          },
+          {
+            "fact": "customerManagedKeyPresent",
+            "operator": "equal",
+            "value": true
+          }
+        ]
       }
     },
     {
@@ -15,9 +25,19 @@
       "path": "blockVolumes",
       "operator": "all",
       "value": {
-        "fact": "customerManagedKeyPresent",
-        "operator": "equal",
-        "value": true
+        "any": [
+          {
+            "fact": "attachedInstanceIds",
+            "path": "length",
+            "operator": "equal",
+            "value": 0
+          },
+          {
+            "fact": "customerManagedKeyPresent",
+            "operator": "equal",
+            "value": true
+          }
+        ]
       }
     }
   ]

@@ -2,8 +2,10 @@
   "all": [
     {
       "fact": "collectedAt",
-      "operator": "greaterThan",
-      "value": "2026-01-01T00:00:00Z"
+      "operator": "withinLastHours",
+      "value": {
+        "fact": "freshnessThresholdHours"
+      }
     }
   ]
 }
