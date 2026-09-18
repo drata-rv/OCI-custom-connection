@@ -313,11 +313,13 @@ See the cited module docstrings for detail.
 
 ## 10. Example Custom Tests
 
-`custom-tests/` has example Drata Advanced Test Builder JSON, one per
-finding this tool computes (admin port exposure, DB public endpoint,
-customer-managed-key enforcement, VPN tunnel redundancy) plus snapshot
-completeness and freshness. Paste directly into Monitoring → Create
-test → Advanced editor against this connection's data source. Operator
-names and the array-nesting pattern are confirmed against Drata's own
-engine source and shipped recipes; see `custom-tests/README.md` for
-what each file checks and any open caveats.
+`custom-tests/` has 8 example Drata Advanced Test Builder JSON files:
+one per finding this tool computes (admin port exposure, DB public
+endpoint, customer-managed-key enforcement for volumes and for
+databases, VPN tunnel redundancy) plus snapshot completeness, snapshot
+freshness, and inaccessible-compartment detection. Paste directly into
+Monitoring → Create test → Advanced editor against this connection's
+data source. Operator names and the array-nesting pattern are
+confirmed against Drata's own engine source and shipped recipes; see
+`custom-tests/README.md` for what each file checks and any open
+caveats.
