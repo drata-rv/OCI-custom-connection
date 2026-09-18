@@ -317,15 +317,7 @@ See the cited module docstrings for detail.
 finding this tool computes (admin port exposure, DB public endpoint,
 customer-managed-key enforcement, VPN tunnel redundancy) plus snapshot
 completeness and freshness. Paste directly into Monitoring → Create
-test → Advanced editor against this connection's data source. See
-`custom-tests/README.md` for what each one checks; as of iteration 2,
-the operator names (`equal`, `notEqual`) and the `fact`+`path`+`all`
-array-nesting pattern are confirmed against Drata's own engine source
-and shipped recipes, `snapshot-freshness.json` is now a genuinely
-rolling `withinLastHours` check instead of a static cutoff, and
-`customer-managed-key-volumes.json` exempts unattached volumes in-JSON
-(matching the collector's own finding). One caveat remains open: the
-freshness check's fact-to-fact threshold reference is confirmed at the
-engine level but not example-confirmed in a customer Custom Test — see
-`custom-tests/README.md` for the literal fallback if the Advanced
-Editor UI ever rejects it.
+test → Advanced editor against this connection's data source. Operator
+names and the array-nesting pattern are confirmed against Drata's own
+engine source and shipped recipes; see `custom-tests/README.md` for
+what each file checks and any open caveats.
