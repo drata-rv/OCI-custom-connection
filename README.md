@@ -15,6 +15,7 @@ an existing Drata Custom Connection.
 7. [Troubleshooting](#7-troubleshooting)
 8. [Deployment acceptance checklist](#8-deployment-acceptance-checklist)
 9. [Known MVP limitations](#9-known-mvp-limitations)
+10. [Example Custom Tests](#10-example-custom-tests)
 
 ## 1. Architecture
 
@@ -309,3 +310,15 @@ See the cited module docstrings for detail.
 * **Every scenario in this repo's test suite is mocked.** Complete the
   checklist in §8 against a real tenancy and Drata connection before
   treating a deployment's output as compliance evidence.
+
+## 10. Example Custom Tests
+
+`custom-tests/` has example Drata Advanced Test Builder JSON, one per
+finding this tool computes (admin port exposure, DB public endpoint,
+customer-managed-key enforcement, VPN tunnel redundancy) plus snapshot
+completeness and freshness. Paste directly into Monitoring → Create
+test → Advanced editor against this connection's data source. See
+`custom-tests/README.md` for what each one checks and known caveats
+(operator names unconfirmed against your account's editor,
+`snapshot-freshness.json` is a static-cutoff placeholder, not a rolling
+check).

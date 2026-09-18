@@ -1,0 +1,14 @@
+{
+  "all": [
+    {
+      "fact": "resources",
+      "path": "ipsecConnections",
+      "operator": "all",
+      "value": {
+        "fact": "redundancyStatus",
+        "operator": "equal",
+        "value": "redundant"
+      }
+    }
+  ]
+}

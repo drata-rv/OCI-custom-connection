@@ -1,0 +1,14 @@
+{
+  "all": [
+    {
+      "fact": "resources",
+      "path": "instances",
+      "operator": "all",
+      "value": {
+        "fact": "effectiveIngressExposure",
+        "operator": "equal",
+        "value": "not_exposed"
+      }
+    }
+  ]
+}

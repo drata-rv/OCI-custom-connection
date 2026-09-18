@@ -1,0 +1,14 @@
+{
+  "all": [
+    {
+      "fact": "resources",
+      "path": "autonomousDatabases",
+      "operator": "all",
+      "value": {
+        "fact": "publicEndpointPresent",
+        "operator": "equal",
+        "value": false
+      }
+    }
+  ]
+}
