@@ -1,0 +1,13 @@
+{
+  "all": [
+    {
+      "fact": "warnings",
+      "operator": "all",
+      "value": {
+        "fact": "code",
+        "operator": "notEqual",
+        "value": "COMPARTMENT_INACCESSIBLE"
+      }
+    }
+  ]
+}
