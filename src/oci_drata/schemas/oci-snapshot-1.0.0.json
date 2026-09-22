@@ -440,6 +440,60 @@
         }
       }
     },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceType",
+        "region",
+        "compartmentId",
+        "displayName",
+        "lifecycleState"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sourceType": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "compartmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lifecycleState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeCreated": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "definedTags": {
+          "$ref": "#/definitions/tags"
+        },
+        "freeformTags": {
+          "$ref": "#/definitions/tags"
+        }
+      }
+    },
     "resources": {
       "type": "object",
       "additionalProperties": false,
@@ -482,7 +536,7 @@
         "images": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/commonResource"
+            "$ref": "#/definitions/image"
           }
         },
         "instances": {
