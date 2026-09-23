@@ -35,7 +35,12 @@ from oci_drata.models import (
 from oci_drata.pagination import OperationResult
 from oci_drata.transform import findings as findings_mod
 from oci_drata.transform import normalize, relationships
-from oci_drata.transform.exposure import ExposureConfig, derive_instance_exposure
+from oci_drata.transform.exposure import (
+    ExposureConfig,
+    PublicIngressFacts,
+    derive_instance_exposure,
+    derive_public_ingress_facts,
+)
 from oci_drata.transform.lifecycle import (
     exclude_lifecycle_cascade,
     exclude_referencing,
@@ -607,12 +612,12 @@ def build_snapshot(
 # flat schema/resourceId -- replaces the nested resources.*/findings[] design
 # above. Covers instances only for now (rewrite sequencing step 1); more
 # evidenceTypes are added by extending this section, not by restructuring it.
-
-_INSTANCE_STATUS_BY_EXPOSURE = {
-    "exposed": "NONCOMPLIANT",
-    "not_exposed": "COMPLIANT",
-    "unknown": "UNKNOWN",
-}
+#
+# Records carry raw/lightly-transformed OCI facts only -- no precomputed
+# compliance verdict (no `status`, no admin-ports-policy-filtered port list).
+# The Drata Custom Test evaluates compliance against these raw facts (e.g.
+# `publicIngressPorts intersectsAny [22, 3389]`); baking that policy decision
+# into the collector was the mistake this section replaced. See PLAN.md.
 
 
 @dataclasses.dataclass(frozen=True)
@@ -622,18 +627,20 @@ class FlatRecordsResult:
     discovery_complete: bool
 
 
-def _flatten_instance(instance: Instance, *, timestamp: str | None) -> dict[str, Any]:
+def _flatten_instance(
+    instance: Instance, ingress: PublicIngressFacts, *, timestamp: str | None
+) -> dict[str, Any]:
     return {
         "id": instance.id,
         "evidenceType": "instance",
         "name": instance.display_name,
-        "status": _INSTANCE_STATUS_BY_EXPOSURE[instance.effective_ingress_exposure],
         "timestamp": timestamp,
         "region": instance.region,
         "compartmentId": instance.compartment_id,
         "osClassification": instance.os_classification,
-        "hasPublicAddress": instance.has_public_address,
-        "exposedAdministrativePorts": list(instance.exposed_administrative_ports),
+        "hasPublicAddress": ingress.has_public_address,
+        "publicIngressPorts": list(ingress.public_ingress_ports),
+        "hasRangedPublicIngress": ingress.has_ranged_public_ingress,
     }
 
 
@@ -646,11 +653,13 @@ def build_flat_records(
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
     """Flat-record counterpart to build_snapshot, instances only. Same normalize ->
-    relationships -> exposure derivation build_snapshot uses for resources.instances;
-    the compliance verdict isn't a new rule, it's findings.compute_exposure_findings'
-    own pass/fail/unknown, landed on the resource's own record instead of a separate
-    findings[] array. Takes DecisionsConfig rather than the full AppConfig -- this
-    path has no use for record_id/deployment name (each record carries its own id)."""
+    relationships join build_snapshot uses for resources.instances, but stops short
+    of build_snapshot's exposure derivation: that applies decisions.administrativePorts
+    as a policy filter, which doesn't belong in the collector for this path (see
+    module docstring above). Takes DecisionsConfig rather than the full AppConfig --
+    this path has no use for record_id/deployment name (each record carries its own
+    id), and only decisions.publicSourceCidrs (what counts as an internet-facing
+    source, not which ports matter) is relevant here."""
 
     kept_instances_raw, excluded_instances_raw = split_by_lifecycle(compute.instances)
     excluded_instance_ids = {i.id for i in excluded_instances_raw}
@@ -675,11 +684,7 @@ def build_flat_records(
         public_ips_by_private_ip_id=compute.public_ips_by_private_ip_id,
     )
 
-    exposure_config = ExposureConfig(
-        administrative_ports=decisions.administrative_ports,
-        public_source_cidrs=decisions.public_source_cidrs,
-    )
-    instances = derive_instance_exposure(
+    ingress_by_instance_id = derive_public_ingress_facts(
         instances,
         vnics_by_id={v.id: v for v in vnics},
         subnets_by_id={s.id: s for s in networking.subnets},
@@ -687,12 +692,13 @@ def build_flat_records(
         security_lists_by_id={s.id: s for s in networking.security_lists},
         nsg_security_rules_by_nsg_id=networking.nsg_security_rules_by_nsg_id,
         internet_gateway_ids={g.id for g in networking.internet_gateways},
-        config=exposure_config,
+        public_source_cidrs=decisions.public_source_cidrs,
     )
 
     timestamp = normalize.normalize_timestamp(completed_at)
     records = [
-        _flatten_instance(i, timestamp=timestamp) for i in sorted(instances, key=lambda i: i.id)
+        _flatten_instance(i, ingress_by_instance_id[i.id], timestamp=timestamp)
+        for i in sorted(instances, key=lambda i: i.id)
     ]
 
     return FlatRecordsResult(

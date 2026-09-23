@@ -73,7 +73,10 @@ def _networking(*, subnets=None, route_tables=None, security_lists=None, interne
     )
 
 
-def test_exposed_instance_is_noncompliant() -> None:
+def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
+    """No status/compliance verdict anywhere -- the compliance policy (which ports
+    count as administrative) belongs in the Drata Custom Test, not the collector."""
+
     instance = _stamp(
         oci.core.models.Instance(
             id="i-exposed", compartment_id="c1", display_name="exposed-vm", lifecycle_state="RUNNING"
@@ -121,15 +124,66 @@ def test_exposed_instance_is_noncompliant() -> None:
     record = result.records[0]
     assert record["id"] == "i-exposed"
     assert record["evidenceType"] == "instance"
-    assert record["status"] == "NONCOMPLIANT"
-    assert record["exposedAdministrativePorts"] == [3389]
+    assert "status" not in record
+    assert record["hasPublicAddress"] is True
+    assert record["publicIngressPorts"] == [3389]
+    assert record["hasRangedPublicIngress"] is False
     assert record["timestamp"] == "2026-09-23T12:00:00Z"
 
     schema_result = validate_record(record, load_flat_schema())
     assert schema_result.valid, schema_result.errors
 
 
-def test_instance_with_no_public_address_is_compliant() -> None:
+def test_wide_open_rule_is_not_enumerated_but_flagged() -> None:
+    """A rule with no port restriction can't be represented as discrete port
+    numbers without enumerating up to 65536 entries -- it must show up as
+    hasRangedPublicIngress=True instead of being silently dropped."""
+
+    instance = _stamp(
+        oci.core.models.Instance(
+            id="i-wide-open", compartment_id="c1", lifecycle_state="RUNNING"
+        )
+    )
+    vnic = _stamp(oci.core.models.Vnic(id="v1", compartment_id="c1", subnet_id="sub1", nsg_ids=["nsg1"]))
+    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=[])
+    route_table = oci.core.models.RouteTable(
+        id="rt1",
+        route_rules=[
+            oci.core.models.RouteRule(
+                destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
+                network_entity_id="ocid1.internetgateway.oc1..igw1",
+            )
+        ],
+    )
+    # No tcp_options at all: every port is open.
+    nsg_rule = oci.core.models.SecurityRule(
+        direction="INGRESS", protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK",
+    )
+    igw = oci.core.models.InternetGateway(id="ocid1.internetgateway.oc1..igw1")
+
+    result = build_flat_records(
+        decisions=DECISIONS,
+        discovery=_discovery(),
+        compute=_compute(
+            [instance],
+            vnic_attachments=[oci.core.models.VnicAttachment(instance_id="i-wide-open", vnic_id="v1")],
+            vnics={"v1": vnic},
+            private_ips=[oci.core.models.PrivateIp(id="p1", vnic_id="v1", ip_address="10.0.0.5")],
+            public_ips_by_private_ip_id={"p1": oci.core.models.PublicIp(id="pub1", ip_address="203.0.113.5")},
+        ),
+        networking=_networking(
+            subnets={"sub1": subnet}, route_tables={"rt1": route_table},
+            internet_gateways=[igw], nsg_security_rules_by_nsg_id={"nsg1": [nsg_rule]},
+        ),
+        completed_at=COMPLETED_AT,
+    )
+
+    record = result.records[0]
+    assert record["publicIngressPorts"] == []
+    assert record["hasRangedPublicIngress"] is True
+
+
+def test_instance_with_no_public_address_reports_no_ingress() -> None:
     instance = _stamp(
         oci.core.models.Instance(
             id="i-safe", compartment_id="c1", display_name="safe-vm", lifecycle_state="RUNNING"
@@ -149,31 +203,29 @@ def test_instance_with_no_public_address_is_compliant() -> None:
         completed_at=COMPLETED_AT,
     )
 
-    assert len(result.records) == 1
     record = result.records[0]
-    assert record["status"] == "COMPLIANT"
     assert record["hasPublicAddress"] is False
+    assert record["publicIngressPorts"] == []
+    assert record["hasRangedPublicIngress"] is False
     assert validate_record(record, load_flat_schema()).valid
 
 
-def test_instance_with_no_vnic_is_unknown() -> None:
+def test_instance_with_no_vnic_reports_null_facts_not_a_verdict() -> None:
     instance = _stamp(
         oci.core.models.Instance(
-            id="i-unknown", compartment_id="c1", display_name="unattached-vm", lifecycle_state="RUNNING"
+            id="i-unresolved", compartment_id="c1", display_name="unattached-vm", lifecycle_state="RUNNING"
         )
     )
 
     result = build_flat_records(
-        decisions=DECISIONS,
-        discovery=_discovery(),
-        compute=_compute([instance]),
-        networking=_networking(),
-        completed_at=COMPLETED_AT,
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([instance]),
+        networking=_networking(), completed_at=COMPLETED_AT,
     )
 
-    assert len(result.records) == 1
     record = result.records[0]
-    assert record["status"] == "UNKNOWN"
+    assert record["hasPublicAddress"] is None
+    assert record["publicIngressPorts"] == []
+    assert record["hasRangedPublicIngress"] is None
     assert validate_record(record, load_flat_schema()).valid
 
 
@@ -205,11 +257,16 @@ def test_flat_schema_is_valid_draft7() -> None:
     jsonschema.Draft7Validator.check_schema(load_flat_schema())
 
 
-@pytest.mark.parametrize("bad_status", ["PASS", "fail", ""])
-def test_flat_schema_rejects_unknown_status_values(bad_status: str) -> None:
+def test_flat_schema_rejects_wrong_type_for_has_public_address() -> None:
     record = {
-        "id": "i1", "evidenceType": "instance", "name": "vm", "status": bad_status,
-        "timestamp": "2026-09-23T12:00:00Z",
+        "id": "i1", "evidenceType": "instance", "name": "vm",
+        "timestamp": "2026-09-23T12:00:00Z", "hasPublicAddress": "yes",
     }
     result = validate_record(record, load_flat_schema())
     assert not result.valid
+
+
+@pytest.mark.parametrize("field", ["status", "exposedAdministrativePorts"])
+def test_no_compliance_verdict_fields_in_schema(field: str) -> None:
+    schema = load_flat_schema()
+    assert field not in schema["properties"]

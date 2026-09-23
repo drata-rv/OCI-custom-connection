@@ -6,18 +6,15 @@
     "id": { "type": "string" },
     "evidenceType": { "type": "string" },
     "name": { "type": ["string", "null"] },
-    "status": {
-      "type": "string",
-      "enum": ["COMPLIANT", "NONCOMPLIANT", "NOT_APPLICABLE", "UNKNOWN"]
-    },
     "timestamp": { "type": "string" },
     "region": { "type": ["string", "null"] },
     "compartmentId": { "type": ["string", "null"] },
     "osClassification": { "type": ["string", "null"] },
     "hasPublicAddress": { "type": ["boolean", "null"] },
-    "exposedAdministrativePorts": {
+    "publicIngressPorts": {
       "type": "array",
       "items": { "type": "number" }
-    }
+    },
+    "hasRangedPublicIngress": { "type": ["boolean", "null"] }
   }
 }

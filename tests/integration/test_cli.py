@@ -174,7 +174,9 @@ def test_flat_records_dry_run_never_uploads(monkeypatch: pytest.MonkeyPatch, pat
     assert len(result.flat_records) == 1
     assert result.flat_records[0]["id"] == "ocid1.instance.oc1..vm1"
     assert result.flat_records[0]["evidenceType"] == "instance"
-    assert result.flat_records[0]["status"] == "NONCOMPLIANT"
+    assert "status" not in result.flat_records[0]  # raw facts only -- no precomputed verdict, see PLAN.md
+    assert result.flat_records[0]["hasPublicAddress"] is True
+    assert result.flat_records[0]["publicIngressPorts"] == [3389]
     assert result.report["flatRecords"]["uploadDecision"] == "skipped_dry_run"
     upsert_records.assert_not_called()
 
