@@ -1,8 +1,10 @@
 # OCI-to-Drata Custom Connection
 
 Read-only Oracle Cloud Infrastructure configuration-evidence collector that
-normalizes findings into one schema-valid JSON record and upserts it into
-an existing Drata Custom Connection.
+lightly normalizes OCI's raw API data into small, per-resource JSON records
+and upserts them into an existing Drata Custom Connection. Compliance
+verdicts are computed by Drata's own Custom Tests against these raw facts —
+never precomputed by this collector (see [§1](#1-architecture)).
 
 ## Contents
 
@@ -19,23 +21,82 @@ an existing Drata Custom Connection.
 
 ## 1. Architecture
 
+Two delivery paths currently coexist against the same OCI collectors and the
+same shared layers (config, auth, pagination, security allowlist — see the
+table below). **New collector work lands on the flat-record path only.**
+
+### 1.1 Flat-record path (current direction, opt-in via `drata.flatResourceId`)
+
+```text
+OCI API → collectors (raw SDK objects) → light normalize/relationships
+(raw facts only, never a computed pass/fail) →
+transform/aggregate.py::build_flat_records() →
+schemas/flat-record.schema.json → delivery/drata.py::upsert_records()
+```
+
+Records never carry a precomputed compliance verdict. Drata's own Custom
+Test `evaluator` decides what counts as compliant against the raw facts
+below (e.g. `publicIngressPorts intersectsAny [22, 3389]`) — baking that
+judgment into the collector was an earlier, real mistake in this project's
+history; see `PLAN.md`'s "Correction" section for the full story and why
+it matters for any future evidenceType.
+
+| `evidenceType` | Collector | `oci.services` toggle | Raw facts |
+|---|---|---|---|
+| `instance` | `collection/compute.py` + `transform/exposure.py::derive_public_ingress_facts()` | `compute` + `networkExposure` | `hasPublicAddress`, `publicIngressPorts`, `hasRangedPublicIngress` |
+| `autonomous_database` | `collection/database_autonomous.py` | `autonomousDatabase` | `kmsKeyId`, `publicEndpointHostname` |
+| `iam_user` | `collection/identity.py` | `identity` (opt-in — broader trust footprint, §4.1) | `mfaActivated` |
+| `api_key` | `collection/identity.py` | `identity` (opt-in) | `userId`, `keyCreatedAt` |
+| `iam_policy` | `collection/identity.py` | `identity` (opt-in) | `statements` (raw text — evidence, not a confirmed single-operator test) |
+| `bucket` | `collection/object_storage.py` | `objectStorage` (opt-in, §4.2) | `kmsKeyId`, `publicAccessType`, `versioning` |
+| `cloud_guard_configuration` | `collection/cloud_guard.py` | `cloudGuard` (opt-in, §4.3) | `cloudGuardStatus` |
+| `monitoring_alarm` | `collection/monitoring.py` | `monitoring` (opt-in, §4.4) | `alarmEnabled`, `alarmNamespace`, `alarmQuery` (evidence only) |
+| `load_balancer` | `collection/load_balancer.py` | `loadBalancer` (opt-in, §4.5) | `isPrivate` |
+| `load_balancer_backend_set` | `collection/load_balancer.py` | `loadBalancer` (opt-in) | `loadBalancerId`, `backendSetHealthStatus` |
+| `waf` | `collection/waf.py` | `waf` (opt-in, §4.6) | `loadBalancerId` (joins to `load_balancer`) |
+| `kms_key` | `collection/kms_vault.py` | `kmsVault` (opt-in, §4.7) | `vaultId`, `autoRotationEnabled`, `lastRotationAt` |
+
+`instance`/`autonomous_database` need no extra opt-in beyond the base
+services already enabled by default. Every other evidenceType is off
+unless its `oci.services.*` flag is explicitly set — see §4 for what each
+one reads and why it's not on by default. "Evidence only" fields
+(`iam_policy.statements`, `monitoring_alarm.alarmQuery`) are raw strings a
+Custom Test would need to pattern-match; they're shipped as real data a
+reviewer or test author can use, not as a fully clean single-operator
+check the way every other field in this table is.
+
+`PLAN.md` (working doc, not permanent documentation) has the full
+rationale for this path, including the AWS/Azure native-connector
+coverage-gap analysis driving which evidenceType gets added next.
+
+### 1.2 Nested-schema path (original design, still the default, superseded)
+
 ```text
 OCI API → collectors (raw SDK objects) → normalize → relationships →
 exposure/vpn_posture → findings → aggregate (one record) →
 schema + size validation → completeness decision → Drata upsert
 ```
 
+One aggregate JSON record per tenancy (`schemas/oci-snapshot-1.0.0.json`),
+uploaded via `delivery/drata.py::upsert_record()` — a single object, not a
+batch. This runs unconditionally today (no opt-in), independently of the
+flat-record path above; the two don't share a resourceId or interfere with
+each other. Left in place until the flat-record path is proven out further
+and this one is deliberately retired — see `PLAN.md`.
+
+### 1.3 Shared layers (both paths)
+
 | Layer | Module(s) |
 |---|---|
 | Config/secrets | `src/oci_drata/config.py`, `redaction.py` |
-| Auth | `src/oci_drata/oci_auth.py` |
+| Auth | `src/oci_drata/oci_auth.py` — `regional_client()` for a plain regional endpoint, `endpoint_client()` for a client needing an explicit per-resource endpoint (e.g. KMS's per-vault `management_endpoint`) |
 | Pagination/retry | `src/oci_drata/pagination.py` |
 | Collectors | `src/oci_drata/collection/*.py` (one per OCI resource domain) |
 | Transform | `src/oci_drata/transform/*.py` |
 | Validation | `src/oci_drata/validation/*.py` |
 | Delivery | `src/oci_drata/delivery/drata.py` |
 | Entry point | `src/oci_drata/cli.py` |
-| Security allowlist | `src/oci_drata/security.py`, enforced twice: statically by `tests/unit/test_operation_allowlist.py` (AST scan at build time) and at runtime by `GuardedOciClient` (every OCI client `regional_client()` returns is wrapped; an operation outside the allowlist raises the moment it's called, not just when the static scan sees it) |
+| Security allowlist | `src/oci_drata/security.py`, enforced twice: statically by `tests/unit/test_operation_allowlist.py` (AST scan at build time) and at runtime by `GuardedOciClient` (every OCI client `regional_client()`/`endpoint_client()` returns is wrapped; an operation outside the allowlist raises the moment it's called, not just when the static scan sees it) |
 
 Every `list_*`/`get_*` call goes through `pagination.paginate()` or
 `pagination.call_once()`, with one exception —
@@ -44,7 +105,9 @@ treat a 404 (no public IP assigned) as a synthetic success rather than a
 domain failure. Pagination, bounded retry with full-jitter exponential
 backoff, and `opc-request-id` capture happen in one place, not per
 collector. Collectors return raw OCI SDK objects; `transform/normalize.py`
-is the only place raw fields get allowlisted into the schema's shape.
+(nested path) or each collector-specific `_flatten_*` function in
+`transform/aggregate.py` (flat path) is the only place raw fields get
+allowlisted into a schema's shape.
 
 ## 2. Setup
 
@@ -448,15 +511,53 @@ See the cited module docstrings for detail.
   checklist in §8 against a real tenancy and Drata connection before
   treating a deployment's output as compliance evidence.
 
+The limitations above are specific to the nested-schema path (§1.2). The
+flat-record path (§1.1) has its own, currently more significant, gaps:
+
+* **Only `instance` and `autonomous_database` have been proven against a
+  real, live Drata Custom Test** — pushed real records, built a test in
+  the UI, confirmed correct per-record pass/fail evaluation. Every other
+  evidenceType in the §1.1 table is schema-valid and unit-tested but not
+  yet confirmed against a live Drata evaluator.
+* **`iam_policy` and `monitoring_alarm` are evidence, not a clean
+  automated check** — their raw string fields (`statements`, `alarmQuery`)
+  would need Drata operator pattern-matching a Custom Test author sets
+  up, not a simple `equal`/`exist` check the way every other field in the
+  table is.
+* **OKE (Kubernetes) audit-logging evidence does not exist.** Checked
+  before writing anything: it's not a field on the cluster object, it's a
+  separate OCI Logging-service resource attached to the cluster — a
+  cross-service lookup this collector doesn't do.
+* **The AWS/Azure native-connector coverage target this path is being
+  built against (`PLAN.md`) is stated as "60%" without a locatable
+  original source** in this session, git history, or `PLAN.md` itself —
+  flagged explicitly rather than silently treated as settled.
+
 ## 10. Example Custom Tests
 
-`custom-tests/` has 8 example Drata Advanced Test Builder JSON files:
-one per finding this tool computes (admin port exposure, DB public
-endpoint, customer-managed-key enforcement for volumes and for
-databases, VPN tunnel redundancy) plus snapshot completeness, snapshot
-freshness, and inaccessible-compartment detection. Paste directly into
-Monitoring → Create test → Advanced editor against this connection's
-data source. Operator names and the array-nesting pattern are
-confirmed against Drata's own engine source and shipped recipes; see
-`custom-tests/README.md` for what each file checks and any open
-caveats.
+**`custom-tests/`'s 8 JSON files are stale — do not paste them in as-is.**
+They target the nested-schema path's shape (`resources.instances[]`,
+`snapshotStatus`, etc. — §1.2, still what the default upload path
+produces), and their operator names/nesting pattern were validated
+against Drata's engine *source code*, not against this connection's own
+live Advanced Editor. Real production use found the gap that source-level
+validation missed: Drata's Advanced Editor **rejected the array-quantifier
+JSON pattern several of these files use, live, for this connection's
+actual registered schema.** `custom-tests/README.md` documents this in
+detail; treat every file in that directory as a historical record of a
+mistake, not a working example, until it's rewritten (tracked in
+`PLAN.md`).
+
+For a test format that **is** confirmed against a live Custom Test build
+(captured directly from Drata's own UI, not source code — see `PLAN.md`'s
+"Real Custom Test authoring reference"), and against the current
+flat-record path (§1.1): build a Custom Test in the UI with a raw-fact
+`evaluator` condition, e.g. for `evidenceType: "instance"`:
+
+```json
+{ "all": [ { "fact": "hasPublicAddress", "operator": "equal", "value": false } ] }
+```
+
+Evaluation threshold "All results must pass" (`assertion: "nofail"`).
+This exact shape was pushed live and confirmed to correctly flag
+noncompliant vs. compliant records — see `PLAN.md` for the full trace.
