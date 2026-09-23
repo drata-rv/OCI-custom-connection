@@ -27,6 +27,7 @@ from oci_drata.models import (
     RESOURCE_COLLECTION_KEYS,
     CommonResource,
     Finding,
+    Instance,
     Message,
     OperationRecord,
     UnresolvedRelationship,
@@ -621,7 +622,7 @@ class FlatRecordsResult:
     discovery_complete: bool
 
 
-def _flatten_instance(instance: CommonResource, *, timestamp: str) -> dict[str, Any]:
+def _flatten_instance(instance: Instance, *, timestamp: str | None) -> dict[str, Any]:
     return {
         "id": instance.id,
         "evidenceType": "instance",
@@ -662,8 +663,8 @@ def build_flat_records(
     instances, _unresolved_storage = relationships.resolve_instance_network_and_storage(
         instances,
         vnic_attachments=vnic_attachments,
-        boot_volume_attachments=(),
-        volume_attachments=(),
+        boot_volume_attachments=[],
+        volume_attachments=[],
     )
 
     vnics = [normalize.normalize_vnic(v) for v in compute.vnics.values()]

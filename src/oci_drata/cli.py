@@ -262,7 +262,8 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
     flat_records: list[dict[str, Any]] | None = None
     if app_config.drata.flat_resource_id is not None:
         flat_records = _run_flat_records(
-            app_config, discovery=discovery, compute=compute_result,
+            app_config, flat_resource_id=app_config.drata.flat_resource_id,
+            discovery=discovery, compute=compute_result,
             networking=networking_result, completed_at=completed_at,
             dry_run=dry_run, report=report,
         )
@@ -281,6 +282,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
 def _run_flat_records(
     app_config: AppConfig,
     *,
+    flat_resource_id: int,
     discovery: DiscoveryResult,
     compute: ComputeCollectionResult,
     networking: NetworkingCollectionResult,
@@ -322,9 +324,7 @@ def _run_flat_records(
         flat_report["blockedReasons"] = reasons
         logger.warning("flat-record upload blocked", extra={"reasons": reasons})
     else:
-        flat_drata_config = dataclasses.replace(
-            app_config.drata, resource_id=app_config.drata.flat_resource_id
-        )
+        flat_drata_config = dataclasses.replace(app_config.drata, resource_id=flat_resource_id)
         delivery_results = upsert_records(flat_drata_config, flat_result.records)
         flat_uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
         flat_report["uploadDecision"] = "uploaded" if flat_uploaded else "delivery_failed"
