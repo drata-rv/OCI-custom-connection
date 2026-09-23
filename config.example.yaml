@@ -43,6 +43,9 @@ oci:
     # Optional, defaults to false if omitted. Reads load balancer public/private
     # setting and backend-set health status only.
     loadBalancer: false
+    # Optional, defaults to false if omitted. Reads whether a Web App Firewall is
+    # attached to a load balancer -- never firewall rule/policy detail.
+    waf: false
 
 decisions:
   administrativePorts: [22, 3389]

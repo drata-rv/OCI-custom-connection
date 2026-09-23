@@ -35,6 +35,7 @@ from oci_drata.collection.networking import NetworkingCollectionResult, collect_
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult, collect_object_storage
 from oci_drata.collection.storage import StorageCollectionResult, collect_storage
 from oci_drata.collection.vpn import VpnCollectionResult, collect_vpn
+from oci_drata.collection.waf import WafCollectionResult, collect_waf
 from oci_drata.config import AppConfig, ConfigError, load_config, redact_config_for_display
 from oci_drata.delivery.drata import upsert_record, upsert_records
 from oci_drata.logging import configure_logging
@@ -119,6 +120,7 @@ def _run_independent_collectors(
     CloudGuardCollectionResult,
     MonitoringCollectionResult,
     LoadBalancerCollectionResult,
+    WafCollectionResult,
 ]:
     services = app_config.oci.services
     jobs: dict[str, Callable[[], Any]] = {
@@ -137,6 +139,7 @@ def _run_independent_collectors(
         "cloud_guard": lambda: collect_cloud_guard(signer, discovery, services, retry_policy=retry_policy),
         "monitoring": lambda: collect_monitoring(signer, discovery, services, retry_policy=retry_policy),
         "load_balancer": lambda: collect_load_balancer(signer, discovery, services, retry_policy=retry_policy),
+        "waf": lambda: collect_waf(signer, discovery, services, retry_policy=retry_policy),
     }
     max_workers = max(1, min(len(jobs), app_config.runtime.max_concurrency))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -155,6 +158,7 @@ def _run_independent_collectors(
         results["cloud_guard"],
         results["monitoring"],
         results["load_balancer"],
+        results["waf"],
     )
 
 
@@ -188,7 +192,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
     (
         compute_result, storage_result, networking_result, database_base_result,
         autonomous_result, vpn_result, identity_result, object_storage_result,
-        cloud_guard_result, monitoring_result, load_balancer_result,
+        cloud_guard_result, monitoring_result, load_balancer_result, waf_result,
     ) = _run_independent_collectors(signer, discovery, app_config, retry_policy)
     exadata_result = detect_exadata(
         signer, discovery, app_config.oci.services,
@@ -290,7 +294,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
             networking=networking_result, autonomous_database=autonomous_result,
             identity=identity_result, object_storage=object_storage_result,
             cloud_guard=cloud_guard_result, monitoring=monitoring_result,
-            load_balancer=load_balancer_result,
+            load_balancer=load_balancer_result, waf=waf_result,
             completed_at=completed_at,
             dry_run=dry_run, report=report,
         )
@@ -319,6 +323,7 @@ def _run_flat_records(
     cloud_guard: CloudGuardCollectionResult,
     monitoring: MonitoringCollectionResult,
     load_balancer: LoadBalancerCollectionResult,
+    waf: WafCollectionResult,
     completed_at: datetime.datetime,
     dry_run: bool,
     report: dict[str, Any],
@@ -332,7 +337,7 @@ def _run_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,
         autonomous_database=autonomous_database, identity=identity,
         object_storage=object_storage, cloud_guard=cloud_guard, monitoring=monitoring,
-        load_balancer=load_balancer,
+        load_balancer=load_balancer, waf=waf,
         networking=networking, completed_at=completed_at,
     )
     flat_schema = load_flat_schema()

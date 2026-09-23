@@ -147,6 +147,8 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         # Load Balancer (collection/load_balancer.py)
         "list_load_balancers",
         "get_backend_set_health",
+        # Web Application Firewall (collection/waf.py)
+        "list_web_app_firewalls",
     }
 )
 

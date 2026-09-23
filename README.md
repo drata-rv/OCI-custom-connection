@@ -253,6 +253,24 @@ Allow group oci-drata-collector to read load-balancers in tenancy
   set names directly — `get_backend_set_health` is then one call per
   (load balancer, backend set) pair, fanned out concurrently.
 
+### 4.6 Optional: Web Application Firewall (`oci.services.waf`)
+
+**Off by default** (`waf: false` unless set otherwise). Reads whether a
+Web App Firewall is attached to a load balancer — never firewall rule or
+policy detail.
+
+```text
+Allow group oci-drata-collector to inspect web-app-firewalls in tenancy
+Allow group oci-drata-collector to read web-app-firewalls in tenancy
+```
+
+* Deliberately the current `oci.waf` service (API version 2021), not the
+  older `oci.waas` (Web Application Acceleration and Security, API
+  version 2018) — `WaasPolicySummary` is keyed by DNS domain with no OCID
+  link to any load balancer, so it can't answer "does load balancer X
+  have a WAF attached" the way `oci.waf`'s `load_balancer_id` field can.
+* `list_web_app_firewalls` is the only operation this domain calls.
+
 ## 5. Execution
 
 ```bash

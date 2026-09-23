@@ -260,6 +260,7 @@ class OciServicesConfig:
     cloud_guard: bool = False
     monitoring: bool = False
     load_balancer: bool = False
+    waf: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -466,7 +467,7 @@ _OCI_SERVICES_KEYS = frozenset(
     {
         "compute", "networkExposure", "blockStorage", "baseDatabase",
         "autonomousDatabase", "exadataDetection", "siteToSiteVpn", "identity",
-        "objectStorage", "cloudGuard", "monitoring", "loadBalancer",
+        "objectStorage", "cloudGuard", "monitoring", "loadBalancer", "waf",
     }
 )
 _DECISIONS_KEYS = frozenset(
@@ -550,6 +551,7 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         load_balancer=_optional_bool(
             services_raw, "loadBalancer", context="oci.services", default=False
         ),
+        waf=_optional_bool(services_raw, "waf", context="oci.services", default=False),
     )
 
     oci_config = OciConfig(

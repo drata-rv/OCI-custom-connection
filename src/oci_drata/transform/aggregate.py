@@ -26,6 +26,7 @@ from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult
 from oci_drata.collection.storage import StorageCollectionResult
 from oci_drata.collection.vpn import VpnCollectionResult
+from oci_drata.collection.waf import WafCollectionResult
 from oci_drata.config import AppConfig, DecisionsConfig
 from oci_drata.models import (
     METRIC_KEYS,
@@ -769,6 +770,18 @@ def _flatten_backend_set_health(
     }
 
 
+def _flatten_waf(waf: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": waf.id,
+        "evidenceType": "waf",
+        "name": waf.display_name,
+        "timestamp": timestamp,
+        "region": waf.region,
+        "compartmentId": waf.compartment_id,
+        "loadBalancerId": waf.load_balancer_id,
+    }
+
+
 def build_flat_records(
     *,
     decisions: DecisionsConfig,
@@ -781,6 +794,7 @@ def build_flat_records(
     cloud_guard: CloudGuardCollectionResult,
     monitoring: MonitoringCollectionResult,
     load_balancer: LoadBalancerCollectionResult,
+    waf: WafCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
     """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
@@ -878,6 +892,13 @@ def build_flat_records(
         load_balancer.load_balancers, exclude_states=_IDENTITY_DELETED_STATES
     )
 
+    # Same DELETED/DELETING convention as above; not directly confirmed against
+    # WebAppFirewallLoadBalancerSummary's own lifecycle enum (no LIFECYCLE_STATE_*
+    # constants exposed to check against), same caveat as monitoring alarms.
+    kept_wafs, _excluded_wafs = split_by_lifecycle(
+        waf.web_app_firewalls, exclude_states=_IDENTITY_DELETED_STATES
+    )
+
     timestamp = normalize.normalize_timestamp(completed_at)
     backend_set_health_records = [
         _flatten_backend_set_health(lb, backend_set_name, health, timestamp=timestamp)
@@ -911,7 +932,8 @@ def build_flat_records(
         )
         + [_flatten_alarm(a, timestamp=timestamp) for a in kept_alarms]
         + [_flatten_load_balancer(lb, timestamp=timestamp) for lb in kept_load_balancers]
-        + backend_set_health_records,
+        + backend_set_health_records
+        + [_flatten_waf(w, timestamp=timestamp) for w in kept_wafs],
         key=lambda r: r["id"],
     )
 
@@ -926,6 +948,7 @@ def build_flat_records(
             "cloudGuard": cloud_guard.complete,
             "monitoring": monitoring.complete,
             "loadBalancer": load_balancer.complete,
+            "waf": waf.complete,
         },
         discovery_complete=discovery.complete,
     )
