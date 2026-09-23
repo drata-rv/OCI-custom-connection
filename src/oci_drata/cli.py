@@ -264,7 +264,8 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         flat_records = _run_flat_records(
             app_config, flat_resource_id=app_config.drata.flat_resource_id,
             discovery=discovery, compute=compute_result,
-            networking=networking_result, completed_at=completed_at,
+            networking=networking_result, autonomous_database=autonomous_result,
+            completed_at=completed_at,
             dry_run=dry_run, report=report,
         )
 
@@ -286,6 +287,7 @@ def _run_flat_records(
     discovery: DiscoveryResult,
     compute: ComputeCollectionResult,
     networking: NetworkingCollectionResult,
+    autonomous_database: AutonomousDatabaseCollectionResult,
     completed_at: datetime.datetime,
     dry_run: bool,
     report: dict[str, Any],
@@ -297,6 +299,7 @@ def _run_flat_records(
 
     flat_result = build_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,
+        autonomous_database=autonomous_database,
         networking=networking, completed_at=completed_at,
     )
     flat_schema = load_flat_schema()

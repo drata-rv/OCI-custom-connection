@@ -26,6 +26,7 @@ from oci_drata.models import (
     METRIC_KEYS,
     RESOURCE_COLLECTION_KEYS,
     CommonResource,
+    DatabaseResource,
     Finding,
     Instance,
     Message,
@@ -644,22 +645,40 @@ def _flatten_instance(
     }
 
 
+def _flatten_autonomous_database(resource: DatabaseResource, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": resource.id,
+        "evidenceType": "autonomous_database",
+        "name": resource.display_name,
+        "timestamp": timestamp,
+        "region": resource.region,
+        "compartmentId": resource.compartment_id,
+        "kmsKeyId": resource.kms_key_id,
+        "publicEndpointHostname": resource.public_endpoint_hostname,
+    }
+
+
 def build_flat_records(
     *,
     decisions: DecisionsConfig,
     discovery: DiscoveryResult,
     compute: ComputeCollectionResult,
     networking: NetworkingCollectionResult,
+    autonomous_database: AutonomousDatabaseCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
-    """Flat-record counterpart to build_snapshot, instances only. Same normalize ->
-    relationships join build_snapshot uses for resources.instances, but stops short
-    of build_snapshot's exposure derivation: that applies decisions.administrativePorts
-    as a policy filter, which doesn't belong in the collector for this path (see
-    module docstring above). Takes DecisionsConfig rather than the full AppConfig --
-    this path has no use for record_id/deployment name (each record carries its own
-    id), and only decisions.publicSourceCidrs (what counts as an internet-facing
-    source, not which ports matter) is relevant here."""
+    """Flat-record counterpart to build_snapshot: instances (raw ingress facts) and
+    autonomous databases (raw kmsKeyId/publicEndpointHostname) so far. Same normalize
+    join build_snapshot uses for resources.instances/autonomousDatabases, but stops
+    short of build_snapshot's exposure derivation for instances: that applies
+    decisions.administrativePorts as a policy filter, which doesn't belong in the
+    collector for this path (see module docstring above). Autonomous databases need
+    no equivalent filtering step -- normalize_autonomous_database_posture already
+    returns raw presence facts, not a verdict, so it's reused as-is. Takes
+    DecisionsConfig rather than the full AppConfig -- this path has no use for
+    record_id/deployment name (each record carries its own id), and only
+    decisions.publicSourceCidrs (what counts as an internet-facing source, not which
+    ports matter) is relevant here."""
 
     kept_instances_raw, excluded_instances_raw = split_by_lifecycle(compute.instances)
     excluded_instance_ids = {i.id for i in excluded_instances_raw}
@@ -695,14 +714,37 @@ def build_flat_records(
         public_source_cidrs=decisions.public_source_cidrs,
     )
 
-    timestamp = normalize.normalize_timestamp(completed_at)
-    records = [
-        _flatten_instance(i, ingress_by_instance_id[i.id], timestamp=timestamp)
-        for i in sorted(instances, key=lambda i: i.id)
+    kept_adb_raw, _excluded_adb_raw = exclude_lifecycle_cascade(
+        autonomous_database.autonomous_databases, parent_excluded_ids=set(), parent_id_field=None
+    )
+    autonomous_databases = [
+        normalize.normalize_database_resource(
+            a, database_type="autonomous_database", source_type="autonomous_database",
+            backup_status="not_applicable",
+            detail_fields=normalize.normalize_autonomous_database_posture(a),
+        )
+        for a in kept_adb_raw
     ]
+
+    timestamp = normalize.normalize_timestamp(completed_at)
+    records = sorted(
+        [
+            _flatten_instance(i, ingress_by_instance_id[i.id], timestamp=timestamp)
+            for i in instances
+        ]
+        + [
+            _flatten_autonomous_database(a, timestamp=timestamp)
+            for a in autonomous_databases
+        ],
+        key=lambda r: r["id"],
+    )
 
     return FlatRecordsResult(
         records=records,
-        domain_complete={"compute": compute.complete, "networking": networking.complete},
+        domain_complete={
+            "compute": compute.complete,
+            "networking": networking.complete,
+            "autonomousDatabase": autonomous_database.complete,
+        },
         discovery_complete=discovery.complete,
     )

@@ -171,12 +171,19 @@ def test_flat_records_dry_run_never_uploads(monkeypatch: pytest.MonkeyPatch, pat
     result = cli.run(_app_config_with_flat_resource(), dry_run=True)
 
     assert result.flat_records is not None
-    assert len(result.flat_records) == 1
-    assert result.flat_records[0]["id"] == "ocid1.instance.oc1..vm1"
-    assert result.flat_records[0]["evidenceType"] == "instance"
-    assert "status" not in result.flat_records[0]  # raw facts only -- no precomputed verdict, see PLAN.md
-    assert result.flat_records[0]["hasPublicAddress"] is True
-    assert result.flat_records[0]["publicIngressPorts"] == [3389]
+    assert len(result.flat_records) == 2  # one instance, one autonomous database
+    instance_record = next(r for r in result.flat_records if r["evidenceType"] == "instance")
+    assert instance_record["id"] == "ocid1.instance.oc1..vm1"
+    assert "status" not in instance_record  # raw facts only -- no precomputed verdict, see PLAN.md
+    assert instance_record["hasPublicAddress"] is True
+    assert instance_record["publicIngressPorts"] == [3389]
+
+    adb_record = next(r for r in result.flat_records if r["evidenceType"] == "autonomous_database")
+    assert adb_record["id"] == "ocid1.autonomousdatabase.oc1..adb1"
+    assert "status" not in adb_record
+    assert adb_record["kmsKeyId"] == "ocid1.key.oc1..key2"
+    assert adb_record["publicEndpointHostname"] == "adb1.adb.us-ashburn-1.oraclecloudapps.com"
+
     assert result.report["flatRecords"]["uploadDecision"] == "skipped_dry_run"
     upsert_records.assert_not_called()
 
@@ -190,7 +197,7 @@ def test_flat_records_uploads_to_configured_resource_id(
     result = cli.run(_app_config_with_flat_resource(flat_resource_id=99), dry_run=False)
 
     assert result.report["flatRecords"]["uploadDecision"] == "uploaded"
-    assert result.report["flatRecords"]["recordCount"] == 1
+    assert result.report["flatRecords"]["recordCount"] == 2
     upsert_records.assert_called_once()
     called_config = upsert_records.call_args.args[0]
     assert called_config.resource_id == 99
@@ -256,5 +263,7 @@ def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.Mo
     assert exit_code == cli.EXIT_OK
 
     flat_records = json.loads((tmp_path / "out" / "flat-records.json").read_text())
-    assert flat_records[0]["id"] == "ocid1.instance.oc1..vm1"
+    assert {r["id"] for r in flat_records} == {
+        "ocid1.instance.oc1..vm1", "ocid1.autonomousdatabase.oc1..adb1",
+    }
     assert stat.S_IMODE((tmp_path / "out" / "flat-records.json").stat().st_mode) == 0o600

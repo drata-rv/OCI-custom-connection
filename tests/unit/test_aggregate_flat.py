@@ -6,6 +6,7 @@ import oci
 import pytest
 
 from oci_drata.collection.compute import ComputeCollectionResult
+from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.config import DecisionsConfig
@@ -73,6 +74,16 @@ def _networking(*, subnets=None, route_tables=None, security_lists=None, interne
     )
 
 
+def _autonomous_database(autonomous_databases=()):
+    return AutonomousDatabaseCollectionResult(
+        autonomous_databases=list(autonomous_databases),
+        autonomous_database_backups=[],
+        autonomous_database_dataguard_associations=[],
+        autonomous_database_peers_by_adb_id={},
+        operations=[],
+    )
+
+
 def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
     """No status/compliance verdict anywhere -- the compliance policy (which ports
     count as administrative) belongs in the Drata Custom Test, not the collector."""
@@ -117,6 +128,7 @@ def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
             subnets={"sub1": subnet}, route_tables={"rt1": route_table},
             internet_gateways=[igw], nsg_security_rules_by_nsg_id={"nsg1": [nsg_rule]},
         ),
+        autonomous_database=_autonomous_database(),
         completed_at=COMPLETED_AT,
     )
 
@@ -175,6 +187,7 @@ def test_wide_open_rule_is_not_enumerated_but_flagged() -> None:
             subnets={"sub1": subnet}, route_tables={"rt1": route_table},
             internet_gateways=[igw], nsg_security_rules_by_nsg_id={"nsg1": [nsg_rule]},
         ),
+        autonomous_database=_autonomous_database(),
         completed_at=COMPLETED_AT,
     )
 
@@ -200,6 +213,7 @@ def test_instance_with_no_public_address_reports_no_ingress() -> None:
             vnics={"v1": vnic},
         ),
         networking=_networking(),
+        autonomous_database=_autonomous_database(),
         completed_at=COMPLETED_AT,
     )
 
@@ -219,7 +233,8 @@ def test_instance_with_no_vnic_reports_null_facts_not_a_verdict() -> None:
 
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([instance]),
-        networking=_networking(), completed_at=COMPLETED_AT,
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        completed_at=COMPLETED_AT,
     )
 
     record = result.records[0]
@@ -236,7 +251,8 @@ def test_records_sorted_by_id() -> None:
     ]
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute(instances),
-        networking=_networking(), completed_at=COMPLETED_AT,
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        completed_at=COMPLETED_AT,
     )
     assert [r["id"] for r in result.records] == ["i-a", "i-b", "i-c"]
 
@@ -244,11 +260,76 @@ def test_records_sorted_by_id() -> None:
 def test_domain_complete_and_discovery_complete_pass_through() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(complete=False), compute=_compute([]),
-        networking=_networking(), completed_at=COMPLETED_AT,
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        completed_at=COMPLETED_AT,
     )
     assert result.records == []
-    assert result.domain_complete == {"compute": True, "networking": True}
+    assert result.domain_complete == {
+        "compute": True, "networking": True, "autonomousDatabase": True,
+    }
     assert result.discovery_complete is False
+
+
+def test_autonomous_database_reports_raw_kms_and_endpoint_facts() -> None:
+    """No verdict here either -- kmsKeyId/publicEndpointHostname are raw facts a
+    Custom Test evaluates (e.g. kmsKeyId exist equal false), not a precomputed
+    'encrypted'/'compliant' boolean."""
+
+    adb = _stamp(
+        oci.database.models.AutonomousDatabaseSummary(
+            id="adb1", compartment_id="c1", display_name="adb-1", lifecycle_state="AVAILABLE",
+            kms_key_id="ocid1.key.oc1..key1", public_endpoint="adb1.example.oraclecloud.com",
+        )
+    )
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database([adb]),
+        completed_at=COMPLETED_AT,
+    )
+
+    assert len(result.records) == 1
+    record = result.records[0]
+    assert record["id"] == "adb1"
+    assert record["evidenceType"] == "autonomous_database"
+    assert record["kmsKeyId"] == "ocid1.key.oc1..key1"
+    assert record["publicEndpointHostname"] == "adb1.example.oraclecloud.com"
+    assert "status" not in record
+    assert validate_record(record, load_flat_schema()).valid
+
+
+def test_autonomous_database_without_kms_key_reports_null_not_false() -> None:
+    adb = _stamp(
+        oci.database.models.AutonomousDatabaseSummary(
+            id="adb2", compartment_id="c1", lifecycle_state="AVAILABLE",
+        )
+    )
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database([adb]),
+        completed_at=COMPLETED_AT,
+    )
+
+    record = result.records[0]
+    assert record["kmsKeyId"] is None
+    assert record["publicEndpointHostname"] is None
+
+
+def test_instance_and_autonomous_database_records_sort_together_by_id() -> None:
+    instance = _stamp(
+        oci.core.models.Instance(id="z-instance", compartment_id="c1", lifecycle_state="RUNNING")
+    )
+    adb = _stamp(
+        oci.database.models.AutonomousDatabaseSummary(
+            id="a-adb", compartment_id="c1", lifecycle_state="AVAILABLE",
+        )
+    )
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([instance]),
+        networking=_networking(), autonomous_database=_autonomous_database([adb]),
+        completed_at=COMPLETED_AT,
+    )
+    assert [r["id"] for r in result.records] == ["a-adb", "z-instance"]
+    assert [r["evidenceType"] for r in result.records] == ["autonomous_database", "instance"]
 
 
 def test_flat_schema_is_valid_draft7() -> None:
