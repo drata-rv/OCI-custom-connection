@@ -26,7 +26,7 @@ from oci_drata.collection.database_autonomous import (
     collect_autonomous_database,
 )
 from oci_drata.collection.database_base import DatabaseBaseCollectionResult, collect_database_base
-from oci_drata.collection.discovery import DiscoveryResult, discover
+from oci_drata.collection.discovery import DiscoveryResult, discover, limit_for_sample
 from oci_drata.collection.exadata_detection import detect_exadata
 from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
 from oci_drata.collection.kms_vault import KmsVaultCollectionResult, collect_kms_vault
@@ -48,6 +48,11 @@ from oci_drata.validation.schema import load_flat_schema, load_schema, validate_
 from oci_drata.validation.size import check_payload_size, serialize_deterministic
 
 logger = logging.getLogger(__name__)
+
+# --test caps the run to this many compartments (see discovery.limit_for_sample) --
+# small enough to finish fast and stay well under the payload budget, large enough
+# to usually show more than one of everything.
+TEST_MODE_MAX_COMPARTMENTS = 3
 
 EXIT_OK = 0
 EXIT_BLOCKED = 1
@@ -103,6 +108,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--out-dir",
         default="out",
         help="directory for dry-run output and the collection report (default: out)",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help=f"sample mode: cap collection to {TEST_MODE_MAX_COMPARTMENTS} compartments instead of "
+        "the whole tenancy -- for a quick, low-volume run (e.g. building/testing a Custom Test "
+        "against real data). Never used for a real upload decision.",
     )
     return parser.parse_args(argv)
 
@@ -178,11 +190,11 @@ class RunResult:
     flat_records: list[dict[str, Any]] | None = None
 
 
-def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
+def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> RunResult:
     started_at = datetime.datetime.now(tz=datetime.UTC)
     logger.info(
         "starting collection run",
-        extra={"deployment": app_config.deployment.name, "dryRun": dry_run},
+        extra={"deployment": app_config.deployment.name, "dryRun": dry_run, "testMode": test_mode},
     )
     logger.info(
         "effective configuration",
@@ -193,6 +205,8 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
     retry_policy = RetryPolicy()
 
     discovery = discover(signer, app_config, retry_policy=retry_policy)
+    if test_mode:
+        discovery = limit_for_sample(discovery, max_compartments=TEST_MODE_MAX_COMPARTMENTS)
     (
         compute_result, storage_result, networking_result, database_base_result,
         autonomous_result, vpn_result, identity_result, object_storage_result,
@@ -398,9 +412,13 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(app_config.runtime.log_level)
     dry_run = app_config.runtime.dry_run if args.dry_run is None else args.dry_run
+    if args.test:
+        # A sampled few compartments is never a complete picture -- never treat it as
+        # one by actually uploading it.
+        dry_run = True
 
     try:
-        result = run(app_config, dry_run=dry_run)
+        result = run(app_config, dry_run=dry_run, test_mode=args.test)
     except AuthError as exc:
         logger.error("authentication failed", extra={"error": str(exc)})
         return EXIT_CONFIG_ERROR

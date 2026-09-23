@@ -149,6 +149,73 @@ def test_main_returns_config_error_exit_code(tmp_path: Path) -> None:
     assert exit_code == cli.EXIT_CONFIG_ERROR
 
 
+# -- --test: sample mode, see collection/discovery.py::limit_for_sample --
+
+
+def test_run_test_mode_caps_compartments_every_collector_sees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every collector loops over discovery.approved_compartment_ids -- capping it once,
+    here, before any collector runs, is what makes --test shrink the whole run without
+    touching a single collector file. Asserted directly on what a collector receives,
+    not just on the discovery object in isolation, so a future refactor that stops
+    threading this same discovery through can't silently break sampling."""
+
+    many_compartments = tuple(f"ocid1.compartment.oc1..c{i}" for i in range(10))
+    discovery_with_many = dataclasses.replace(_discovery(), approved_compartment_ids=many_compartments)
+
+    seen_discoveries: list[object] = []
+
+    def _capture_compute(signer, discovery, services, *, retry_policy=None):
+        seen_discoveries.append(discovery)
+        return _exposed_windows_compute()
+
+    monkeypatch.setattr(cli, "build_signer", lambda app_config: MagicMock())
+    monkeypatch.setattr(cli, "discover", lambda signer, app_config, retry_policy=None: discovery_with_many)
+    monkeypatch.setattr(cli, "collect_compute", _capture_compute)
+    monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: _storage())
+    monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: _networking_allowing_rdp())
+    monkeypatch.setattr(cli, "collect_database_base", lambda *a, **k: _database_base_empty())
+    monkeypatch.setattr(cli, "collect_autonomous_database", lambda *a, **k: _autonomous_database())
+    monkeypatch.setattr(cli, "collect_vpn", lambda *a, **k: _vpn_non_redundant())
+    monkeypatch.setattr(cli, "detect_exadata", lambda *a, **k: _exadata_not_detected())
+
+    cli.run(_app_config(), dry_run=True, test_mode=True)
+    assert len(seen_discoveries[0].approved_compartment_ids) == cli.TEST_MODE_MAX_COMPARTMENTS
+
+    seen_discoveries.clear()
+    cli.run(_app_config(), dry_run=True, test_mode=False)
+    assert len(seen_discoveries[0].approved_compartment_ids) == 10
+
+
+def test_main_test_flag_forces_dry_run_even_if_config_says_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    """A sampled few compartments is never a complete picture of the tenancy -- --test
+    must never be able to reach a real Drata upload, no matter what runtime.dryRun says."""
+
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    import yaml
+
+    sample = Path(__file__).resolve().parent.parent.parent / "config.example.yaml"
+    raw = yaml.safe_load(sample.read_text())
+    raw["oci"]["expectedTenancyOcid"] = "ocid1.tenancy.oc1..aaaaaaaatest"
+    raw["oci"]["regions"]["allow"] = ["us-ashburn-1"]
+    raw["drata"]["recordId"] = "oci-snapshot-test0123456789abcdef01234567"
+    raw["drata"]["connectionId"] = 101
+    raw["drata"]["resourceId"] = 202
+    raw["runtime"]["dryRun"] = False
+    config_path.write_text(yaml.safe_dump(raw))
+    monkeypatch.setenv("DRATA_API_TOKEN", "unused")
+
+    exit_code = cli.main(["--config", str(config_path), "--test", "--out-dir", "out"])
+    assert exit_code == cli.EXIT_OK
+    report = json.loads((tmp_path / "out" / "collection-report.json").read_text())
+    assert report["uploadDecision"] == "skipped_dry_run"
+    patched_collectors.assert_not_called()
+
+
 # -- Flat-record architecture (see PLAN.md) -- opt-in via drata.flatResourceId --
 
 

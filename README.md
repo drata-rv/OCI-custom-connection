@@ -380,6 +380,16 @@ why) · `2` configuration/auth error · `3` unexpected failure.
 `runtime.dryRun` in `config.yaml` sets the default; `--dry-run` on the
 command line always wins.
 
+```bash
+# Sample mode: caps collection to a few compartments instead of the whole
+# tenancy -- fast, low-volume, for building/testing a Custom Test against
+# real data. Every collector reads discovery.approved_compartment_ids
+# (collection/discovery.py::limit_for_sample), so this shrinks every
+# domain at once. Always forces a dry run -- a sampled few compartments
+# is never a complete picture, so --test can never reach a real upload.
+oci-drata --config config.yaml --test
+```
+
 ## 6. Validating output
 
 ```bash
