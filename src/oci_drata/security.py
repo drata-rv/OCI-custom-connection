@@ -136,6 +136,10 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_users",
         "list_api_keys",
         "list_policies",
+        # Object Storage (collection/object_storage.py)
+        "get_namespace",
+        "list_buckets",
+        "get_bucket",
     }
 )
 

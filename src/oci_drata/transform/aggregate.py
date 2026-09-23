@@ -20,6 +20,7 @@ from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.exadata_detection import ExadataDetectionResult
 from oci_drata.collection.identity import IdentityCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
+from oci_drata.collection.object_storage import ObjectStorageCollectionResult
 from oci_drata.collection.storage import StorageCollectionResult
 from oci_drata.collection.vpn import VpnCollectionResult
 from oci_drata.config import AppConfig, DecisionsConfig
@@ -681,6 +682,20 @@ def _flatten_api_key(api_key: Any, *, timestamp: str | None) -> dict[str, Any]:
     }
 
 
+def _flatten_bucket(bucket: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": bucket.id,
+        "evidenceType": "bucket",
+        "name": bucket.name,
+        "timestamp": timestamp,
+        "region": bucket.region,
+        "compartmentId": bucket.compartment_id,
+        "kmsKeyId": bucket.kms_key_id,
+        "publicAccessType": bucket.public_access_type,
+        "versioning": bucket.versioning,
+    }
+
+
 def _flatten_iam_policy(policy: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
         "id": policy.id,
@@ -700,11 +715,13 @@ def build_flat_records(
     networking: NetworkingCollectionResult,
     autonomous_database: AutonomousDatabaseCollectionResult,
     identity: IdentityCollectionResult,
+    object_storage: ObjectStorageCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
     """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
-    autonomous databases (raw kmsKeyId/publicEndpointHostname), and identity
-    (iam_user/api_key/iam_policy, raw MFA/key-age/policy-statement facts) so far.
+    autonomous databases (raw kmsKeyId/publicEndpointHostname), identity
+    (iam_user/api_key/iam_policy, raw MFA/key-age/policy-statement facts), and
+    object storage buckets (raw kmsKeyId/publicAccessType/versioning) so far.
     Same normalize join build_snapshot uses for resources.instances/
     autonomousDatabases, but stops short of build_snapshot's exposure derivation
     for instances: that applies decisions.administrativePorts as a policy filter,
@@ -792,7 +809,8 @@ def build_flat_records(
         ]
         + [_flatten_iam_user(u, timestamp=timestamp) for u in kept_users]
         + [_flatten_api_key(k, timestamp=timestamp) for k in kept_api_keys]
-        + [_flatten_iam_policy(p, timestamp=timestamp) for p in kept_policies],
+        + [_flatten_iam_policy(p, timestamp=timestamp) for p in kept_policies]
+        + [_flatten_bucket(b, timestamp=timestamp) for b in object_storage.buckets],
         key=lambda r: r["id"],
     )
 
@@ -803,6 +821,7 @@ def build_flat_records(
             "networking": networking.complete,
             "autonomousDatabase": autonomous_database.complete,
             "identity": identity.complete,
+            "objectStorage": object_storage.complete,
         },
         discovery_complete=discovery.complete,
     )

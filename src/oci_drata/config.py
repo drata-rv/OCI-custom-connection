@@ -256,6 +256,7 @@ class OciServicesConfig:
     # ages, and raw IAM policy statement text. Opt-in, off unless explicitly enabled --
     # see README Section 4 for the additional least-privilege policy grant it needs.
     identity: bool = False
+    object_storage: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -462,6 +463,7 @@ _OCI_SERVICES_KEYS = frozenset(
     {
         "compute", "networkExposure", "blockStorage", "baseDatabase",
         "autonomousDatabase", "exadataDetection", "siteToSiteVpn", "identity",
+        "objectStorage",
     }
 )
 _DECISIONS_KEYS = frozenset(
@@ -537,6 +539,9 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         ),
         site_to_site_vpn=_require_bool(services_raw, "siteToSiteVpn", context="oci.services"),
         identity=_optional_bool(services_raw, "identity", context="oci.services", default=False),
+        object_storage=_optional_bool(
+            services_raw, "objectStorage", context="oci.services", default=False
+        ),
     )
 
     oci_config = OciConfig(

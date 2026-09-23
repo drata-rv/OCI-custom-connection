@@ -189,6 +189,24 @@ Allow group oci-drata-collector to read policies in tenancy
   above). `get_windows_instance_initial_credentials` and similar remain
   denylisted regardless of what's granted here.
 
+### 4.2 Optional: Object Storage (`oci.services.objectStorage`)
+
+**Off by default** (`objectStorage: false` unless set otherwise). Reads
+bucket-level metadata only — public access setting, encryption key
+presence, versioning state. Never lists or reads object (file) contents.
+
+```text
+Allow group oci-drata-collector to inspect buckets in tenancy
+Allow group oci-drata-collector to read buckets in tenancy
+```
+
+* Deliberately `buckets`, not `object-family` — the latter also covers
+  object (file) contents and object-level operations this collector has
+  no use for and never calls.
+* `get_namespace`/`list_buckets`/`get_bucket` are the only three
+  operations this domain calls (`security.py::ALLOWED_OCI_OPERATIONS`);
+  none reads or lists object contents.
+
 ## 5. Execution
 
 ```bash

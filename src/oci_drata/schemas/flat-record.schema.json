@@ -24,6 +24,8 @@
     "statements": {
       "type": "array",
       "items": { "type": "string" }
-    }
+    },
+    "publicAccessType": { "type": ["string", "null"] },
+    "versioning": { "type": ["string", "null"] }
   }
 }

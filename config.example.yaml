@@ -30,6 +30,9 @@ oci:
     # statement text (never credentials/secrets). See README Section 4 for the
     # additional least-privilege policy grant this needs before enabling it.
     identity: false
+    # Optional, defaults to false if omitted. Reads bucket-level metadata only
+    # (public access setting, encryption key, versioning) -- never object contents.
+    objectStorage: false
 
 decisions:
   administrativePorts: [22, 3389]
