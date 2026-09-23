@@ -273,11 +273,10 @@ def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.Mo
 # -- Full integration: every opt-in evidenceType enabled at once --
 #
 # Every test above exercises one collector/evidenceType in isolation (or the base
-# two that are always on). Nothing before this point had run the whole flat-record
-# pipeline with all 7 opt-in domains enabled simultaneously -- this is the first
-# check that the sum of 9 collectors shipped this session actually integrates
-# cleanly: no id collisions across evidenceTypes, every record schema-valid,
-# nothing crashes when every opt-in toggle is flipped on at the same time.
+# two that are always on). This runs the whole flat-record pipeline with all 7
+# opt-in domains enabled simultaneously: no id collisions across evidenceTypes,
+# every record schema-valid, nothing crashes when every opt-in toggle is
+# flipped on at the same time.
 
 
 def _app_config_with_everything_enabled():

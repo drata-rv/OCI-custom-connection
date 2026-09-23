@@ -24,3 +24,6 @@ out/
 
 .DS_Store
 .claude/
+
+# Internal working/coordination docs -- never committed, public repo
+PLAN.md

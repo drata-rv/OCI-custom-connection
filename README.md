@@ -36,10 +36,9 @@ schemas/flat-record.schema.json → delivery/drata.py::upsert_records()
 
 Records never carry a precomputed compliance verdict. Drata's own Custom
 Test `evaluator` decides what counts as compliant against the raw facts
-below (e.g. `publicIngressPorts intersectsAny [22, 3389]`) — baking that
-judgment into the collector was an earlier, real mistake in this project's
-history; see `PLAN.md`'s "Correction" section for the full story and why
-it matters for any future evidenceType.
+below (e.g. `publicIngressPorts intersectsAny [22, 3389]`). See `PLAN.md`'s
+"Correction" section for the rationale and how it applies to any future
+evidenceType.
 
 | `evidenceType` | Collector | `oci.services` toggle | Raw facts |
 |---|---|---|---|
@@ -530,8 +529,7 @@ flat-record path (§1.1) has its own, currently more significant, gaps:
   cross-service lookup this collector doesn't do.
 * **The AWS/Azure native-connector coverage target this path is being
   built against (`PLAN.md`) is stated as "60%" without a locatable
-  original source** in this session, git history, or `PLAN.md` itself —
-  flagged explicitly rather than silently treated as settled.
+  original source** in git history or `PLAN.md` itself.
 
 ## 10. Example Custom Tests
 
@@ -544,9 +542,8 @@ live Advanced Editor. Real production use found the gap that source-level
 validation missed: Drata's Advanced Editor **rejected the array-quantifier
 JSON pattern several of these files use, live, for this connection's
 actual registered schema.** `custom-tests/README.md` documents this in
-detail; treat every file in that directory as a historical record of a
-mistake, not a working example, until it's rewritten (tracked in
-`PLAN.md`).
+detail; treat every file in that directory as a historical record, not
+a working example, until it's rewritten (tracked in `PLAN.md`).
 
 For a test format that **is** confirmed against a live Custom Test build
 (captured directly from Drata's own UI, not source code — see `PLAN.md`'s

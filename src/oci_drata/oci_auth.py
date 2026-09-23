@@ -108,12 +108,10 @@ def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySi
     caller-supplied, never hard-coded.
 
     Returns a GuardedOciClient wrapping the real client, not the client itself --
-    runtime defense in depth alongside test_operation_allowlist.py's static AST scan
-    (see security.py). Cast back to T: GuardedOciClient proxies every attribute access
-    transparently (as Any), so this is honest about intent, not a type-safety hole --
-    an unrecognized operation still raises at the point of the call itself, just as a
-    runtime error rather than a caught-by-mypy one, exactly like a raw OCI client call
-    already was."""
+    runtime enforcement alongside test_operation_allowlist.py's static AST scan
+    (see security.py). Cast back to T: GuardedOciClient proxies every attribute
+    access (as Any); an unrecognized operation raises at call time, same as a
+    raw OCI client call, just not statically checked by mypy."""
 
     return cast(T, GuardedOciClient(client_cls(signer.region_config(region))))
 

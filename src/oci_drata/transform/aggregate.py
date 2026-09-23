@@ -618,14 +618,13 @@ def build_snapshot(
 #
 # One small record per collected resource, POSTed as {"data": [...]} to a single
 # flat schema/resourceId -- replaces the nested resources.*/findings[] design
-# above. Covers instances only for now (rewrite sequencing step 1); more
-# evidenceTypes are added by extending this section, not by restructuring it.
+# above. New evidenceTypes are added by extending this section, not by
+# restructuring it.
 #
 # Records carry raw/lightly-transformed OCI facts only -- no precomputed
 # compliance verdict (no `status`, no admin-ports-policy-filtered port list).
 # The Drata Custom Test evaluates compliance against these raw facts (e.g.
-# `publicIngressPorts intersectsAny [22, 3389]`); baking that policy decision
-# into the collector was the mistake this section replaced. See PLAN.md.
+# `publicIngressPorts intersectsAny [22, 3389]`).
 
 
 @dataclasses.dataclass(frozen=True)
