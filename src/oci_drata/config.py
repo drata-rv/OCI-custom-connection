@@ -282,6 +282,11 @@ class DrataConfig:
     record_id: str
     api_token_secret_ref: SecretRef
     allow_alternate_host: bool = False
+    # Resource ID of a second Custom Connection resource registered with
+    # schemas/flat-record.schema.json (see PLAN.md). None/absent leaves the
+    # flat-record publish path disabled entirely -- default behavior is
+    # unchanged from before that path existed.
+    flat_resource_id: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -336,6 +341,19 @@ def _require_int(
         raise ConfigError(f"{context}.{key}: must be >= {minimum}, got {value}")
     if maximum is not None and value > maximum:
         raise ConfigError(f"{context}.{key}: must be <= {maximum}, got {value}")
+    return value
+
+
+def _optional_int(
+    mapping: Mapping[str, Any], key: str, *, context: str, minimum: int | None = None
+) -> int | None:
+    if key not in mapping or mapping[key] is None:
+        return None
+    value = mapping[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{context}.{key}: expected an integer or null, got {value!r}")
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{context}.{key}: must be >= {minimum}, got {value}")
     return value
 
 
@@ -434,7 +452,10 @@ _DECISIONS_KEYS = frozenset(
     }
 )
 _DRATA_KEYS = frozenset(
-    {"baseUrl", "connectionId", "resourceId", "recordId", "apiTokenSecretRef", "allowAlternateHost"}
+    {
+        "baseUrl", "connectionId", "resourceId", "recordId", "apiTokenSecretRef",
+        "allowAlternateHost", "flatResourceId",
+    }
 )
 _RUNTIME_KEYS = frozenset({"maxPayloadBytes", "maxConcurrency", "logLevel", "dryRun"})
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -549,6 +570,7 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         record_id=_require(drata_raw, "recordId", context="drata"),
         api_token_secret_ref=api_token_secret_ref,
         allow_alternate_host=allow_alternate_host,
+        flat_resource_id=_optional_int(drata_raw, "flatResourceId", context="drata", minimum=1),
     )
 
     runtime_raw = _require(raw, "runtime", context="$")

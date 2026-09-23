@@ -31,13 +31,13 @@ from oci_drata.collection.networking import NetworkingCollectionResult, collect_
 from oci_drata.collection.storage import StorageCollectionResult, collect_storage
 from oci_drata.collection.vpn import VpnCollectionResult, collect_vpn
 from oci_drata.config import AppConfig, ConfigError, load_config, redact_config_for_display
-from oci_drata.delivery.drata import upsert_record
+from oci_drata.delivery.drata import upsert_record, upsert_records
 from oci_drata.logging import configure_logging
 from oci_drata.oci_auth import AuthError, TenancySigner, build_signer
 from oci_drata.pagination import RetryPolicy
-from oci_drata.transform.aggregate import build_snapshot
+from oci_drata.transform.aggregate import build_flat_records, build_snapshot
 from oci_drata.validation.completeness import decide_completeness
-from oci_drata.validation.schema import load_schema, validate_record
+from oci_drata.validation.schema import load_flat_schema, load_schema, validate_record
 from oci_drata.validation.size import check_payload_size, serialize_deterministic
 
 logger = logging.getLogger(__name__)
@@ -143,6 +143,9 @@ class RunResult:
     snapshot_status: str | None
     uploaded: bool
     report: dict[str, Any]
+    # Flat-record architecture (see PLAN.md) -- populated only when
+    # drata.flatResourceId is configured; None otherwise, no behavior change.
+    flat_records: list[dict[str, Any]] | None = None
 
 
 def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
@@ -245,13 +248,24 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         if uploaded:
             logger.info(
                 "drata upload succeeded",
-                extra={"created": delivery_result.created, "attempts": delivery_result.attempts},
+                # "created" is a reserved LogRecord attribute (record creation timestamp) --
+                # extra={"created": ...} raises KeyError in logging internals whenever this
+                # log call is actually enabled, so it's named recordCreated here instead.
+                extra={"recordCreated": delivery_result.created, "attempts": delivery_result.attempts},
             )
         else:
             logger.error(
                 "drata upload failed; last known-good record left untouched",
                 extra={"errorClass": delivery_result.error_class, "attempts": delivery_result.attempts},
             )
+
+    flat_records: list[dict[str, Any]] | None = None
+    if app_config.drata.flat_resource_id is not None:
+        flat_records = _run_flat_records(
+            app_config, discovery=discovery, compute=compute_result,
+            networking=networking_result, completed_at=completed_at,
+            dry_run=dry_run, report=report,
+        )
 
     exit_code = EXIT_OK if (dry_run and decision.snapshot_status != "failed") or uploaded else EXIT_BLOCKED
     return RunResult(
@@ -260,7 +274,69 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         snapshot_status=decision.snapshot_status,
         uploaded=uploaded,
         report=report,
+        flat_records=flat_records,
     )
+
+
+def _run_flat_records(
+    app_config: AppConfig,
+    *,
+    discovery: DiscoveryResult,
+    compute: ComputeCollectionResult,
+    networking: NetworkingCollectionResult,
+    completed_at: datetime.datetime,
+    dry_run: bool,
+    report: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Builds and (outside dry-run) uploads flat records to drata.flatResourceId --
+    the flat-record architecture, additive alongside the nested-schema path above
+    (see PLAN.md). Mutates ``report`` in place with a "flatRecords" key; never
+    affects the nested path's own uploadDecision/exit_code."""
+
+    flat_result = build_flat_records(
+        decisions=app_config.decisions, discovery=discovery, compute=compute,
+        networking=networking, completed_at=completed_at,
+    )
+    flat_schema = load_flat_schema()
+    flat_schema_valid = all(validate_record(r, flat_schema).valid for r in flat_result.records)
+    flat_complete = flat_result.discovery_complete and all(flat_result.domain_complete.values())
+
+    flat_report: dict[str, Any] = {
+        "recordCount": len(flat_result.records),
+        "schemaValid": flat_schema_valid,
+        "domainComplete": flat_result.domain_complete,
+        "discoveryComplete": flat_result.discovery_complete,
+    }
+    if not flat_schema_valid:
+        logger.error("flat-record schema validation failed")
+
+    if dry_run:
+        flat_report["uploadDecision"] = "skipped_dry_run"
+    elif not (flat_schema_valid and flat_complete):
+        reasons = []
+        if not flat_schema_valid:
+            reasons.append("schema validation failed")
+        if not flat_complete:
+            reasons.append("compute/networking collection incomplete")
+        flat_report["uploadDecision"] = "blocked"
+        flat_report["blockedReasons"] = reasons
+        logger.warning("flat-record upload blocked", extra={"reasons": reasons})
+    else:
+        flat_drata_config = dataclasses.replace(
+            app_config.drata, resource_id=app_config.drata.flat_resource_id
+        )
+        delivery_results = upsert_records(flat_drata_config, flat_result.records)
+        flat_uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
+        flat_report["uploadDecision"] = "uploaded" if flat_uploaded else "delivery_failed"
+        flat_report["batchesAttempted"] = len(delivery_results)
+        flat_report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
+        if flat_uploaded:
+            logger.info("flat-record upload succeeded", extra={"records": len(flat_result.records)})
+        else:
+            logger.error("flat-record upload failed", extra={"records": len(flat_result.records)})
+
+    report["flatRecords"] = flat_report
+    return flat_result.records
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -295,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     if dry_run and result.record is not None:
         _write_restricted(out_dir / "snapshot.json", serialize_deterministic(result.record))
+    if dry_run and result.flat_records is not None:
+        _write_restricted(
+            out_dir / "flat-records.json",
+            json.dumps(result.flat_records, indent=2, sort_keys=True).encode("utf-8"),
+        )
 
     print(json.dumps(result.report, indent=2, sort_keys=True))
     return result.exit_code

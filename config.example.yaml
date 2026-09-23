@@ -50,6 +50,11 @@ drata:
   apiTokenSecretRef:
     provider: env
     name: DRATA_API_TOKEN
+  # Optional. Resource ID of a SECOND Custom Connection resource registered with
+  # schemas/flat-record.schema.json (see PLAN.md) -- create it via a direct API
+  # call, not the web UI ([internal-ticket]/[internal-ticket]). Leave null/unset to skip the
+  # flat-record publish path entirely; resourceId above is unaffected either way.
+  flatResourceId: null
 
 runtime:
   maxPayloadBytes: 4500000
