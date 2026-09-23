@@ -381,12 +381,14 @@ why) · `2` configuration/auth error · `3` unexpected failure.
 command line always wins.
 
 ```bash
-# Sample mode: caps collection to a few compartments instead of the whole
-# tenancy -- fast, low-volume, for building/testing a Custom Test against
-# real data. Every collector reads discovery.approved_compartment_ids
-# (collection/discovery.py::limit_for_sample), so this shrinks every
-# domain at once. Always forces a dry run -- a sampled few compartments
-# is never a complete picture, so --test can never reach a real upload.
+# Sample mode: stops collecting after 30s instead of scanning the whole
+# tenancy, keeping whatever real data was gathered by then -- fast,
+# low-volume, for building/testing a Custom Test against real data. Every
+# OCI call shares one retry policy (pagination.py::RetryPolicy.deadline),
+# so this bounds every domain at once. Never uploads the original/nested
+# snapshot (a partial scan can't honestly claim tenancy-wide
+# completeness) -- but the flat-record path uploads normally if
+# runtime.dryRun is false, since each record is standalone evidence.
 oci-drata --config config.yaml --test
 ```
 

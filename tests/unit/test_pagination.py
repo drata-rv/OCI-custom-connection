@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 import oci
@@ -165,6 +166,54 @@ def test_call_once_does_not_auto_forward_compartment_id() -> None:
     )
     assert "compartment_id" not in call.call_args.kwargs
     assert call.call_args.kwargs["instance_id"] == "ocid1.instance.oc1..y"
+
+
+def test_retry_policy_deadline_exceeded_false_when_unset() -> None:
+    assert RetryPolicy().deadline_exceeded() is False
+
+
+def test_retry_policy_deadline_exceeded_reflects_monotonic_clock() -> None:
+    assert RetryPolicy(deadline=time.monotonic() - 1).deadline_exceeded() is True
+    assert RetryPolicy(deadline=time.monotonic() + 60).deadline_exceeded() is False
+
+
+def test_paginate_deadline_already_passed_skips_the_call_entirely() -> None:
+    call = MagicMock(return_value=_response(["a"]))
+    policy = RetryPolicy(deadline=time.monotonic() - 1)
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=policy)
+    assert result.status == "failed"
+    assert result.error_code == "TestModeDeadlineExceeded"
+    assert result.items == []
+    call.assert_not_called()
+
+
+def test_paginate_deadline_hit_mid_pagination_keeps_pages_already_collected() -> None:
+    """A cutoff mid-run keeps whatever real data landed before the deadline -- that's
+    the whole point of --test: partial, honest data, not nothing."""
+
+    call = MagicMock(
+        side_effect=[_response(["a", "b"], headers={"opc-next-page": "tok1"}), _response(["c"])]
+    )
+    policy = RetryPolicy(deadline=time.monotonic() + 0.05)
+
+    def _delayed_call(**kwargs):
+        time.sleep(0.1)  # blow the deadline between the first and second page
+        return call(**kwargs)
+
+    result = paginate(service="compute", operation="list_instances", call=_delayed_call, retry_policy=policy)
+    assert result.status == "failed"
+    assert result.error_code == "TestModeDeadlineExceeded"
+    assert result.items == ["a", "b"]  # first page's items kept; second page never fetched
+    assert call.call_count == 1
+
+
+def test_call_once_deadline_already_passed_skips_the_call_entirely() -> None:
+    call = MagicMock(return_value=_response("x"))
+    policy = RetryPolicy(deadline=time.monotonic() - 1)
+    result = call_once(service="compute", operation="get_instance", call=call, retry_policy=policy)
+    assert result.status == "failed"
+    assert result.error_code == "TestModeDeadlineExceeded"
+    call.assert_not_called()
 
 
 def test_operations_complete_ignores_skipped_but_blocks_on_unsupported() -> None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import stat
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,6 +15,7 @@ import pytest
 
 from oci_drata import cli
 from oci_drata.delivery.drata import DeliveryResult
+from oci_drata.pagination import RetryPolicy
 from oci_drata.validation.schema import load_flat_schema, validate_record
 
 from .test_end_to_end import (
@@ -149,30 +151,28 @@ def test_main_returns_config_error_exit_code(tmp_path: Path) -> None:
     assert exit_code == cli.EXIT_CONFIG_ERROR
 
 
-# -- --test: sample mode, see collection/discovery.py::limit_for_sample --
+# -- --test: sample mode, see pagination.py::RetryPolicy.deadline --
 
 
-def test_run_test_mode_caps_compartments_every_collector_sees(
+def test_run_test_mode_sets_a_deadline_every_collector_shares(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every collector loops over discovery.approved_compartment_ids -- capping it once,
-    here, before any collector runs, is what makes --test shrink the whole run without
-    touching a single collector file. Asserted directly on what a collector receives,
-    not just on the discovery object in isolation, so a future refactor that stops
-    threading this same discovery through can't silently break sampling."""
+    """Every OCI call goes through paginate()/call_once() (pagination.py), both keyed
+    off the one retry_policy threaded through discover() and every collector -- setting
+    its deadline here, once, bounds the whole run without touching a single collector
+    file. Asserted on what discover() actually receives, not just cli.py's own local
+    variable, so a future refactor that stops threading this same policy through can't
+    silently break the time budget."""
 
-    many_compartments = tuple(f"ocid1.compartment.oc1..c{i}" for i in range(10))
-    discovery_with_many = dataclasses.replace(_discovery(), approved_compartment_ids=many_compartments)
+    seen_policies: list[RetryPolicy] = []
 
-    seen_discoveries: list[object] = []
-
-    def _capture_compute(signer, discovery, services, *, retry_policy=None):
-        seen_discoveries.append(discovery)
-        return _exposed_windows_compute()
+    def _capture_discover(signer, app_config, retry_policy=None):
+        seen_policies.append(retry_policy)
+        return _discovery()
 
     monkeypatch.setattr(cli, "build_signer", lambda app_config: MagicMock())
-    monkeypatch.setattr(cli, "discover", lambda signer, app_config, retry_policy=None: discovery_with_many)
-    monkeypatch.setattr(cli, "collect_compute", _capture_compute)
+    monkeypatch.setattr(cli, "discover", _capture_discover)
+    monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: _exposed_windows_compute())
     monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: _storage())
     monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: _networking_allowing_rdp())
     monkeypatch.setattr(cli, "collect_database_base", lambda *a, **k: _database_base_empty())
@@ -180,19 +180,26 @@ def test_run_test_mode_caps_compartments_every_collector_sees(
     monkeypatch.setattr(cli, "collect_vpn", lambda *a, **k: _vpn_non_redundant())
     monkeypatch.setattr(cli, "detect_exadata", lambda *a, **k: _exadata_not_detected())
 
+    before = time.monotonic()
     cli.run(_app_config(), dry_run=True, test_mode=True)
-    assert len(seen_discoveries[0].approved_compartment_ids) == cli.TEST_MODE_MAX_COMPARTMENTS
+    after = time.monotonic()
+    deadline = seen_policies[0].deadline
+    assert deadline is not None
+    assert before + cli.TEST_MODE_TIME_BUDGET_SECONDS <= deadline <= after + cli.TEST_MODE_TIME_BUDGET_SECONDS
 
-    seen_discoveries.clear()
+    seen_policies.clear()
     cli.run(_app_config(), dry_run=True, test_mode=False)
-    assert len(seen_discoveries[0].approved_compartment_ids) == 10
+    assert seen_policies[0].deadline is None
 
 
-def test_main_test_flag_forces_dry_run_even_if_config_says_upload(
+def test_main_test_mode_skips_nested_upload_even_if_config_says_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
 ) -> None:
-    """A sampled few compartments is never a complete picture of the tenancy -- --test
-    must never be able to reach a real Drata upload, no matter what runtime.dryRun says."""
+    """A time-bounded partial scan is never a complete picture of the tenancy -- the
+    nested/original path must never be able to reach a real Drata upload under --test,
+    no matter what runtime.dryRun says. (The flat-record path is unaffected -- covered
+    by test_flat_records_uploads_to_configured_resource_id-style tests -- since each
+    flat record is standalone evidence, honest regardless of how much was collected.)"""
 
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.yaml"
@@ -210,10 +217,11 @@ def test_main_test_flag_forces_dry_run_even_if_config_says_upload(
     monkeypatch.setenv("DRATA_API_TOKEN", "unused")
 
     exit_code = cli.main(["--config", str(config_path), "--test", "--out-dir", "out"])
-    assert exit_code == cli.EXIT_OK
     report = json.loads((tmp_path / "out" / "collection-report.json").read_text())
-    assert report["uploadDecision"] == "skipped_dry_run"
+    assert report["dryRun"] is False
+    assert report["uploadDecision"] == "skipped_test_mode"
     patched_collectors.assert_not_called()
+    assert exit_code == cli.EXIT_BLOCKED  # nested path didn't upload and this wasn't a dry run
 
 
 # -- Flat-record architecture (see PLAN.md) -- opt-in via drata.flatResourceId --

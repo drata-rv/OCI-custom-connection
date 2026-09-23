@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,7 +27,7 @@ from oci_drata.collection.database_autonomous import (
     collect_autonomous_database,
 )
 from oci_drata.collection.database_base import DatabaseBaseCollectionResult, collect_database_base
-from oci_drata.collection.discovery import DiscoveryResult, discover, limit_for_sample
+from oci_drata.collection.discovery import DiscoveryResult, discover
 from oci_drata.collection.exadata_detection import detect_exadata
 from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
 from oci_drata.collection.kms_vault import KmsVaultCollectionResult, collect_kms_vault
@@ -49,10 +50,11 @@ from oci_drata.validation.size import check_payload_size, serialize_deterministi
 
 logger = logging.getLogger(__name__)
 
-# --test caps the run to this many compartments (see discovery.limit_for_sample) --
-# small enough to finish fast and stay well under the payload budget, large enough
-# to usually show more than one of everything.
-TEST_MODE_MAX_COMPARTMENTS = 3
+# --test bounds wall-clock time instead of resource count -- see RetryPolicy.deadline
+# (pagination.py). Which compartments actually have data isn't knowable up front, so
+# a time budget lets collection cover as much real ground as it can within it, rather
+# than gambling on a fixed number of compartments that could all turn out empty.
+TEST_MODE_TIME_BUDGET_SECONDS = 30
 
 EXIT_OK = 0
 EXIT_BLOCKED = 1
@@ -112,9 +114,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--test",
         action="store_true",
-        help=f"sample mode: cap collection to {TEST_MODE_MAX_COMPARTMENTS} compartments instead of "
-        "the whole tenancy -- for a quick, low-volume run (e.g. building/testing a Custom Test "
-        "against real data). Never used for a real upload decision.",
+        help=f"sample mode: stop collecting after {TEST_MODE_TIME_BUDGET_SECONDS}s instead of "
+        "scanning the whole tenancy, keeping whatever real data was gathered by then. Never "
+        "uploads the original/nested snapshot (a partial scan can't honestly claim "
+        "tenancy-wide completeness), but the flat-record path uploads normally if "
+        "runtime.dryRun is false -- real evidence, for building/testing a Custom Test "
+        "against live data.",
     )
     return parser.parse_args(argv)
 
@@ -203,10 +208,18 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
 
     signer = build_signer(app_config)
     retry_policy = RetryPolicy()
+    if test_mode:
+        # Bounding wall-clock time, not compartment count: which compartments actually
+        # have data isn't knowable up front, and a small fixed compartment cap can land
+        # entirely on empty ones in a large tenancy. Every OCI call goes through
+        # paginate()/call_once() (pagination.py), so one deadline on this shared policy
+        # bounds discovery and every collector uniformly -- each stops where it is,
+        # keeping whatever it already collected, instead of guessing scope up front.
+        retry_policy = dataclasses.replace(
+            retry_policy, deadline=time.monotonic() + TEST_MODE_TIME_BUDGET_SECONDS
+        )
 
     discovery = discover(signer, app_config, retry_policy=retry_policy)
-    if test_mode:
-        discovery = limit_for_sample(discovery, max_compartments=TEST_MODE_MAX_COMPARTMENTS)
     (
         compute_result, storage_result, networking_result, database_base_result,
         autonomous_result, vpn_result, identity_result, object_storage_result,
@@ -280,6 +293,18 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     if dry_run:
         report["uploadDecision"] = "skipped_dry_run"
         logger.info("dry run: skipping Drata upload", extra={"snapshotStatus": decision.snapshot_status})
+    elif test_mode:
+        # decision.should_upload has no idea only a handful of compartments were ever
+        # in scope -- it would happily call this "complete" from what it saw. Uploading
+        # that here would claim tenancy-wide coverage on a sample. The flat-record path
+        # below is unaffected: each record is standalone evidence, honest regardless of
+        # sample size, so --test still uploads real flat records for real testing.
+        report["uploadDecision"] = "skipped_test_mode"
+        logger.info(
+            "test mode: skipping the nested-path upload (sampled compartments, not "
+            "tenancy-complete) -- flat records are unaffected",
+            extra={"snapshotStatus": decision.snapshot_status},
+        )
     elif not decision.should_upload:
         report["uploadDecision"] = "blocked"
         logger.warning(
@@ -412,10 +437,6 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(app_config.runtime.log_level)
     dry_run = app_config.runtime.dry_run if args.dry_run is None else args.dry_run
-    if args.test:
-        # A sampled few compartments is never a complete picture -- never treat it as
-        # one by actually uploading it.
-        dry_run = True
 
     try:
         result = run(app_config, dry_run=dry_run, test_mode=args.test)

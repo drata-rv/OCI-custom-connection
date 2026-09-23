@@ -2,13 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from oci_drata.collection.discovery import (
-    DiscoveryResult,
-    _discovery_region,
-    _expand_to_subtrees,
-    _resolve_regions,
-    limit_for_sample,
-)
+from oci_drata.collection.discovery import _discovery_region, _expand_to_subtrees, _resolve_regions
 from oci_drata.oci_auth import TenancySigner
 from oci_drata.pagination import OperationResult
 
@@ -93,44 +87,3 @@ def test_resolve_regions_api_failure_treats_all_configured_as_unready() -> None:
     assert unready == ("us-ashburn-1", "eu-frankfurt-1")
 
 
-def _discovery(**overrides: object) -> DiscoveryResult:
-    defaults: dict[str, object] = dict(
-        tenancy=None,
-        region_subscriptions=[],
-        all_compartments=[],
-        discovery_region="us-ashburn-1",
-        approved_regions=("us-ashburn-1",),
-        unready_regions=(),
-        approved_compartment_ids=("c1", "c2", "c3"),
-        excluded_compartment_ids=(),
-        inaccessible_compartment_ids=(),
-        availability_domains_by_region={},
-        operations=[],
-    )
-    defaults.update(overrides)
-    return DiscoveryResult(**defaults)  # type: ignore[arg-type]
-
-
-def test_limit_for_sample_caps_to_first_n_sorted_compartments() -> None:
-    """Sorted, not insertion order -- the same subset is picked on every run
-    regardless of what order list_compartments happened to return them in."""
-
-    discovery = _discovery(approved_compartment_ids=("c3", "c1", "c4", "c2"))
-    limited = limit_for_sample(discovery, max_compartments=2)
-    assert limited.approved_compartment_ids == ("c1", "c2")
-
-
-def test_limit_for_sample_noop_when_already_within_cap() -> None:
-    discovery = _discovery(approved_compartment_ids=("c1", "c2"))
-    limited = limit_for_sample(discovery, max_compartments=5)
-    assert limited.approved_compartment_ids == ("c1", "c2")
-
-
-def test_limit_for_sample_only_changes_compartment_ids() -> None:
-    """Every other discovery field -- regions, tenancy, operations -- passes through
-    untouched; sampling narrows scope, it doesn't change what discovery itself found."""
-
-    discovery = _discovery(approved_regions=("us-ashburn-1", "us-phoenix-1"))
-    limited = limit_for_sample(discovery, max_compartments=1)
-    assert limited.approved_regions == ("us-ashburn-1", "us-phoenix-1")
-    assert limited.approved_compartment_ids == ("c1",)

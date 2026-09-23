@@ -46,17 +46,30 @@ def is_retryable_service_error(exc: oci.exceptions.ServiceError) -> bool:
 
 OperationStatus = str  # "success" | "failed" | "unsupported" | "skipped"
 
+# error_code used when RetryPolicy.deadline cuts an operation short (see --test in
+# cli.py) -- a real, honest failure classification, not a silent partial success:
+# operations_complete() must see this domain as incomplete, same as any other failure.
+TEST_MODE_DEADLINE_ERROR_CODE = "TestModeDeadlineExceeded"
+
 
 @dataclasses.dataclass(frozen=True)
 class RetryPolicy:
     max_attempts: int = 5
     base_delay_seconds: float = 0.5
     max_delay_seconds: float = 20.0
+    # time.monotonic() timestamp; unset means no deadline. Set by cli.py's --test to
+    # bound wall-clock time instead of guessing which compartments have data --
+    # checked once per operation (paginate/call_once) and once per page, so a run
+    # winds down within roughly this budget instead of an arbitrary resource cap.
+    deadline: float | None = None
 
     def delay_seconds(self, attempt: int) -> float:
         """Full-jitter exponential backoff: uniform(0, min(cap, base*2^attempt))."""
         upper = min(self.max_delay_seconds, self.base_delay_seconds * (2**attempt))
         return random.uniform(0, upper)
+
+    def deadline_exceeded(self) -> bool:
+        return self.deadline is not None and time.monotonic() > self.deadline
 
 
 @dataclasses.dataclass
@@ -216,6 +229,21 @@ def paginate(
 
     page_token: str | None = None
     while True:
+        if policy.deadline_exceeded():
+            # Whatever pages already landed in result.items stay -- real, partial
+            # data is still useful (e.g. for --test); the operation is still marked
+            # failed, since operations_complete() must see this domain as incomplete.
+            result.status = "failed"
+            result.error_code = TEST_MODE_DEADLINE_ERROR_CODE
+            logger.warning(
+                "test mode: time budget exceeded, stopping here",
+                extra={
+                    "service": service, "operation": operation,
+                    "region": region, "compartment_id": compartment_id,
+                    "pagesCollected": result.page_count,
+                },
+            )
+            break
         kwargs = dict(call_kwargs)
         # compartment_id captured separately for the manifest; forwarded here
         # since most list_*/get_* ops require it (e.g. get_tenancy doesn't).
@@ -289,6 +317,14 @@ def call_once(
         compartment_id=compartment_id,
         status="success",
     )
+    if policy.deadline_exceeded():
+        result.status = "failed"
+        result.error_code = TEST_MODE_DEADLINE_ERROR_CODE
+        logger.warning(
+            "test mode: time budget exceeded, skipping operation",
+            extra={"service": service, "operation": operation, "region": region, "compartment_id": compartment_id},
+        )
+        return result
     try:
         response, request_ids, retry_delays = _invoke_with_retry(call, policy, dict(call_kwargs))
     except _RetryExhausted as exc:

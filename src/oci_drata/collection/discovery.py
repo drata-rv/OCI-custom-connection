@@ -8,7 +8,6 @@ failures.
 from __future__ import annotations
 
 import dataclasses
-import logging
 from typing import Any
 
 import oci
@@ -23,8 +22,6 @@ from oci_drata.pagination import (
     paginate,
     stamp_region,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -158,27 +155,6 @@ def discover(
         availability_domains_by_region=availability_domains_by_region,
         operations=operations,
     )
-
-
-def limit_for_sample(discovery: DiscoveryResult, *, max_compartments: int) -> DiscoveryResult:
-    """Caps ``approved_compartment_ids`` to the first ``max_compartments`` (sorted, so
-    the same subset is picked every run). Every collector loops over this same field
-    (see collection/*.py), so capping it here shrinks the whole run -- compute,
-    storage, networking, every domain -- without touching a single collector.
-
-    For --test only: a real run must see every approved compartment, so this is never
-    called unless the caller explicitly opted into a sample."""
-
-    limited_ids = tuple(sorted(discovery.approved_compartment_ids)[:max_compartments])
-    if len(limited_ids) < len(discovery.approved_compartment_ids):
-        logger.warning(
-            "test mode: sampling compartments, not a full tenancy scan",
-            extra={
-                "compartmentsUsed": len(limited_ids),
-                "compartmentsApproved": len(discovery.approved_compartment_ids),
-            },
-        )
-    return dataclasses.replace(discovery, approved_compartment_ids=limited_ids)
 
 
 def _expand_to_subtrees(all_compartments: list[Any], seed_ids: set[str]) -> set[str]:
