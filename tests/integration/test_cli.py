@@ -67,6 +67,70 @@ def test_complete_run_uploads(patched_collectors: MagicMock) -> None:
     assert result.exit_code == cli.EXIT_OK
 
 
+# -- _access_summary: turning a wall of per-operation failures into "where does this
+# API user's access and the tenancy's real data actually overlap" --
+
+
+def _op(compartment_id, status="success", error_code=None, item_count=0):
+    return {"compartmentId": compartment_id, "status": status, "errorCode": error_code, "itemCount": item_count}
+
+
+def test_access_summary_groups_by_compartment() -> None:
+    operations = [
+        _op("c1", status="failed", error_code="NotAuthorizedOrNotFound"),
+        _op("c1", status="failed", error_code="NotAuthorizedOrNotFound"),  # same compartment, still one entry
+        _op("c2", status="success", item_count=5),
+        _op("c3", status="success", item_count=0),  # succeeded but genuinely nothing there
+        _op("c4", status="failed", error_code="TooManyRequests"),  # transient, not an access gap
+    ]
+    summary = cli._access_summary(operations)
+    assert summary["compartmentsSeen"] == 4
+    assert summary["compartmentsWithAuthGap"] == ["c1"]
+    assert summary["compartmentsWithRealData"] == ["c2"]
+
+
+def test_access_summary_excludes_test_mode_deadline_from_auth_gap() -> None:
+    """A --test cutoff is not a permission problem -- conflating the two would make
+    the summary lie about where the real access gap is."""
+
+    operations = [_op("c1", status="failed", error_code="TestModeDeadlineExceeded")]
+    summary = cli._access_summary(operations)
+    assert summary["compartmentsWithAuthGap"] == []
+
+
+def test_access_summary_ignores_operations_with_no_compartment() -> None:
+    operations = [_op(None, status="success", item_count=3)]
+    summary = cli._access_summary(operations)
+    assert summary == {"compartmentsSeen": 0, "compartmentsWithAuthGap": [], "compartmentsWithRealData": []}
+
+
+def test_access_summary_empty_operations() -> None:
+    assert cli._access_summary([]) == {
+        "compartmentsSeen": 0, "compartmentsWithAuthGap": [], "compartmentsWithRealData": [],
+    }
+
+
+def test_run_report_includes_access_summary_with_real_auth_gap(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    from oci_drata.collection.storage import StorageCollectionResult
+    from oci_drata.pagination import OperationResult
+
+    failed_storage = StorageCollectionResult(
+        boot_volumes=[], block_volumes=[], boot_volume_attachments=[], volume_attachments=[],
+        operations=[
+            OperationResult(
+                service="blockstorage", operation="list_boot_volumes", region="us-ashburn-1",
+                compartment_id="c1", status="failed", error_code="NotAuthorizedOrNotFound",
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: failed_storage)
+
+    result = cli.run(_app_config(), dry_run=True)
+    assert result.report["accessSummary"]["compartmentsWithAuthGap"] == ["c1"]
+
+
 def test_incomplete_run_blocks_upload(monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock) -> None:
     from oci_drata.collection.storage import StorageCollectionResult
     from oci_drata.pagination import OperationResult

@@ -56,6 +56,40 @@ logger = logging.getLogger(__name__)
 # than gambling on a fixed number of compartments that could all turn out empty.
 TEST_MODE_TIME_BUDGET_SECONDS = 30
 
+# OCI SDK error codes meaning "this API user has no access here", as opposed to a
+# transient failure (429/5xx, already retried) or a --test deadline cutoff (a distinct,
+# non-auth error_code -- see pagination.py). A tenancy whose configured scope
+# (oci.compartments.roots/regions.allow) reaches further than this API user's OCI
+# policy grants produces a flood of these; grouping them by compartment turns that
+# flood into the one fact an operator actually needs.
+_AUTH_GAP_ERROR_CODES = frozenset({"NotAuthorizedOrNotFound", "NotAuthenticated"})
+
+
+def _access_summary(operations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Every operation already carries compartmentId/errorCode/status/itemCount (see
+    OperationRecord.to_dict(), models.py). Groups what's already collected by
+    compartment: which ones this API user's policy doesn't cover, and which ones
+    actually had real data -- the two things that matter after a run this noisy,
+    instead of scrolling thousands of per-operation log lines to find them."""
+
+    auth_gap: set[str] = set()
+    has_data: set[str] = set()
+    all_seen: set[str] = set()
+    for op in operations:
+        compartment_id = op.get("compartmentId")
+        if compartment_id is None:
+            continue
+        all_seen.add(compartment_id)
+        if op.get("errorCode") in _AUTH_GAP_ERROR_CODES:
+            auth_gap.add(compartment_id)
+        if op.get("status") == "success" and op.get("itemCount", 0) > 0:
+            has_data.add(compartment_id)
+    return {
+        "compartmentsSeen": len(all_seen),
+        "compartmentsWithAuthGap": sorted(auth_gap),
+        "compartmentsWithRealData": sorted(has_data),
+    }
+
 EXIT_OK = 0
 EXIT_BLOCKED = 1
 EXIT_CONFIG_ERROR = 2
@@ -255,6 +289,19 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     aggregate.record["snapshotStatus"] = decision.snapshot_status
 
     all_operations = aggregate.record["manifest"]["operations"]
+    access_summary = _access_summary(all_operations)
+    if access_summary["compartmentsWithAuthGap"]:
+        logger.warning(
+            "access gap: some compartments returned an auth-shaped failure for at "
+            "least one operation -- this API user's OCI policy may not cover this "
+            "run's configured scope (oci.compartments.roots/regions.allow). See "
+            "collection-report.json's accessSummary for the exact compartment ids.",
+            extra={
+                "compartmentsSeen": access_summary["compartmentsSeen"],
+                "compartmentsWithAuthGap": len(access_summary["compartmentsWithAuthGap"]),
+                "compartmentsWithRealData": len(access_summary["compartmentsWithRealData"]),
+            },
+        )
     report = {
         "deployment": app_config.deployment.name,
         "startedAt": aggregate.record["manifest"]["startedAt"],
@@ -273,6 +320,7 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         "payloadBudgetBytes": size_result.max_bytes,
         "withinPayloadBudget": size_result.within_budget,
         "payloadNearBudget": size_result.near_budget,
+        "accessSummary": access_summary,
         "snapshotStatus": decision.snapshot_status,
         "completenessReasons": list(decision.reasons),
         "dryRun": dry_run,
