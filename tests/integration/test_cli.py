@@ -11,11 +11,12 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import oci
 import pytest
 
 from oci_drata import cli
 from oci_drata.delivery.drata import DeliveryResult
-from oci_drata.pagination import RetryPolicy
+from oci_drata.pagination import OperationResult, RetryPolicy
 from oci_drata.validation.schema import load_flat_schema, validate_record
 
 from .test_end_to_end import (
@@ -72,7 +73,10 @@ def test_complete_run_uploads(patched_collectors: MagicMock) -> None:
 
 
 def _op(compartment_id, status="success", error_code=None, item_count=0):
-    return {"compartmentId": compartment_id, "status": status, "errorCode": error_code, "itemCount": item_count}
+    return OperationResult(
+        service="s", operation="o", region=None, compartment_id=compartment_id,
+        status=status, error_code=error_code, item_count=item_count,
+    )
 
 
 def test_access_summary_groups_by_compartment() -> None:
@@ -380,6 +384,58 @@ def test_flat_records_blocked_when_networking_incomplete(
 
     assert result.report["flatRecords"]["uploadDecision"] == "blocked"
     assert "compute/networking collection incomplete" in result.report["flatRecords"]["blockedReasons"]
+    upsert_records.assert_not_called()
+
+
+def test_domain_all_skipped_true_only_when_every_op_is_the_skip_marker() -> None:
+    skipped = [OperationResult(service="s", operation="collect", region=None, compartment_id=None, status="skipped")]
+    ran_and_found_nothing = [OperationResult(service="s", operation="list_x", region="r", compartment_id="c1", status="success", item_count=0)]
+    assert cli._domain_all_skipped(skipped) is True
+    assert cli._domain_all_skipped(ran_and_found_nothing) is False
+    assert cli._domain_all_skipped([]) is False  # no ops at all is not the same claim as "disabled by config"
+
+
+def test_flat_records_report_distinguishes_disabled_from_empty_domains(
+    patched_collectors: MagicMock,
+) -> None:
+    """The exact ambiguity a real run hit: domainComplete=true tells you nothing failed,
+    not whether the service ran at all. identity/objectStorage/etc are off by default
+    (see _app_config_with_flat_resource -> _app_config), so they must show up as
+    skipped; compute is on and (per patched_collectors) actually ran, so it must not."""
+
+    result = cli.run(_app_config_with_flat_resource(), dry_run=True)
+    domain_skipped = result.report["flatRecords"]["domainSkipped"]
+    assert domain_skipped["identity"] is True
+    assert domain_skipped["compute"] is False
+    assert result.report["flatRecords"]["excludedByLifecycle"]["kmsKey"] == 0
+    assert result.report["flatRecords"]["unresolvedRelationships"] == 0
+
+
+def test_flat_records_blocked_when_unresolved_relationships_exist(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    """A dangling vnic_attachment (references an instance not in the collected set)
+    used to be silently discarded on the flat path -- unlike build_snapshot's nested
+    path, which hard-blocks upload on exactly this signal via decide_completeness()."""
+
+    from oci_drata.collection.compute import ComputeCollectionResult
+
+    dangling = oci.core.models.VnicAttachment(
+        id="att-dangling", instance_id="i-does-not-exist", vnic_id="v1", compartment_id="c1",
+    )
+    compute_with_dangling_attachment = ComputeCollectionResult(
+        instances=[], images={}, vnic_attachments=[dangling], vnics={}, private_ips=[],
+        public_ips_by_private_ip_id={},
+        operations=[OperationResult(service="compute", operation="list_instances", region="us-ashburn-1", compartment_id="c1", status="success")],
+    )
+    monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: compute_with_dangling_attachment)
+    upsert_records = MagicMock()
+    monkeypatch.setattr(cli, "upsert_records", upsert_records)
+
+    result = cli.run(_app_config_with_flat_resource(), dry_run=False)
+
+    assert result.report["flatRecords"]["uploadDecision"] == "blocked"
+    assert "unresolved relationships" in result.report["flatRecords"]["blockedReasons"]
     upsert_records.assert_not_called()
 
 

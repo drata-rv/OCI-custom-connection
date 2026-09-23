@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import oci
 import pytest
 
-from oci_drata.collection.compute import collect_compute
+from oci_drata.collection.compute import _lookup_public_ip, collect_compute
 from oci_drata.config import OciServicesConfig
+from oci_drata.pagination import RetryPolicy
 
 
 def _response(data, headers=None):
@@ -125,3 +127,22 @@ def test_collect_compute_vnic_cache_avoids_duplicate_get_vnic_call(
     collect_compute(signer=MagicMock(), discovery=discovery, services=_services(compute=True))
 
     assert vnet_client.get_vnic.call_count == 1
+
+
+def test_lookup_public_ip_deadline_already_passed_skips_the_call_entirely() -> None:
+    """This has its own hand-rolled retry loop (see pagination.py's module docstring),
+    separate from paginate()/call_once() -- it needs its own deadline check, or --test's
+    time budget silently doesn't apply to this one call site."""
+
+    vnet_client = MagicMock()
+    policy = RetryPolicy(deadline=time.monotonic() - 1)
+
+    result, public_ip = _lookup_public_ip(
+        vnet_client, "ocid1.privateip.oc1..p1",
+        region="us-ashburn-1", compartment_id="ocid1.compartment.oc1..c1", retry_policy=policy,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "TestModeDeadlineExceeded"
+    assert public_ip is None
+    vnet_client.get_public_ip_by_private_ip_id.assert_not_called()

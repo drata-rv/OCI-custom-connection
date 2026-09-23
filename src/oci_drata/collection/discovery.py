@@ -90,33 +90,41 @@ def discover(
 
     approved_regions, unready_regions = _resolve_regions(app_config, region_sub_op)
 
-    all_compartments: list[Any] = []
-    seen_compartment_ids: set[str] = set()
-    for root in app_config.oci.compartments.roots:
-        root_id = tenancy_ocid if root == "tenancy" else root
-        op = paginate(
-            service="identity",
-            operation="list_compartments",
-            call=identity.list_compartments,
-            region=region,
-            compartment_id=root_id,
-            compartment_id_in_subtree=True,
-            access_level="ANY",
-            retry_policy=retry_policy,
-        )
-        operations.append(op)
-        # Compartments aren't regional; stamped with discovery region only to satisfy schema's non-null region field.
-        for c in stamp_region(op.items, region):
-            # Overlapping configured roots (e.g. an ancestor and one of its own descendants
-            # both listed) would otherwise walk the same compartment's subtree twice.
-            if c.id not in seen_compartment_ids:
-                seen_compartment_ids.add(c.id)
-                all_compartments.append(c)
+    # compartment_id_in_subtree=True is only valid when compartment_id is the tenancy
+    # root itself (OCI's own documented constraint -- oci.identity.IdentityClient.
+    # list_compartments's docstring: "Can only be set to true when performing
+    # ListCompartments on the tenancy (root compartment)"). A configured root other
+    # than "tenancy" cannot use it directly, so instead of calling it per-root (which
+    # would silently misbehave for any non-tenancy root), list the whole tenancy once
+    # -- always a valid subtree call -- then filter client-side to each configured
+    # root's own subtree via parent pointers (_expand_to_subtrees, the same logic
+    # already used for exclusions below).
+    tenancy_wide_op = paginate(
+        service="identity",
+        operation="list_compartments",
+        call=identity.list_compartments,
+        region=region,
+        compartment_id=tenancy_ocid,
+        compartment_id_in_subtree=True,
+        access_level="ANY",
+        retry_policy=retry_policy,
+    )
+    operations.append(tenancy_wide_op)
+    # Compartments aren't regional; stamped with discovery region only to satisfy schema's non-null region field.
+    tenancy_wide_compartments = list(stamp_region(tenancy_wide_op.items, region))
 
-    # list_compartments never returns the root itself; roots stay in scope separately.
     root_ids = {
         (tenancy_ocid if root == "tenancy" else root) for root in app_config.oci.compartments.roots
     }
+    if "tenancy" in app_config.oci.compartments.roots:
+        all_compartments = tenancy_wide_compartments
+    else:
+        in_scope_ids = set()
+        for root_id in root_ids:
+            in_scope_ids |= _expand_to_subtrees(tenancy_wide_compartments, {root_id})
+        all_compartments = [c for c in tenancy_wide_compartments if c.id in in_scope_ids]
+
+    # list_compartments never returns the root itself; roots stay in scope separately.
 
     excluded_configured = set(app_config.oci.compartments.exclude_ocids)
     excluded = _expand_to_subtrees(all_compartments, excluded_configured)

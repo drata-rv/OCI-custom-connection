@@ -632,6 +632,16 @@ class FlatRecordsResult:
     records: list[dict[str, Any]]
     domain_complete: dict[str, bool]
     discovery_complete: bool
+    # Per-evidenceType count of resources dropped by lifecycle exclusion (deleted/
+    # terminated). build_snapshot's nested path surfaces this via warnings[]; this path
+    # had no equivalent, so a recordCount of 0 was indistinguishable from "every real
+    # instance is terminated" versus "nothing was ever collected" -- see PLAN.md/README
+    # troubleshooting for the incident this was found from.
+    excluded_counts: dict[str, int]
+    # instance<->vnic/storage joins that couldn't resolve (relationships.py). Computed
+    # but previously discarded here -- unlike build_snapshot, which hard-blocks upload
+    # on any unresolved relationship via decide_completeness().
+    unresolved_relationship_count: int
 
 
 def _flatten_instance(
@@ -838,7 +848,7 @@ def build_flat_records(
 
     instances = [normalize.normalize_instance(i) for i in kept_instances_raw]
     instances = relationships.classify_windows(instances, compute.images)
-    instances, _unresolved_storage = relationships.resolve_instance_network_and_storage(
+    instances, unresolved_storage = relationships.resolve_instance_network_and_storage(
         instances,
         vnic_attachments=vnic_attachments,
         boot_volume_attachments=[],
@@ -846,7 +856,7 @@ def build_flat_records(
     )
 
     vnics = [normalize.normalize_vnic(v) for v in compute.vnics.values()]
-    vnics, _unresolved_vnic = relationships.resolve_vnic_addresses(
+    vnics, unresolved_vnic = relationships.resolve_vnic_addresses(
         vnics,
         vnic_attachments=vnic_attachments,
         private_ips=compute.private_ips,
@@ -864,7 +874,7 @@ def build_flat_records(
         public_source_cidrs=decisions.public_source_cidrs,
     )
 
-    kept_adb_raw, _excluded_adb_raw = exclude_lifecycle_cascade(
+    kept_adb_raw, excluded_adb_raw = exclude_lifecycle_cascade(
         autonomous_database.autonomous_databases, parent_excluded_ids=set(), parent_id_field=None
     )
     autonomous_databases = [
@@ -881,10 +891,10 @@ def build_flat_records(
     # rather than silently keeping deleted users/policies (absence of a matching
     # state would otherwise fall through split_by_lifecycle's "keep if unknown" rule).
     _IDENTITY_DELETED_STATES = frozenset({"DELETED", "DELETING"})
-    kept_users, _excluded_users = split_by_lifecycle(
+    kept_users, excluded_users = split_by_lifecycle(
         identity.users, exclude_states=_IDENTITY_DELETED_STATES
     )
-    kept_policies, _excluded_policies = split_by_lifecycle(
+    kept_policies, excluded_policies = split_by_lifecycle(
         identity.policies, exclude_states=_IDENTITY_DELETED_STATES
     )
     kept_api_keys = [
@@ -899,21 +909,21 @@ def build_flat_records(
     # enum (no LIFECYCLE_STATE_* constants are exposed on AlarmSummary to check
     # against), but consistent with every other non-legacy OCI resource this
     # project has seen so far.
-    kept_alarms, _excluded_alarms = split_by_lifecycle(
+    kept_alarms, excluded_alarms = split_by_lifecycle(
         monitoring.alarms, exclude_states=_IDENTITY_DELETED_STATES
     )
 
     # LoadBalancer's real lifecycle enum is DELETED/DELETING/ACTIVE/CREATING/FAILED
     # (confirmed via oci.load_balancer.models.LoadBalancer's own LIFECYCLE_STATE_*
     # constants) -- same DELETED/DELETING exclusion convention as identity/alarms.
-    kept_load_balancers, _excluded_load_balancers = split_by_lifecycle(
+    kept_load_balancers, excluded_load_balancers = split_by_lifecycle(
         load_balancer.load_balancers, exclude_states=_IDENTITY_DELETED_STATES
     )
 
     # Same DELETED/DELETING convention as above; not directly confirmed against
     # WebAppFirewallLoadBalancerSummary's own lifecycle enum (no LIFECYCLE_STATE_*
     # constants exposed to check against), same caveat as monitoring alarms.
-    kept_wafs, _excluded_wafs = split_by_lifecycle(
+    kept_wafs, excluded_wafs = split_by_lifecycle(
         waf.web_app_firewalls, exclude_states=_IDENTITY_DELETED_STATES
     )
 
@@ -921,7 +931,7 @@ def build_flat_records(
     # LIFECYCLE_STATE_* constants) includes DELETED/DELETING alongside ENABLED/
     # DISABLED/etc -- DISABLED keys are still real, reportable evidence, only
     # DELETED/DELETING are excluded here.
-    kept_keys, _excluded_keys = split_by_lifecycle(
+    kept_keys, excluded_keys = split_by_lifecycle(
         kms_vault.keys, exclude_states=_IDENTITY_DELETED_STATES
     )
 
@@ -979,4 +989,15 @@ def build_flat_records(
             "kmsVault": kms_vault.complete,
         },
         discovery_complete=discovery.complete,
+        excluded_counts={
+            "instance": len(excluded_instances_raw),
+            "autonomousDatabase": len(excluded_adb_raw),
+            "iamUser": len(excluded_users),
+            "iamPolicy": len(excluded_policies),
+            "monitoringAlarm": len(excluded_alarms),
+            "loadBalancer": len(excluded_load_balancers),
+            "waf": len(excluded_wafs),
+            "kmsKey": len(excluded_keys),
+        },
+        unresolved_relationship_count=len(unresolved_storage) + len(unresolved_vnic),
     )

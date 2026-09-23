@@ -452,6 +452,50 @@ def test_deleted_users_and_their_api_keys_are_excluded() -> None:
 
     ids = {r["id"] for r in result.records}
     assert ids == {"u1", "key1"}
+    assert result.excluded_counts["iamUser"] == 1  # deleted_user, not its orphaned key
+
+
+def test_excluded_counts_all_zero_when_nothing_is_excluded() -> None:
+    """recordCount:0 with every excluded_counts entry at 0 rules out lifecycle
+    exclusion as the explanation -- the incident this whole field was added to
+    diagnose (see cli.py's domainSkipped/excludedByLifecycle report fields)."""
+
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(),
+        object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
+        load_balancer=_load_balancer(), waf=_waf(), kms_vault=_kms_vault(),
+        completed_at=COMPLETED_AT,
+    )
+    assert result.excluded_counts == {
+        "instance": 0, "autonomousDatabase": 0, "iamUser": 0, "iamPolicy": 0,
+        "monitoringAlarm": 0, "loadBalancer": 0, "waf": 0, "kmsKey": 0,
+    }
+    assert result.unresolved_relationship_count == 0
+
+
+def test_unresolved_relationship_count_is_reported_not_discarded() -> None:
+    """A vnic_attachment referencing an instance that isn't in the collected instance
+    list (deleted mid-collection, or a genuine data inconsistency) used to be computed
+    by resolve_instance_network_and_storage and then thrown away here -- unlike
+    build_snapshot's nested path, which hard-blocks upload on exactly this signal via
+    decide_completeness()."""
+
+    instance = _stamp(
+        oci.core.models.Instance(id="i1", compartment_id="c1", lifecycle_state="RUNNING")
+    )
+    dangling_attachment = oci.core.models.VnicAttachment(
+        id="att-dangling", instance_id="i-does-not-exist", vnic_id="v1", compartment_id="c1",
+    )
+
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([instance], vnic_attachments=[dangling_attachment]),
+        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(),
+        object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
+        load_balancer=_load_balancer(), waf=_waf(), kms_vault=_kms_vault(),
+        completed_at=COMPLETED_AT,
+    )
+    assert result.unresolved_relationship_count == 1
 
 
 def test_api_key_reports_raw_creation_timestamp_for_rotation_age_checks() -> None:

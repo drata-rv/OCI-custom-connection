@@ -15,6 +15,7 @@ from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
 from oci_drata.pagination import (
+    TEST_MODE_DEADLINE_ERROR_CODE,
     OperationResult,
     RetryPolicy,
     call_once,
@@ -238,6 +239,14 @@ def _lookup_public_ip(
 
     attempt = 0
     while True:
+        if policy.deadline_exceeded():
+            # This has its own hand-rolled retry loop (not paginate()/call_once()),
+            # so --test's deadline needs its own check here too -- otherwise this one
+            # call site would keep going past the time budget every other operation
+            # already respects.
+            result.status = "failed"
+            result.error_code = TEST_MODE_DEADLINE_ERROR_CODE
+            return result, None
         try:
             response = vnet_client.get_public_ip_by_private_ip_id(
                 get_public_ip_by_private_ip_id_details=details

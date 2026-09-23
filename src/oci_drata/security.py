@@ -4,9 +4,14 @@
   build time and fails on any call not in :data:`ALLOWED_OCI_OPERATIONS` or matching
   :data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS`.
 - :class:`GuardedOciClient` (returned by ``oci_auth.regional_client``) checks every
-  ``list_*``/``get_*`` attribute access against the same allow/deny lists at the moment
-  of the call, not just at CI time -- catches a dynamically resolved or aliased method
-  name the static AST scan can't see (``getattr(client, name)()``, a rebound method).
+  *callable* attribute access against the same allow/deny lists at the moment of the
+  call, not just at CI time -- catches a dynamically resolved or aliased method name
+  the static AST scan can't see (``getattr(client, name)()``, a rebound method). Every
+  real OCI SDK client method is either ``list_*``/``get_*`` (read) or some mutation
+  verb (``create_*``, ``upload_part``, ``batch_delete_objects``, ...) -- there is no
+  third, unnamed category of benign operation to carve out a passthrough for, so any
+  callable not in :data:`ALLOWED_OCI_OPERATIONS` is refused, not just ones shaped like
+  ``list_*``/``get_*``.
 """
 
 from __future__ import annotations
@@ -173,11 +178,12 @@ class OciOperationNotAllowedError(Exception):
 
 
 class GuardedOciClient:
-    """Wraps a raw OCI SDK client object; every ``list_*``/``get_*`` attribute access is
-    checked against the allow/deny lists above at the moment of access, fail-closed on
-    anything not explicitly allowed. Any other attribute (non-operation methods,
-    internal client state) passes through untouched -- this only narrows the operation
-    surface, it never changes behavior for an allowed call.
+    """Wraps a raw OCI SDK client object; every *callable* attribute access is checked
+    against the allow/deny lists above at the moment of access, fail-closed on anything
+    not explicitly allowed -- not just names shaped like ``list_*``/``get_*``. A
+    non-callable attribute (internal client state, e.g. ``base_client``) passes through
+    untouched; this only narrows the operation surface, it never changes behavior for
+    an allowed call.
 
     Defense in depth alongside test_operation_allowlist.py's static AST scan: this
     catches a name the scan can't see because it's resolved dynamically
@@ -195,13 +201,16 @@ class GuardedOciClient:
             return attr
         # Checked regardless of name shape -- a mutation-shaped call (create_*,
         # terminate_*, ...) resolved dynamically (getattr(client, name)()) must be
-        # blocked here too, not only when it matches the list_/get_ check below.
+        # blocked here too, not only when it matches the allowlist check below.
         if is_forbidden_operation(name):
             raise OciOperationNotAllowedError(
                 f"OCI operation {name!r} is forbidden (mutation/lifecycle/credential-"
                 f"retrieval-shaped) -- refusing to call it"
             )
-        if (name.startswith("list_") or name.startswith("get_")) and not is_allowed_operation(name):
+        # Every callable, not just list_*/get_*-shaped ones -- there is no third
+        # category of OCI SDK client method that's neither read-shaped nor
+        # mutation-shaped, so anything not explicitly allowlisted is refused.
+        if not is_allowed_operation(name):
             raise OciOperationNotAllowedError(
                 f"OCI operation {name!r} is not in the read-only allowlist "
                 f"(security.ALLOWED_OCI_OPERATIONS) -- refusing to call it"

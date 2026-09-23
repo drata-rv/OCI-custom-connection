@@ -29,6 +29,9 @@ class _FakeOciClient:
     def get_windows_instance_initial_credentials(self, **kwargs):
         return "should never run"
 
+    def head_bucket(self, **kwargs):
+        return "should never run"
+
     base_client = "not an operation, passes through untouched"
 
 
@@ -61,6 +64,19 @@ def test_mutation_operation_is_blocked_even_though_not_list_or_get_shaped(
         guarded.create_instance()
     with pytest.raises(OciOperationNotAllowedError, match="terminate_db_system"):
         guarded.terminate_db_system()
+
+
+def test_callable_shaped_neither_list_get_nor_forbidden_prefix_is_still_blocked(
+    guarded: GuardedOciClient,
+) -> None:
+    """The gap this guard used to have: a real OCI SDK method (e.g. ObjectStorageClient's
+    head_bucket) that is neither list_*/get_*-shaped nor matches a FORBIDDEN_OPERATION_
+    PREFIXES entry used to pass through unchecked -- every real client method is either
+    read-shaped (list_/get_) or mutation-shaped, so there's no third category to exempt;
+    anything not in ALLOWED_OCI_OPERATIONS must be refused regardless of its name shape."""
+
+    with pytest.raises(OciOperationNotAllowedError, match="head_bucket"):
+        guarded.head_bucket()
 
 
 def test_forbidden_exact_name_operation_is_blocked(guarded: GuardedOciClient) -> None:

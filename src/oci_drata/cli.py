@@ -42,7 +42,7 @@ from oci_drata.config import AppConfig, ConfigError, load_config, redact_config_
 from oci_drata.delivery.drata import upsert_record, upsert_records
 from oci_drata.logging import configure_logging
 from oci_drata.oci_auth import AuthError, TenancySigner, build_signer
-from oci_drata.pagination import RetryPolicy
+from oci_drata.pagination import OperationResult, RetryPolicy
 from oci_drata.transform.aggregate import build_flat_records, build_snapshot
 from oci_drata.validation.completeness import decide_completeness
 from oci_drata.validation.schema import load_flat_schema, load_schema, validate_record
@@ -65,24 +65,34 @@ TEST_MODE_TIME_BUDGET_SECONDS = 30
 _AUTH_GAP_ERROR_CODES = frozenset({"NotAuthorizedOrNotFound", "NotAuthenticated"})
 
 
-def _access_summary(operations: list[dict[str, Any]]) -> dict[str, Any]:
-    """Every operation already carries compartmentId/errorCode/status/itemCount (see
-    OperationRecord.to_dict(), models.py). Groups what's already collected by
-    compartment: which ones this API user's policy doesn't cover, and which ones
-    actually had real data -- the two things that matter after a run this noisy,
-    instead of scrolling thousands of per-operation log lines to find them."""
+def _domain_all_skipped(operations: list[OperationResult]) -> bool:
+    """True only when every operation this domain recorded is the synthetic
+    status="skipped" marker a disabled collector emits (see e.g. identity.py's
+    _skip_result()) -- i.e. this service was turned off by config, not attempted and
+    found empty. An empty operations list (no compartments were ever in scope) is
+    not the same claim, so it's not treated as skipped here."""
+
+    return bool(operations) and all(op.status == "skipped" for op in operations)
+
+
+def _access_summary(operations: list[OperationResult]) -> dict[str, Any]:
+    """``operations`` is every OperationResult (pagination.py) from every collector
+    this run actually invoked -- not just the ones a particular delivery path
+    consumes. Groups them by compartment: which ones this API user's policy doesn't
+    cover, and which ones actually had real data -- the two things that matter after
+    a run this noisy, instead of scrolling thousands of per-operation log lines."""
 
     auth_gap: set[str] = set()
     has_data: set[str] = set()
     all_seen: set[str] = set()
     for op in operations:
-        compartment_id = op.get("compartmentId")
+        compartment_id = op.compartment_id
         if compartment_id is None:
             continue
         all_seen.add(compartment_id)
-        if op.get("errorCode") in _AUTH_GAP_ERROR_CODES:
+        if op.error_code in _AUTH_GAP_ERROR_CODES:
             auth_gap.add(compartment_id)
-        if op.get("status") == "success" and op.get("itemCount", 0) > 0:
+        if op.status == "success" and op.item_count > 0:
             has_data.add(compartment_id)
     return {
         "compartmentsSeen": len(all_seen),
@@ -288,7 +298,22 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     )
     aggregate.record["snapshotStatus"] = decision.snapshot_status
 
-    all_operations = aggregate.record["manifest"]["operations"]
+    # aggregate.record["manifest"]["operations"] only covers the 7 collectors
+    # build_snapshot() consumes -- correct for the nested record's own manifest, but
+    # this report describes the whole run: every one of the 13 collectors
+    # _run_independent_collectors() actually invokes every time, whether or not
+    # build_snapshot() uses its output. Missing 7/13 here would make accessSummary
+    # (and every operationsFailed/totalItems counter below) silently blind to
+    # whichever opt-in services are enabled.
+    all_operations: list[OperationResult] = [
+        *discovery.operations,
+        *compute_result.operations, *storage_result.operations, *networking_result.operations,
+        *database_base_result.operations, *autonomous_result.operations, *vpn_result.operations,
+        *exadata_result.operations,
+        *identity_result.operations, *object_storage_result.operations,
+        *cloud_guard_result.operations, *monitoring_result.operations,
+        *load_balancer_result.operations, *waf_result.operations, *kms_vault_result.operations,
+    ]
     access_summary = _access_summary(all_operations)
     if access_summary["compartmentsWithAuthGap"]:
         logger.warning(
@@ -307,11 +332,11 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         "startedAt": aggregate.record["manifest"]["startedAt"],
         "completedAt": aggregate.record["manifest"]["completedAt"],
         "operationsAttempted": len(all_operations),
-        "operationsSucceeded": sum(1 for o in all_operations if o["status"] == "success"),
-        "operationsFailed": sum(1 for o in all_operations if o["status"] == "failed"),
-        "operationsSkipped": sum(1 for o in all_operations if o["status"] == "skipped"),
-        "totalPages": sum(o["pageCount"] for o in all_operations),
-        "totalItems": sum(o["itemCount"] for o in all_operations),
+        "operationsSucceeded": sum(1 for o in all_operations if o.status == "success"),
+        "operationsFailed": sum(1 for o in all_operations if o.status == "failed"),
+        "operationsSkipped": sum(1 for o in all_operations if o.status == "skipped"),
+        "totalPages": sum(o.page_count for o in all_operations),
+        "totalItems": sum(o.item_count for o in all_operations),
         "unresolvedRelationships": aggregate.unresolved_relationship_count,
         "exadataDetected": aggregate.exadata_detected,
         "schemaValid": schema_result.valid,
@@ -436,16 +461,51 @@ def _run_flat_records(
     )
     flat_schema = load_flat_schema()
     flat_schema_valid = all(validate_record(r, flat_schema).valid for r in flat_result.records)
-    flat_complete = flat_result.discovery_complete and all(flat_result.domain_complete.values())
+    flat_complete = (
+        flat_result.discovery_complete
+        and all(flat_result.domain_complete.values())
+        and flat_result.unresolved_relationship_count == 0
+    )
+
+    # A domain reporting domainComplete=true tells you nothing failed -- it looks
+    # identical whether the service is disabled by config (services.identity: false)
+    # or ran and genuinely found zero resources. domainSkipped answers the first
+    # question directly, so recordCount:0 doesn't read as a mystery: check this before
+    # suspecting a collector bug (see the incident this was added from, README §7).
+    domain_skipped = {
+        "compute": _domain_all_skipped(compute.operations),
+        "networking": _domain_all_skipped(networking.operations),
+        "autonomousDatabase": _domain_all_skipped(autonomous_database.operations),
+        "identity": _domain_all_skipped(identity.operations),
+        "objectStorage": _domain_all_skipped(object_storage.operations),
+        "cloudGuard": _domain_all_skipped(cloud_guard.operations),
+        "monitoring": _domain_all_skipped(monitoring.operations),
+        "loadBalancer": _domain_all_skipped(load_balancer.operations),
+        "waf": _domain_all_skipped(waf.operations),
+        "kmsVault": _domain_all_skipped(kms_vault.operations),
+    }
 
     flat_report: dict[str, Any] = {
         "recordCount": len(flat_result.records),
         "schemaValid": flat_schema_valid,
         "domainComplete": flat_result.domain_complete,
+        "domainSkipped": domain_skipped,
         "discoveryComplete": flat_result.discovery_complete,
+        "excludedByLifecycle": flat_result.excluded_counts,
+        "unresolvedRelationships": flat_result.unresolved_relationship_count,
     }
     if not flat_schema_valid:
         logger.error("flat-record schema validation failed")
+    if flat_result.records == [] and not all(domain_skipped.values()):
+        logger.warning(
+            "flat-record path collected zero records from at least one enabled "
+            "domain -- check domainSkipped/excludedByLifecycle in the report before "
+            "assuming a collector bug: this can legitimately mean every resource in "
+            "scope is terminated/deleted, or the configured compartment scope "
+            "genuinely has nothing of these types (see accessSummary for where this "
+            "API user's policy actually has access).",
+            extra={"domainSkipped": domain_skipped, "excludedByLifecycle": flat_result.excluded_counts},
+        )
 
     if dry_run:
         flat_report["uploadDecision"] = "skipped_dry_run"
@@ -453,8 +513,10 @@ def _run_flat_records(
         reasons = []
         if not flat_schema_valid:
             reasons.append("schema validation failed")
-        if not flat_complete:
+        if not (flat_result.discovery_complete and all(flat_result.domain_complete.values())):
             reasons.append("compute/networking collection incomplete")
+        if flat_result.unresolved_relationship_count:
+            reasons.append("unresolved relationships")
         flat_report["uploadDecision"] = "blocked"
         flat_report["blockedReasons"] = reasons
         logger.warning("flat-record upload blocked", extra={"reasons": reasons})
