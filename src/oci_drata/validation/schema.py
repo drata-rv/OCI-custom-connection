@@ -23,6 +23,7 @@ import jsonschema
 
 SCHEMA_RESOURCE_PACKAGE = "oci_drata.schemas"
 SCHEMA_RESOURCE_NAME = "oci-snapshot-1.0.0.json"
+FLAT_SCHEMA_RESOURCE_NAME = "flat-record.schema.json"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,6 +47,19 @@ def load_schema(path: Path | str | None = None) -> dict[str, Any]:
             schema = json.load(fh)
     else:
         resource = importlib.resources.files(SCHEMA_RESOURCE_PACKAGE).joinpath(SCHEMA_RESOURCE_NAME)
+        schema = json.loads(resource.read_text(encoding="utf-8"))
+    jsonschema.Draft7Validator.check_schema(schema)
+    return schema
+
+
+def load_flat_schema(path: Path | str | None = None) -> dict[str, Any]:
+    if path is not None:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            schema = json.load(fh)
+    else:
+        resource = importlib.resources.files(SCHEMA_RESOURCE_PACKAGE).joinpath(
+            FLAT_SCHEMA_RESOURCE_NAME
+        )
         schema = json.loads(resource.read_text(encoding="utf-8"))
     jsonschema.Draft7Validator.check_schema(schema)
     return schema

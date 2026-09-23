@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from oci_drata.config import DrataConfig, SecretRef
-from oci_drata.delivery.drata import upsert_record
+from oci_drata.delivery.drata import upsert_record, upsert_records
 
 
 @pytest.fixture
@@ -265,3 +265,60 @@ def test_timeout_seconds_is_passed_through_to_post(drata_config: DrataConfig) ->
     session.post.return_value = _response(201)
     upsert_record(drata_config, {"id": "x"}, session=session, timeout_seconds=45.0)
     assert session.post.call_args.kwargs["timeout"] == 45.0
+
+
+def test_upsert_records_empty_list_makes_no_request(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    result = upsert_records(drata_config, [], session=session)
+    assert result == []
+    session.post.assert_not_called()
+
+
+def test_upsert_records_single_batch_posts_array_body(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    records = [{"id": "a"}, {"id": "b"}]
+    result = upsert_records(drata_config, records, session=session)
+    assert len(result) == 1
+    assert result[0].uploaded is True
+    assert session.post.call_args.kwargs["json"] == {"data": records}
+
+
+def test_upsert_records_splits_into_batches_of_500(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    records = [{"id": str(i)} for i in range(1200)]
+    result = upsert_records(drata_config, records, session=session)
+    assert len(result) == 3
+    assert session.post.call_count == 3
+    sizes = [len(call.kwargs["json"]["data"]) for call in session.post.call_args_list]
+    assert sizes == [500, 500, 200]
+    assert all(r.uploaded for r in result)
+
+
+def test_upsert_records_one_failed_batch_does_not_block_others(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.side_effect = [_response(422, "bad batch"), _response(201)]
+    records = [{"id": str(i)} for i in range(600)]
+    result = upsert_records(drata_config, records, session=session)
+    assert len(result) == 2
+    assert result[0].uploaded is False
+    assert result[0].error_class == "validation"
+    assert result[1].uploaded is True
+
+
+def test_upsert_records_caller_provided_session_is_never_closed(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    upsert_records(drata_config, [{"id": "a"}], session=session)
+    session.close.assert_not_called()
+
+
+def test_upsert_records_internally_created_session_is_closed(
+    drata_config: DrataConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created_session = MagicMock()
+    created_session.post.return_value = _response(201)
+    monkeypatch.setattr("oci_drata.delivery.drata.requests.Session", lambda: created_session)
+    upsert_records(drata_config, [{"id": "a"}])
+    created_session.close.assert_called_once()

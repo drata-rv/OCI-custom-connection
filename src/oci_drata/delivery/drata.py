@@ -1,10 +1,13 @@
 """Drata Custom Connection upsert client.
 
-POSTs ``{"data": record}`` to
-``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
-200/201 both mean success (upsert by the record's own ``id`` field inside
-``data``). Failures never raise -- returned as ``DeliveryResult`` with
-``error_class``: auth/validation are non-retryable, 429/5xx get bounded retry.
+POSTs to ``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
+200/201 both mean success (upsert by each record's own ``id`` field). Failures never
+raise -- returned as ``DeliveryResult`` with ``error_class``: auth/validation are
+non-retryable, 429/5xx get bounded retry.
+
+``upsert_record`` POSTs a single ``{"data": record}`` (the original nested-schema
+path). ``upsert_records`` POSTs ``{"data": [...]}`` in batches of 500 (the flat-record
+architecture -- see PLAN.md), sharing the same retry/classification logic.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _AUTH_STATUS = frozenset({401, 403})
 _VALIDATION_STATUS = frozenset({400, 404, 409, 422})
 _REQUEST_ID_HEADERS = ("X-Request-Id", "X-Request-ID", "Request-Id", "X-Correlation-Id")
+_BATCH_SIZE = 500
 
 
 @dataclasses.dataclass(frozen=True)
@@ -101,6 +105,48 @@ def upsert_record(
             max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
             max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
         )
+    finally:
+        if owns_session:
+            http.close()
+
+
+def upsert_records(
+    drata_config: DrataConfig,
+    records: list[dict[str, Any]],
+    *,
+    max_attempts: int = 5,
+    base_delay_seconds: float = 1.0,
+    max_delay_seconds: float = 30.0,
+    timeout_seconds: float = 30.0,
+    session: requests.Session | None = None,
+) -> list[DeliveryResult]:
+    """Upsert ``records`` in batches of ``_BATCH_SIZE``, POSTing ``{"data": [...]}`` per
+    batch (the flat-record architecture -- see PLAN.md). Returns one DeliveryResult per
+    batch, in order; a failed batch doesn't stop the rest, so a caller can see exactly
+    which batches landed. Same upsert-by-id, additive semantics as ``upsert_record``."""
+
+    if not records:
+        return []
+
+    token = drata_config.api_token_secret_ref.resolve()
+    url = (
+        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
+        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
+    )
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    batches = [records[i : i + _BATCH_SIZE] for i in range(0, len(records), _BATCH_SIZE)]
+    owns_session = session is None
+    http = session if session is not None else requests.Session()
+
+    try:
+        return [
+            _upsert_with_retry(
+                http, url, {"data": batch}, headers,
+                max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
+                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
+            )
+            for batch in batches
+        ]
     finally:
         if owns_session:
             http.close()

@@ -21,7 +21,7 @@ from oci_drata.collection.exadata_detection import ExadataDetectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.storage import StorageCollectionResult
 from oci_drata.collection.vpn import VpnCollectionResult
-from oci_drata.config import AppConfig
+from oci_drata.config import AppConfig, DecisionsConfig
 from oci_drata.models import (
     METRIC_KEYS,
     RESOURCE_COLLECTION_KEYS,
@@ -596,5 +596,106 @@ def build_snapshot(
         unresolved_relationship_count=len(all_unresolved),
         exadata_detected=exadata.detected,
         domain_complete=domain_complete,
+        discovery_complete=discovery.complete,
+    )
+
+
+# -- Flat-record architecture (see PLAN.md) --------------------------------
+#
+# One small record per collected resource, POSTed as {"data": [...]} to a single
+# flat schema/resourceId -- replaces the nested resources.*/findings[] design
+# above. Covers instances only for now (rewrite sequencing step 1); more
+# evidenceTypes are added by extending this section, not by restructuring it.
+
+_INSTANCE_STATUS_BY_EXPOSURE = {
+    "exposed": "NONCOMPLIANT",
+    "not_exposed": "COMPLIANT",
+    "unknown": "UNKNOWN",
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class FlatRecordsResult:
+    records: list[dict[str, Any]]
+    domain_complete: dict[str, bool]
+    discovery_complete: bool
+
+
+def _flatten_instance(instance: CommonResource, *, timestamp: str) -> dict[str, Any]:
+    return {
+        "id": instance.id,
+        "evidenceType": "instance",
+        "name": instance.display_name,
+        "status": _INSTANCE_STATUS_BY_EXPOSURE[instance.effective_ingress_exposure],
+        "timestamp": timestamp,
+        "region": instance.region,
+        "compartmentId": instance.compartment_id,
+        "osClassification": instance.os_classification,
+        "hasPublicAddress": instance.has_public_address,
+        "exposedAdministrativePorts": list(instance.exposed_administrative_ports),
+    }
+
+
+def build_flat_records(
+    *,
+    decisions: DecisionsConfig,
+    discovery: DiscoveryResult,
+    compute: ComputeCollectionResult,
+    networking: NetworkingCollectionResult,
+    completed_at: datetime.datetime,
+) -> FlatRecordsResult:
+    """Flat-record counterpart to build_snapshot, instances only. Same normalize ->
+    relationships -> exposure derivation build_snapshot uses for resources.instances;
+    the compliance verdict isn't a new rule, it's findings.compute_exposure_findings'
+    own pass/fail/unknown, landed on the resource's own record instead of a separate
+    findings[] array. Takes DecisionsConfig rather than the full AppConfig -- this
+    path has no use for record_id/deployment name (each record carries its own id)."""
+
+    kept_instances_raw, excluded_instances_raw = split_by_lifecycle(compute.instances)
+    excluded_instance_ids = {i.id for i in excluded_instances_raw}
+    vnic_attachments = exclude_referencing(
+        compute.vnic_attachments, excluded_ids=excluded_instance_ids, id_field="instance_id"
+    )
+
+    instances = [normalize.normalize_instance(i) for i in kept_instances_raw]
+    instances = relationships.classify_windows(instances, compute.images)
+    instances, _unresolved_storage = relationships.resolve_instance_network_and_storage(
+        instances,
+        vnic_attachments=vnic_attachments,
+        boot_volume_attachments=(),
+        volume_attachments=(),
+    )
+
+    vnics = [normalize.normalize_vnic(v) for v in compute.vnics.values()]
+    vnics, _unresolved_vnic = relationships.resolve_vnic_addresses(
+        vnics,
+        vnic_attachments=vnic_attachments,
+        private_ips=compute.private_ips,
+        public_ips_by_private_ip_id=compute.public_ips_by_private_ip_id,
+    )
+
+    exposure_config = ExposureConfig(
+        administrative_ports=decisions.administrative_ports,
+        public_source_cidrs=decisions.public_source_cidrs,
+    )
+    instances = derive_instance_exposure(
+        instances,
+        vnics_by_id={v.id: v for v in vnics},
+        subnets_by_id={s.id: s for s in networking.subnets},
+        route_tables_by_id={r.id: r for r in networking.route_tables},
+        security_lists_by_id={s.id: s for s in networking.security_lists},
+        nsg_security_rules_by_nsg_id=networking.nsg_security_rules_by_nsg_id,
+        internet_gateway_ids={g.id for g in networking.internet_gateways},
+        config=exposure_config,
+    )
+
+    timestamp = normalize.normalize_timestamp(completed_at)
+    records = [
+        _flatten_instance(i, timestamp=timestamp) for i in sorted(instances, key=lambda i: i.id)
+    ]
+
+    return FlatRecordsResult(
+        records=records,
+        domain_complete={"compute": compute.complete, "networking": networking.complete},
         discovery_complete=discovery.complete,
     )
