@@ -18,6 +18,7 @@ from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectio
 from oci_drata.collection.database_base import DatabaseBaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.exadata_detection import ExadataDetectionResult
+from oci_drata.collection.identity import IdentityCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.storage import StorageCollectionResult
 from oci_drata.collection.vpn import VpnCollectionResult
@@ -658,6 +659,39 @@ def _flatten_autonomous_database(resource: DatabaseResource, *, timestamp: str |
     }
 
 
+def _flatten_iam_user(user: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "evidenceType": "iam_user",
+        "name": user.name,
+        "timestamp": timestamp,
+        "compartmentId": user.compartment_id,
+        "mfaActivated": user.is_mfa_activated,
+    }
+
+
+def _flatten_api_key(api_key: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": api_key.key_id,
+        "evidenceType": "api_key",
+        "name": api_key.fingerprint,
+        "timestamp": timestamp,
+        "userId": api_key.user_id,
+        "keyCreatedAt": normalize.normalize_timestamp(api_key.time_created),
+    }
+
+
+def _flatten_iam_policy(policy: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": policy.id,
+        "evidenceType": "iam_policy",
+        "name": policy.name,
+        "timestamp": timestamp,
+        "compartmentId": policy.compartment_id,
+        "statements": list(policy.statements or ()),
+    }
+
+
 def build_flat_records(
     *,
     decisions: DecisionsConfig,
@@ -665,20 +699,22 @@ def build_flat_records(
     compute: ComputeCollectionResult,
     networking: NetworkingCollectionResult,
     autonomous_database: AutonomousDatabaseCollectionResult,
+    identity: IdentityCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
-    """Flat-record counterpart to build_snapshot: instances (raw ingress facts) and
-    autonomous databases (raw kmsKeyId/publicEndpointHostname) so far. Same normalize
-    join build_snapshot uses for resources.instances/autonomousDatabases, but stops
-    short of build_snapshot's exposure derivation for instances: that applies
-    decisions.administrativePorts as a policy filter, which doesn't belong in the
-    collector for this path (see module docstring above). Autonomous databases need
-    no equivalent filtering step -- normalize_autonomous_database_posture already
-    returns raw presence facts, not a verdict, so it's reused as-is. Takes
-    DecisionsConfig rather than the full AppConfig -- this path has no use for
-    record_id/deployment name (each record carries its own id), and only
-    decisions.publicSourceCidrs (what counts as an internet-facing source, not which
-    ports matter) is relevant here."""
+    """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
+    autonomous databases (raw kmsKeyId/publicEndpointHostname), and identity
+    (iam_user/api_key/iam_policy, raw MFA/key-age/policy-statement facts) so far.
+    Same normalize join build_snapshot uses for resources.instances/
+    autonomousDatabases, but stops short of build_snapshot's exposure derivation
+    for instances: that applies decisions.administrativePorts as a policy filter,
+    which doesn't belong in the collector for this path (see module docstring
+    above). Autonomous databases and identity need no equivalent filtering step --
+    their raw fields are already presence/fact-shaped, not a verdict, so they're
+    reused as-is. Takes DecisionsConfig rather than the full AppConfig -- this
+    path has no use for record_id/deployment name (each record carries its own
+    id), and only decisions.publicSourceCidrs (what counts as an internet-facing
+    source, not which ports matter) is relevant here."""
 
     kept_instances_raw, excluded_instances_raw = split_by_lifecycle(compute.instances)
     excluded_instance_ids = {i.id for i in excluded_instances_raw}
@@ -726,6 +762,24 @@ def build_flat_records(
         for a in kept_adb_raw
     ]
 
+    # Identity resources use OCI's DELETED/DELETING vocabulary, not the
+    # TERMINATED/TERMINATING split_by_lifecycle defaults to -- override explicitly
+    # rather than silently keeping deleted users/policies (absence of a matching
+    # state would otherwise fall through split_by_lifecycle's "keep if unknown" rule).
+    _IDENTITY_DELETED_STATES = frozenset({"DELETED", "DELETING"})
+    kept_users, _excluded_users = split_by_lifecycle(
+        identity.users, exclude_states=_IDENTITY_DELETED_STATES
+    )
+    kept_policies, _excluded_policies = split_by_lifecycle(
+        identity.policies, exclude_states=_IDENTITY_DELETED_STATES
+    )
+    kept_api_keys = [
+        key
+        for user in kept_users
+        for key in identity.api_keys_by_user_id.get(user.id, [])
+        if getattr(key, "lifecycle_state", None) not in _IDENTITY_DELETED_STATES
+    ]
+
     timestamp = normalize.normalize_timestamp(completed_at)
     records = sorted(
         [
@@ -735,7 +789,10 @@ def build_flat_records(
         + [
             _flatten_autonomous_database(a, timestamp=timestamp)
             for a in autonomous_databases
-        ],
+        ]
+        + [_flatten_iam_user(u, timestamp=timestamp) for u in kept_users]
+        + [_flatten_api_key(k, timestamp=timestamp) for k in kept_api_keys]
+        + [_flatten_iam_policy(p, timestamp=timestamp) for p in kept_policies],
         key=lambda r: r["id"],
     )
 
@@ -745,6 +802,7 @@ def build_flat_records(
             "compute": compute.complete,
             "networking": networking.complete,
             "autonomousDatabase": autonomous_database.complete,
+            "identity": identity.complete,
         },
         discovery_complete=discovery.complete,
     )

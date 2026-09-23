@@ -161,6 +161,34 @@ Notes:
   wrapped, and blocks any such operation the moment it's called, even if
   resolved dynamically or through an alias the static scan wouldn't see).
 
+### 4.1 Optional: Identity (`oci.services.identity`)
+
+**Off by default** (`identity: false` unless set otherwise in
+`config.yaml`) — a materially broader trust footprint than everything
+above. It reads every user's MFA-enabled status, every API signing key's
+fingerprint and creation date (never the key material itself), and every
+IAM policy's raw statement text tenancy-wide. Decide deliberately before
+enabling it; it is not required for the compute/storage/networking/
+database evidence this connector otherwise collects.
+
+```text
+Allow group oci-drata-collector to inspect users in tenancy
+Allow group oci-drata-collector to read users in tenancy
+Allow group oci-drata-collector to inspect policies in tenancy
+Allow group oci-drata-collector to read policies in tenancy
+```
+
+* `list_api_keys` returns each key's `fingerprint`/`time_created`/
+  `lifecycle_state` — never `key_value` (the key's own public-key PEM
+  content) is read by anything this collector does with it; nothing about
+  a private key ever leaves the customer's tenancy regardless, since OCI
+  API signing keys are asymmetric and only the public key is ever
+  registered with OCI in the first place.
+* No credential, session token, or password is ever read — enforced the
+  same way as the rest of this policy, statically and at runtime (see
+  above). `get_windows_instance_initial_credentials` and similar remain
+  denylisted regardless of what's granted here.
+
 ## 5. Execution
 
 ```bash

@@ -27,6 +27,7 @@ from oci_drata.collection.database_autonomous import (
 from oci_drata.collection.database_base import DatabaseBaseCollectionResult, collect_database_base
 from oci_drata.collection.discovery import DiscoveryResult, discover
 from oci_drata.collection.exadata_detection import detect_exadata
+from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
 from oci_drata.collection.networking import NetworkingCollectionResult, collect_networking
 from oci_drata.collection.storage import StorageCollectionResult, collect_storage
 from oci_drata.collection.vpn import VpnCollectionResult, collect_vpn
@@ -109,6 +110,7 @@ def _run_independent_collectors(
     DatabaseBaseCollectionResult,
     AutonomousDatabaseCollectionResult,
     VpnCollectionResult,
+    IdentityCollectionResult,
 ]:
     services = app_config.oci.services
     jobs: dict[str, Callable[[], Any]] = {
@@ -120,6 +122,7 @@ def _run_independent_collectors(
             signer, discovery, services, retry_policy=retry_policy
         ),
         "vpn": lambda: collect_vpn(signer, discovery, services, retry_policy=retry_policy),
+        "identity": lambda: collect_identity(signer, discovery, services, retry_policy=retry_policy),
     }
     max_workers = max(1, min(len(jobs), app_config.runtime.max_concurrency))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -133,6 +136,7 @@ def _run_independent_collectors(
         results["database_base"],
         results["autonomous_database"],
         results["vpn"],
+        results["identity"],
     )
 
 
@@ -165,7 +169,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
     discovery = discover(signer, app_config, retry_policy=retry_policy)
     (
         compute_result, storage_result, networking_result, database_base_result,
-        autonomous_result, vpn_result,
+        autonomous_result, vpn_result, identity_result,
     ) = _run_independent_collectors(signer, discovery, app_config, retry_policy)
     exadata_result = detect_exadata(
         signer, discovery, app_config.oci.services,
@@ -265,6 +269,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
             app_config, flat_resource_id=app_config.drata.flat_resource_id,
             discovery=discovery, compute=compute_result,
             networking=networking_result, autonomous_database=autonomous_result,
+            identity=identity_result,
             completed_at=completed_at,
             dry_run=dry_run, report=report,
         )
@@ -288,6 +293,7 @@ def _run_flat_records(
     compute: ComputeCollectionResult,
     networking: NetworkingCollectionResult,
     autonomous_database: AutonomousDatabaseCollectionResult,
+    identity: IdentityCollectionResult,
     completed_at: datetime.datetime,
     dry_run: bool,
     report: dict[str, Any],
@@ -299,7 +305,7 @@ def _run_flat_records(
 
     flat_result = build_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,
-        autonomous_database=autonomous_database,
+        autonomous_database=autonomous_database, identity=identity,
         networking=networking, completed_at=completed_at,
     )
     flat_schema = load_flat_schema()

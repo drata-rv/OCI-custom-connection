@@ -17,6 +17,13 @@
     },
     "hasRangedPublicIngress": { "type": ["boolean", "null"] },
     "kmsKeyId": { "type": ["string", "null"] },
-    "publicEndpointHostname": { "type": ["string", "null"] }
+    "publicEndpointHostname": { "type": ["string", "null"] },
+    "mfaActivated": { "type": ["boolean", "null"] },
+    "userId": { "type": ["string", "null"] },
+    "keyCreatedAt": { "type": ["string", "null"] },
+    "statements": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
   }
 }

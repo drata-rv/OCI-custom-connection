@@ -129,6 +129,13 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_drg_attachments",
         "list_drg_route_rules",
         "list_drg_route_tables",
+        # Identity, opt-in only (collection/identity.py) -- reads user MFA status,
+        # API key ages, and raw IAM policy statement text. Never credentials/secrets:
+        # list_api_keys returns each key's public fingerprint/value, not private
+        # material, and no auth-token/credential-retrieval call is allowlisted here.
+        "list_users",
+        "list_api_keys",
+        "list_policies",
     }
 )
 

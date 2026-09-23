@@ -25,6 +25,11 @@ oci:
     autonomousDatabase: true
     exadataDetection: true
     siteToSiteVpn: true
+    # Optional, defaults to false if omitted. Broader trust footprint than the other
+    # domains above -- reads user MFA status, API key ages, and raw IAM policy
+    # statement text (never credentials/secrets). See README Section 4 for the
+    # additional least-privilege policy grant this needs before enabling it.
+    identity: false
 
 decisions:
   administrativePorts: [22, 3389]

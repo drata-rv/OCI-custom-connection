@@ -252,6 +252,10 @@ class OciServicesConfig:
     autonomous_database: bool
     exadata_detection: bool
     site_to_site_vpn: bool
+    # Broader trust footprint than the other domains: reads user MFA status, API key
+    # ages, and raw IAM policy statement text. Opt-in, off unless explicitly enabled --
+    # see README Section 4 for the additional least-privilege policy grant it needs.
+    identity: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -341,6 +345,22 @@ def _require_int(
         raise ConfigError(f"{context}.{key}: must be >= {minimum}, got {value}")
     if maximum is not None and value > maximum:
         raise ConfigError(f"{context}.{key}: must be <= {maximum}, got {value}")
+    return value
+
+
+def _optional_bool(mapping: Mapping[str, Any], key: str, *, context: str, default: bool) -> bool:
+    """Like _require_bool, but absent means `default` instead of a ConfigError --
+    for a field added after existing deployments were configured, where requiring
+    it would break every config.yaml that predates it."""
+
+    if key not in mapping or mapping[key] is None:
+        return default
+    value = mapping[key]
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"{context}.{key}: expected true or false (unquoted), got {value!r} "
+            f"({type(value).__name__}) -- a quoted string is not a boolean"
+        )
     return value
 
 
@@ -441,7 +461,7 @@ _OCI_COMPARTMENTS_KEYS = frozenset({"roots", "excludeOcids"})
 _OCI_SERVICES_KEYS = frozenset(
     {
         "compute", "networkExposure", "blockStorage", "baseDatabase",
-        "autonomousDatabase", "exadataDetection", "siteToSiteVpn",
+        "autonomousDatabase", "exadataDetection", "siteToSiteVpn", "identity",
     }
 )
 _DECISIONS_KEYS = frozenset(
@@ -516,6 +536,7 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
             services_raw, "exadataDetection", context="oci.services"
         ),
         site_to_site_vpn=_require_bool(services_raw, "siteToSiteVpn", context="oci.services"),
+        identity=_optional_bool(services_raw, "identity", context="oci.services", default=False),
     )
 
     oci_config = OciConfig(
