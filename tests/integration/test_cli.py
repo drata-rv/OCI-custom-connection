@@ -14,6 +14,7 @@ import pytest
 
 from oci_drata import cli
 from oci_drata.delivery.drata import DeliveryResult
+from oci_drata.validation.schema import load_flat_schema, validate_record
 
 from .test_end_to_end import (
     _app_config,
@@ -267,3 +268,165 @@ def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.Mo
         "ocid1.instance.oc1..vm1", "ocid1.autonomousdatabase.oc1..adb1",
     }
     assert stat.S_IMODE((tmp_path / "out" / "flat-records.json").stat().st_mode) == 0o600
+
+
+# -- Full integration: every opt-in evidenceType enabled at once --
+#
+# Every test above exercises one collector/evidenceType in isolation (or the base
+# two that are always on). Nothing before this point had run the whole flat-record
+# pipeline with all 7 opt-in domains enabled simultaneously -- this is the first
+# check that the sum of 9 collectors shipped this session actually integrates
+# cleanly: no id collisions across evidenceTypes, every record schema-valid,
+# nothing crashes when every opt-in toggle is flipped on at the same time.
+
+
+def _app_config_with_everything_enabled():
+    app_config = _app_config_with_flat_resource(flat_resource_id=99)
+    services = dataclasses.replace(
+        app_config.oci.services,
+        identity=True, object_storage=True, cloud_guard=True, monitoring=True,
+        load_balancer=True, waf=True, kms_vault=True,
+    )
+    return dataclasses.replace(app_config, oci=dataclasses.replace(app_config.oci, services=services))
+
+
+def _stamp(raw, region="us-ashburn-1"):
+    """Every real collector calls pagination.stamp_region() before returning an
+    object -- mock fixtures that skip this don't represent real collector output
+    (aggregate.py's flatteners degrade a missing .region to null rather than
+    crashing, but a test fixture should still look like production data)."""
+
+    raw.region = region
+    return raw
+
+
+def _all_domains_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    import oci
+
+    from oci_drata.collection.cloud_guard import CloudGuardCollectionResult
+    from oci_drata.collection.identity import IdentityCollectionResult
+    from oci_drata.collection.kms_vault import KmsVaultCollectionResult
+    from oci_drata.collection.load_balancer import LoadBalancerCollectionResult
+    from oci_drata.collection.monitoring import MonitoringCollectionResult
+    from oci_drata.collection.object_storage import ObjectStorageCollectionResult
+    from oci_drata.collection.waf import WafCollectionResult
+
+    monkeypatch.setattr(
+        cli, "collect_identity",
+        lambda *a, **k: IdentityCollectionResult(
+            users=[oci.identity.models.User(id="ocid1.user.oc1..u1", compartment_id="c1", is_mfa_activated=True)],
+            api_keys_by_user_id={
+                "ocid1.user.oc1..u1": [
+                    oci.identity.models.ApiKey(key_id="ocid1.apikey.oc1..k1", user_id="ocid1.user.oc1..u1", fingerprint="aa:bb")
+                ]
+            },
+            policies=[oci.identity.models.Policy(id="ocid1.policy.oc1..p1", compartment_id="c1", statements=["Allow ..."])],
+            operations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "collect_object_storage",
+        lambda *a, **k: ObjectStorageCollectionResult(
+            buckets=[
+                _stamp(oci.object_storage.models.Bucket(
+                    id="ocid1.bucket.oc1..b1", compartment_id="c1", name="my-bucket", namespace="ns1",
+                    public_access_type="NoPublicAccess", kms_key_id="ocid1.key.oc1..bucketkey1", versioning="Enabled",
+                ))
+            ],
+            operations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "collect_cloud_guard",
+        lambda *a, **k: CloudGuardCollectionResult(
+            configuration=oci.cloud_guard.models.Configuration(status="ENABLED"), operations=[]
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "collect_monitoring",
+        lambda *a, **k: MonitoringCollectionResult(
+            alarms=[
+                _stamp(oci.monitoring.models.AlarmSummary(
+                    id="ocid1.alarm.oc1..a1", compartment_id="c1", is_enabled=True, namespace="oci_computeagent",
+                ))
+            ],
+            operations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "collect_load_balancer",
+        lambda *a, **k: LoadBalancerCollectionResult(
+            load_balancers=[
+                _stamp(oci.load_balancer.models.LoadBalancer(
+                    id="ocid1.loadbalancer.oc1..lb1", compartment_id="c1", is_private=False,
+                    backend_sets={"bs1": oci.load_balancer.models.BackendSet(name="bs1")},
+                ))
+            ],
+            backend_set_health_by_key={
+                ("ocid1.loadbalancer.oc1..lb1", "bs1"): oci.load_balancer.models.BackendSetHealth(status="OK")
+            },
+            operations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "collect_waf",
+        lambda *a, **k: WafCollectionResult(
+            web_app_firewalls=[
+                _stamp(oci.waf.models.WebAppFirewallLoadBalancerSummary(
+                    id="ocid1.webappfirewall.oc1..w1", compartment_id="c1",
+                    backend_type="LOAD_BALANCER", load_balancer_id="ocid1.loadbalancer.oc1..lb1",
+                ))
+            ],
+            operations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "collect_kms_vault",
+        lambda *a, **k: KmsVaultCollectionResult(
+            vaults=[oci.key_management.models.VaultSummary(id="ocid1.vault.oc1..v1", compartment_id="c1")],
+            keys=[
+                _stamp(oci.key_management.models.Key(
+                    id="ocid1.key.oc1..kmskey1", compartment_id="c1", vault_id="ocid1.vault.oc1..v1",
+                    is_auto_rotation_enabled=True,
+                ))
+            ],
+            operations=[],
+        ),
+    )
+
+
+def test_all_evidence_types_together_no_id_collisions(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    _all_domains_enabled(monkeypatch)
+
+    result = cli.run(_app_config_with_everything_enabled(), dry_run=True)
+
+    assert result.flat_records is not None
+    evidence_types = {r["evidenceType"] for r in result.flat_records}
+    assert evidence_types == {
+        "instance", "autonomous_database", "iam_user", "api_key", "iam_policy",
+        "bucket", "cloud_guard_configuration", "monitoring_alarm",
+        "load_balancer", "load_balancer_backend_set", "waf", "kms_key",
+    }, f"missing or unexpected evidenceTypes: {evidence_types}"
+
+    ids = [r["id"] for r in result.flat_records]
+    assert len(ids) == len(set(ids)), f"duplicate ids across evidenceTypes: {ids}"
+
+    schema = load_flat_schema()
+    invalid = [(r["id"], validate_record(r, schema).errors) for r in result.flat_records]
+    invalid = [(rid, errs) for rid, errs in invalid if errs]
+    assert not invalid, f"schema-invalid records: {invalid}"
+
+    assert result.report["flatRecords"]["uploadDecision"] == "skipped_dry_run"
+    assert result.report["flatRecords"]["schemaValid"] is True
+
+    # Every record from a raw-SDK-object evidenceType should carry a real region
+    # (not null) when its collector correctly region-stamps -- confirms the test
+    # fixtures represent realistic collector output, not just schema-valid nulls.
+    stamped_types = {
+        "bucket", "monitoring_alarm", "load_balancer", "load_balancer_backend_set", "waf", "kms_key",
+    }
+    for record in result.flat_records:
+        if record["evidenceType"] in stamped_types:
+            assert record["region"] == "us-ashburn-1", record

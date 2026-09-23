@@ -533,6 +533,29 @@ def test_bucket_reports_raw_public_access_and_kms_facts() -> None:
     assert validate_record(record, load_flat_schema()).valid
 
 
+def test_bucket_missing_region_stamp_degrades_to_null_not_a_crash() -> None:
+    """Every real collector calls pagination.stamp_region() before returning an
+    object, but nothing in the type system enforces that -- an object that never
+    got stamped (a future collector bug, or a test fixture that forgot) must
+    degrade region to null (the schema already allows it), not raise
+    AttributeError and take down the whole flat-record build."""
+
+    bucket = oci.object_storage.models.Bucket(
+        id="ocid1.bucket.oc1..unstamped", compartment_id="c1", name="unstamped-bucket", namespace="ns1",
+    )
+    assert not hasattr(bucket, "region")
+
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        identity=_identity(), object_storage=_object_storage([bucket]), cloud_guard=_cloud_guard(), monitoring=_monitoring(), load_balancer=_load_balancer(), waf=_waf(), kms_vault=_kms_vault(),
+        completed_at=COMPLETED_AT,
+    )
+
+    assert result.records[0]["region"] is None
+    assert validate_record(result.records[0], load_flat_schema()).valid
+
+
 def test_bucket_without_kms_key_reports_null_not_false() -> None:
     bucket = _stamp(
         oci.object_storage.models.Bucket(
