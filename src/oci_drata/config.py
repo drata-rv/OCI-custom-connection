@@ -165,6 +165,17 @@ def _apply_single_override(
                 f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} targets an unknown "
                 f"path segment {segment!r}; overrides may only touch existing config keys"
             )
+        if is_forbidden_key(matched_key):
+            # A leaf-only check here would still let an override reach INSIDE a
+            # secretRef object (provider/name/path aren't credential-shaped names
+            # themselves) and silently redirect which env var or file a secret
+            # resolves from -- every segment on the path must be checked, not just
+            # the one actually being assigned.
+            raise ConfigError(
+                f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} passes through a "
+                f"credential field {matched_key!r}; overrides may never reach inside one, "
+                f"even to change a non-secret subfield"
+            )
         node = node[matched_key]
         if not isinstance(node, MutableMapping):
             raise ConfigError(

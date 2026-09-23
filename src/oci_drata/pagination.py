@@ -196,6 +196,19 @@ def _invoke_with_retry(
                 request_ids.append(request_id)
             return response, request_ids, retry_delays
 
+        if policy.deadline_exceeded():
+            # Without this, a single call stuck retrying a transient (429/5xx) error
+            # could sleep through several backoff delays -- up to ~7.5s at the default
+            # policy -- before paginate()/call_once()'s own per-page/per-op check ever
+            # runs again. Checked here too, not just around this loop, so --test's
+            # time budget is bounded by the deadline, not extended by one call's own
+            # retry loop.
+            raise _RetryExhausted(
+                error_code=TEST_MODE_DEADLINE_ERROR_CODE,
+                error_message="time budget exceeded during retry backoff",
+                request_ids=request_ids,
+                retry_delays=retry_delays,
+            )
         delay = policy.delay_seconds(attempt)
         retry_delays.append(delay)
         time.sleep(delay)

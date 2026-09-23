@@ -143,6 +143,28 @@ cp config.example.yaml config.yaml
 `connectionId`/`resourceId`/`expectedTenancyOcid` values. See
 [config.example.yaml](config.example.yaml) for every field.
 
+**Before the first real run, confirm `oci.compartments.roots`/
+`regions.allow` actually match what the API-signing user's OCI policy
+grants read access to.** This tool always attempts every compartment
+under the configured root(s), in every configured region, for every
+enabled service — it has no way to know in advance which of them the
+policy actually covers, so a scope wider than the policy produces a
+large `NotAuthorizedOrNotFound` flood on the first run, not a clean
+one. Two ways to avoid finding this out the hard way:
+
+* In the OCI Console, check which compartments the group backing this
+  policy is actually granted `read` in (Identity → Policies), and set
+  `compartments.roots` to that compartment directly rather than
+  `tenancy`, if the policy is scoped narrower than the whole tenancy.
+* Or run once with `--test` first (§5) and read
+  `collection-report.json`'s `accessSummary` — `compartmentsWithAuthGap`
+  is exactly where the policy doesn't reach; `compartmentsWithRealData`
+  is where it does *and* something was actually found. Note `--test`
+  bounds wall-clock time, not scope — a policy that's much narrower
+  than the configured scope can still produce a large `operationsFailed`
+  count inside that time budget, since auth failures fail near-instantly
+  with no retry backoff.
+
 ## 3. Secret provisioning
 
 Two secrets exist outside `config.yaml` entirely:
@@ -373,9 +395,13 @@ oci-drata --config config.yaml
 ```
 
 Exit codes: `0` success (uploaded, or a dry run that wasn't a schema
-failure) · `1` blocked — a **valid** outcome meaning nothing was uploaded
-because the snapshot wasn't complete (see `collection-report.json` for
-why) · `2` configuration/auth error · `3` unexpected failure.
+failure) · `1` blocked — nothing was uploaded, either because the
+snapshot wasn't complete (a **valid** outcome, see
+`collection-report.json` for why) *or* because collection succeeded but
+the Drata delivery call itself failed (auth/network/5xx exhausted
+retries — check `deliveryErrorClass`/`error_class` in the report, this
+is not the same situation as an incomplete scope) · `2`
+configuration/auth error · `3` unexpected failure.
 
 `runtime.dryRun` in `config.yaml` sets the default; `--dry-run` on the
 command line always wins.
@@ -543,6 +569,26 @@ flat-record path (§1.1) has its own, currently more significant, gaps:
 * **The AWS/Azure native-connector coverage target this path is being
   built against (`PLAN.md`) is stated as "60%" without a locatable
   original source** in git history or `PLAN.md` itself.
+* **A successful-looking upload is not proof of persistence.** Drata's
+  batch records endpoint can return `200`/`uploaded=True` for a record
+  that doesn't match the resource's *registered* schema, while silently
+  not storing it — confirmed by pushing a brand-new record id and
+  reading it back absent. Every field ever added to the shared flat
+  schema becomes required (null where inapplicable) on every record,
+  since Drata's importer auto-adds a `required: [...]` list on import
+  covering every top-level property. Until this is fixed (a code path
+  that reads records back after upload to confirm), don't trust an
+  `uploaded: true` `collection-report.json` alone — spot-check the
+  connection's actual stored records after a real upload.
+* **The nested-schema path (§1.2) still uploads a precomputed compliance
+  verdict** (`findings[].status`/`expected`/`observed`) on every real
+  run by default — exactly the pattern [§1.1](#11-flat-record-path-current-direction-opt-in-via-drataflatresourceid)
+  and the Correction section of `PLAN.md` say never to do. It was kept
+  running, unchanged, deliberately, until the flat-record path was
+  proven out further (see `PLAN.md`'s sequencing) — retiring it or
+  stripping the verdict fields from what gets uploaded needs a decision
+  first, since Custom Tests may already be built in Drata against
+  `findings[].status`.
 
 ## 10. Example Custom Tests
 

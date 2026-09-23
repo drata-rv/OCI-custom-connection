@@ -207,6 +207,26 @@ def test_paginate_deadline_hit_mid_pagination_keeps_pages_already_collected() ->
     assert call.call_count == 1
 
 
+def test_paginate_deadline_hit_during_retry_backoff_does_not_sleep_through_it() -> None:
+    """A retryable error (429/5xx) sleeps between attempts inside _invoke_with_retry's
+    own loop -- without a deadline check there too, a single call stuck retrying could
+    sleep through several backoff delays before paginate()'s per-page check runs
+    again. This is that gap: throttle forever, with a deadline that expires mid-retry,
+    and confirm it's caught before the next sleep rather than after exhausting
+    max_attempts."""
+
+    throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
+    call = MagicMock(side_effect=[throttle_error, throttle_error, throttle_error, throttle_error])
+    policy = RetryPolicy(
+        max_attempts=10, base_delay_seconds=0.05, max_delay_seconds=0.05,
+        deadline=time.monotonic() + 0.06,
+    )
+    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=policy)
+    assert result.status == "failed"
+    assert result.error_code == "TestModeDeadlineExceeded"
+    assert call.call_count < 10  # cut off well before max_attempts
+
+
 def test_call_once_deadline_already_passed_skips_the_call_entirely() -> None:
     call = MagicMock(return_value=_response("x"))
     policy = RetryPolicy(deadline=time.monotonic() - 1)

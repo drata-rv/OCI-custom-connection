@@ -67,6 +67,13 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
     config_file = Path(auth.config_file).expanduser()
     if not config_file.is_file():
         raise AuthError(f"OCI SDK config file not found: {config_file}")
+    config_file_mode = config_file.stat().st_mode
+    if config_file_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        # Only key_file was checked before -- but an operator can set pass_phrase
+        # directly in this ini file instead of privateKeyPassphraseSecretRef, and
+        # tenancy/user/fingerprint here are sensitive account metadata even without
+        # that. Same fail-closed check as the key file itself.
+        raise AuthError(f"OCI SDK config file must not be group/world accessible: {config_file}")
 
     try:
         raw_config = oci.config.from_file(str(config_file), auth.profile)
@@ -74,6 +81,20 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
         raise AuthError(
             f"failed to load OCI SDK config profile {auth.profile!r} from {config_file}: {exc}"
         ) from exc
+
+    if "authentication_type" in raw_config:
+        # oci.config.validate_config() takes a different, more permissive path
+        # (skipping user/tenancy/fingerprint validation) when this ini-level field is
+        # set to e.g. instance_principal -- this project only implements and expects
+        # api_signing_user (checked above, but that's this app's own config.yaml
+        # field, a different thing from this OCI-SDK-ini-level one). Reject before
+        # validate_config ever sees it, rather than relying on the weaker validation
+        # path it would otherwise take.
+        raise AuthError(
+            f"OCI SDK config profile {auth.profile!r} sets 'authentication_type', which "
+            f"this project doesn't support -- only a plain api_signing_user profile "
+            f"(tenancy/user/fingerprint/key_file) is accepted"
+        )
 
     key_file_value = raw_config.get("key_file")
     if not key_file_value:

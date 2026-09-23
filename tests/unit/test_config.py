@@ -99,6 +99,22 @@ def test_env_override_cannot_target_secret_field() -> None:
         )
 
 
+def test_env_override_cannot_reach_inside_a_secret_ref_to_redirect_it() -> None:
+    """A leaf-only check would still let this through: apiTokenSecretRef itself isn't
+    the segment being assigned, only traversed through -- provider/name/path aren't
+    credential-shaped names themselves, so this would otherwise silently redirect
+    which env var the real token resolves from."""
+
+    with pytest.raises(ConfigError, match="credential"):
+        load_config(
+            SAMPLE_CONFIG,
+            env={
+                "DRATA_API_TOKEN": "unused",
+                "OCI_DRATA__DRATA__APITOKENSECRETREF__NAME": "ATTACKER_CONTROLLED_VAR",
+            },
+        )
+
+
 def test_env_override_unknown_path_rejected() -> None:
     with pytest.raises(ConfigError, match="unknown"):
         load_config(SAMPLE_CONFIG, env={"DRATA_API_TOKEN": "unused", "OCI_DRATA__NOPE__X": "y"})
