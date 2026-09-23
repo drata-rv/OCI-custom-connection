@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from oci_drata.collection.cloud_guard import CloudGuardCollectionResult, collect_cloud_guard
 from oci_drata.collection.compute import ComputeCollectionResult, collect_compute
 from oci_drata.collection.database_autonomous import (
     AutonomousDatabaseCollectionResult,
@@ -28,6 +29,7 @@ from oci_drata.collection.database_base import DatabaseBaseCollectionResult, col
 from oci_drata.collection.discovery import DiscoveryResult, discover
 from oci_drata.collection.exadata_detection import detect_exadata
 from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
+from oci_drata.collection.monitoring import MonitoringCollectionResult, collect_monitoring
 from oci_drata.collection.networking import NetworkingCollectionResult, collect_networking
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult, collect_object_storage
 from oci_drata.collection.storage import StorageCollectionResult, collect_storage
@@ -113,6 +115,8 @@ def _run_independent_collectors(
     VpnCollectionResult,
     IdentityCollectionResult,
     ObjectStorageCollectionResult,
+    CloudGuardCollectionResult,
+    MonitoringCollectionResult,
 ]:
     services = app_config.oci.services
     jobs: dict[str, Callable[[], Any]] = {
@@ -128,6 +132,8 @@ def _run_independent_collectors(
         "object_storage": lambda: collect_object_storage(
             signer, discovery, services, retry_policy=retry_policy
         ),
+        "cloud_guard": lambda: collect_cloud_guard(signer, discovery, services, retry_policy=retry_policy),
+        "monitoring": lambda: collect_monitoring(signer, discovery, services, retry_policy=retry_policy),
     }
     max_workers = max(1, min(len(jobs), app_config.runtime.max_concurrency))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -143,6 +149,8 @@ def _run_independent_collectors(
         results["vpn"],
         results["identity"],
         results["object_storage"],
+        results["cloud_guard"],
+        results["monitoring"],
     )
 
 
@@ -176,6 +184,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
     (
         compute_result, storage_result, networking_result, database_base_result,
         autonomous_result, vpn_result, identity_result, object_storage_result,
+        cloud_guard_result, monitoring_result,
     ) = _run_independent_collectors(signer, discovery, app_config, retry_policy)
     exadata_result = detect_exadata(
         signer, discovery, app_config.oci.services,
@@ -276,6 +285,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
             discovery=discovery, compute=compute_result,
             networking=networking_result, autonomous_database=autonomous_result,
             identity=identity_result, object_storage=object_storage_result,
+            cloud_guard=cloud_guard_result, monitoring=monitoring_result,
             completed_at=completed_at,
             dry_run=dry_run, report=report,
         )
@@ -301,6 +311,8 @@ def _run_flat_records(
     autonomous_database: AutonomousDatabaseCollectionResult,
     identity: IdentityCollectionResult,
     object_storage: ObjectStorageCollectionResult,
+    cloud_guard: CloudGuardCollectionResult,
+    monitoring: MonitoringCollectionResult,
     completed_at: datetime.datetime,
     dry_run: bool,
     report: dict[str, Any],
@@ -313,7 +325,7 @@ def _run_flat_records(
     flat_result = build_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,
         autonomous_database=autonomous_database, identity=identity,
-        object_storage=object_storage,
+        object_storage=object_storage, cloud_guard=cloud_guard, monitoring=monitoring,
         networking=networking, completed_at=completed_at,
     )
     flat_schema = load_flat_schema()

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import datetime
+from types import SimpleNamespace
 
 import oci
 import pytest
 
+from oci_drata.collection.cloud_guard import CloudGuardCollectionResult
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.identity import IdentityCollectionResult
+from oci_drata.collection.monitoring import MonitoringCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult
 from oci_drata.config import DecisionsConfig
@@ -99,6 +102,14 @@ def _object_storage(buckets=()):
     return ObjectStorageCollectionResult(buckets=list(buckets), operations=[])
 
 
+def _cloud_guard(configuration=None):
+    return CloudGuardCollectionResult(configuration=configuration, operations=[])
+
+
+def _monitoring(alarms=()):
+    return MonitoringCollectionResult(alarms=list(alarms), operations=[])
+
+
 def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
     """No status/compliance verdict anywhere -- the compliance policy (which ports
     count as administrative) belongs in the Drata Custom Test, not the collector."""
@@ -143,7 +154,7 @@ def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
             subnets={"sub1": subnet}, route_tables={"rt1": route_table},
             internet_gateways=[igw], nsg_security_rules_by_nsg_id={"nsg1": [nsg_rule]},
         ),
-        autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(),
+        autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -202,7 +213,7 @@ def test_wide_open_rule_is_not_enumerated_but_flagged() -> None:
             subnets={"sub1": subnet}, route_tables={"rt1": route_table},
             internet_gateways=[igw], nsg_security_rules_by_nsg_id={"nsg1": [nsg_rule]},
         ),
-        autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(),
+        autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -228,7 +239,7 @@ def test_instance_with_no_public_address_reports_no_ingress() -> None:
             vnics={"v1": vnic},
         ),
         networking=_networking(),
-        autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(),
+        autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -248,7 +259,7 @@ def test_instance_with_no_vnic_reports_null_facts_not_a_verdict() -> None:
 
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([instance]),
-        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(),
+        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -266,7 +277,7 @@ def test_records_sorted_by_id() -> None:
     ]
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute(instances),
-        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(),
+        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
     assert [r["id"] for r in result.records] == ["i-a", "i-b", "i-c"]
@@ -275,13 +286,13 @@ def test_records_sorted_by_id() -> None:
 def test_domain_complete_and_discovery_complete_pass_through() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(complete=False), compute=_compute([]),
-        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(),
+        networking=_networking(), autonomous_database=_autonomous_database(), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
     assert result.records == []
     assert result.domain_complete == {
         "compute": True, "networking": True, "autonomousDatabase": True,
-        "identity": True, "objectStorage": True,
+        "identity": True, "objectStorage": True, "cloudGuard": True, "monitoring": True,
     }
     assert result.discovery_complete is False
 
@@ -299,7 +310,7 @@ def test_autonomous_database_reports_raw_kms_and_endpoint_facts() -> None:
     )
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
-        networking=_networking(), autonomous_database=_autonomous_database([adb]), identity=_identity(), object_storage=_object_storage(),
+        networking=_networking(), autonomous_database=_autonomous_database([adb]), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -321,7 +332,7 @@ def test_autonomous_database_without_kms_key_reports_null_not_false() -> None:
     )
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
-        networking=_networking(), autonomous_database=_autonomous_database([adb]), identity=_identity(), object_storage=_object_storage(),
+        networking=_networking(), autonomous_database=_autonomous_database([adb]), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -341,7 +352,7 @@ def test_instance_and_autonomous_database_records_sort_together_by_id() -> None:
     )
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([instance]),
-        networking=_networking(), autonomous_database=_autonomous_database([adb]), identity=_identity(), object_storage=_object_storage(),
+        networking=_networking(), autonomous_database=_autonomous_database([adb]), identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
     assert [r["id"] for r in result.records] == ["a-adb", "z-instance"]
@@ -383,7 +394,7 @@ def test_iam_user_reports_raw_mfa_fact_not_a_verdict() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
         networking=_networking(), autonomous_database=_autonomous_database(),
-        identity=_identity([user]), object_storage=_object_storage(), completed_at=COMPLETED_AT,
+        identity=_identity([user]), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(), completed_at=COMPLETED_AT,
     )
 
     assert len(result.records) == 1
@@ -415,7 +426,7 @@ def test_deleted_users_and_their_api_keys_are_excluded() -> None:
         identity=_identity(
             [active_user, deleted_user],
             api_keys_by_user_id={"u1": [api_key], "u2": [orphaned_key_on_deleted_user]},
-        ), object_storage=_object_storage(),
+        ), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -432,7 +443,7 @@ def test_api_key_reports_raw_creation_timestamp_for_rotation_age_checks() -> Non
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
         networking=_networking(), autonomous_database=_autonomous_database(),
-        identity=_identity([user], api_keys_by_user_id={"u1": [api_key]}), object_storage=_object_storage(),
+        identity=_identity([user], api_keys_by_user_id={"u1": [api_key]}), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -452,7 +463,7 @@ def test_iam_policy_reports_raw_statements() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
         networking=_networking(), autonomous_database=_autonomous_database(),
-        identity=_identity(policies=[policy]), object_storage=_object_storage(), completed_at=COMPLETED_AT,
+        identity=_identity(policies=[policy]), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(), completed_at=COMPLETED_AT,
     )
 
     record = result.records[0]
@@ -469,7 +480,7 @@ def test_identity_disabled_by_default_yields_no_identity_records() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
         networking=_networking(), autonomous_database=_autonomous_database(),
-        identity=_identity(), object_storage=_object_storage(), completed_at=COMPLETED_AT,
+        identity=_identity(), object_storage=_object_storage(), cloud_guard=_cloud_guard(), monitoring=_monitoring(), completed_at=COMPLETED_AT,
     )
     assert result.records == []
 
@@ -487,7 +498,7 @@ def test_bucket_reports_raw_public_access_and_kms_facts() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
         networking=_networking(), autonomous_database=_autonomous_database(),
-        identity=_identity(), object_storage=_object_storage([bucket]),
+        identity=_identity(), object_storage=_object_storage([bucket]), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
@@ -512,10 +523,96 @@ def test_bucket_without_kms_key_reports_null_not_false() -> None:
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
         networking=_networking(), autonomous_database=_autonomous_database(),
-        identity=_identity(), object_storage=_object_storage([bucket]),
+        identity=_identity(), object_storage=_object_storage([bucket]), cloud_guard=_cloud_guard(), monitoring=_monitoring(),
         completed_at=COMPLETED_AT,
     )
 
     record = result.records[0]
     assert record["kmsKeyId"] is None
     assert record["publicAccessType"] == "NoPublicAccess"
+
+
+# -- Cloud Guard configuration -- singleton, no id/compartmentId of its own --
+
+
+def test_cloud_guard_reports_raw_status_using_tenancy_id() -> None:
+    configuration = oci.cloud_guard.models.Configuration(status="ENABLED")
+    discovery = DiscoveryResult(
+        tenancy=SimpleNamespace(id="ocid1.tenancy.oc1..tenancy1"),
+        region_subscriptions=[], all_compartments=[], discovery_region="us-ashburn-1",
+        approved_regions=("us-ashburn-1",), unready_regions=(), approved_compartment_ids=("c1",),
+        excluded_compartment_ids=(), inaccessible_compartment_ids=(),
+        availability_domains_by_region={}, operations=[],
+    )
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=discovery, compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        identity=_identity(), object_storage=_object_storage(),
+        cloud_guard=_cloud_guard(configuration), monitoring=_monitoring(),
+        completed_at=COMPLETED_AT,
+    )
+
+    assert len(result.records) == 1
+    record = result.records[0]
+    assert record["id"] == "ocid1.tenancy.oc1..tenancy1"
+    assert record["evidenceType"] == "cloud_guard_configuration"
+    assert record["cloudGuardStatus"] == "ENABLED"
+    assert "status" not in record
+    assert validate_record(record, load_flat_schema()).valid
+
+
+def test_cloud_guard_disabled_by_default_yields_no_record() -> None:
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        identity=_identity(), object_storage=_object_storage(),
+        cloud_guard=_cloud_guard(), monitoring=_monitoring(),
+        completed_at=COMPLETED_AT,
+    )
+    assert result.records == []
+
+
+# -- Monitoring alarms -- raw enabled/namespace/query, evidence-style like iam_policy --
+
+
+def test_alarm_reports_raw_enabled_and_query_facts() -> None:
+    alarm = _stamp(
+        oci.monitoring.models.AlarmSummary(
+            id="ocid1.alarm.oc1..a1", compartment_id="c1", display_name="cpu-high",
+            is_enabled=True, namespace="oci_computeagent",
+            query="CpuUtilization[1m].mean() > 80", lifecycle_state="ACTIVE",
+        )
+    )
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        identity=_identity(), object_storage=_object_storage(),
+        cloud_guard=_cloud_guard(), monitoring=_monitoring([alarm]),
+        completed_at=COMPLETED_AT,
+    )
+
+    assert len(result.records) == 1
+    record = result.records[0]
+    assert record["id"] == "ocid1.alarm.oc1..a1"
+    assert record["evidenceType"] == "monitoring_alarm"
+    assert record["alarmEnabled"] is True
+    assert record["alarmNamespace"] == "oci_computeagent"
+    assert "status" not in record
+    assert validate_record(record, load_flat_schema()).valid
+
+
+def test_deleted_alarm_is_excluded() -> None:
+    alarm = _stamp(
+        oci.monitoring.models.AlarmSummary(
+            id="ocid1.alarm.oc1..deleted1", compartment_id="c1", is_enabled=False,
+            lifecycle_state="DELETED",
+        )
+    )
+    result = build_flat_records(
+        decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
+        networking=_networking(), autonomous_database=_autonomous_database(),
+        identity=_identity(), object_storage=_object_storage(),
+        cloud_guard=_cloud_guard(), monitoring=_monitoring([alarm]),
+        completed_at=COMPLETED_AT,
+    )
+    assert result.records == []

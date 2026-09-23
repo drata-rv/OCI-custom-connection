@@ -207,6 +207,36 @@ Allow group oci-drata-collector to read buckets in tenancy
   operations this domain calls (`security.py::ALLOWED_OCI_OPERATIONS`);
   none reads or lists object contents.
 
+### 4.3 Optional: Cloud Guard (`oci.services.cloudGuard`)
+
+**Off by default** (`cloudGuard: false` unless set otherwise). Reads only
+whether Cloud Guard itself is enabled/disabled for the tenancy — never
+findings, detector recipes, or target configuration detail.
+
+```text
+Allow group oci-drata-collector to inspect cloud-guard-config in tenancy
+Allow group oci-drata-collector to read cloud-guard-config in tenancy
+```
+
+* `get_configuration` is the only operation this domain calls.
+
+### 4.4 Optional: Monitoring (`oci.services.monitoring`)
+
+**Off by default** (`monitoring: false` unless set otherwise). Reads alarm
+*definitions* — whether an alarm exists, is enabled, and what metric query
+it watches. Never reads metric data points or alarm firing history.
+
+```text
+Allow group oci-drata-collector to inspect alarms in tenancy
+Allow group oci-drata-collector to read alarms in tenancy
+```
+
+* `list_alarms` is the only operation this domain calls.
+* An alarm's raw `query` (MQL string) is surfaced as evidence, not
+  evaluated — a Custom Test would need to pattern-match it (e.g. `contains
+  "CpuUtilization"`) to check for a specific monitored metric, since this
+  collector doesn't parse or classify alarm queries by metric type.
+
 ## 5. Execution
 
 ```bash

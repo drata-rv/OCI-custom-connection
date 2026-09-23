@@ -257,6 +257,8 @@ class OciServicesConfig:
     # see README Section 4 for the additional least-privilege policy grant it needs.
     identity: bool = False
     object_storage: bool = False
+    cloud_guard: bool = False
+    monitoring: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -463,7 +465,7 @@ _OCI_SERVICES_KEYS = frozenset(
     {
         "compute", "networkExposure", "blockStorage", "baseDatabase",
         "autonomousDatabase", "exadataDetection", "siteToSiteVpn", "identity",
-        "objectStorage",
+        "objectStorage", "cloudGuard", "monitoring",
     }
 )
 _DECISIONS_KEYS = frozenset(
@@ -542,6 +544,8 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         object_storage=_optional_bool(
             services_raw, "objectStorage", context="oci.services", default=False
         ),
+        cloud_guard=_optional_bool(services_raw, "cloudGuard", context="oci.services", default=False),
+        monitoring=_optional_bool(services_raw, "monitoring", context="oci.services", default=False),
     )
 
     oci_config = OciConfig(

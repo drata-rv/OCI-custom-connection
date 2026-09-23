@@ -270,6 +270,15 @@ def call_once(
 ) -> OperationResult:
     """Execute a single (non-paginated) OCI SDK ``get_*`` bound method with
     the same bounded retry/backoff-with-jitter behavior as :func:`paginate`.
+
+    Unlike :func:`paginate`, ``compartment_id`` here is metadata-only and never
+    auto-forwarded to ``call`` -- most ``get_*`` operations take a specific
+    resource id (``instance_id``, ``tenancy_id``, ...), not a compartment filter,
+    so silently injecting one could shadow a caller's own same-named argument
+    for an operation where it means something else. A ``get_*`` call whose real
+    parameter genuinely is named ``compartment_id`` (e.g. Cloud Guard's
+    ``get_configuration``) should bind it via a closure over ``call`` instead of
+    relying on this parameter -- see ``collection/cloud_guard.py``.
     """
 
     policy = retry_policy or RetryPolicy()

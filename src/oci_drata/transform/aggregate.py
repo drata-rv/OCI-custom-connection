@@ -13,12 +13,14 @@ import hashlib
 from collections.abc import Sequence
 from typing import Any
 
+from oci_drata.collection.cloud_guard import CloudGuardCollectionResult
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
 from oci_drata.collection.database_base import DatabaseBaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.exadata_detection import ExadataDetectionResult
 from oci_drata.collection.identity import IdentityCollectionResult
+from oci_drata.collection.monitoring import MonitoringCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult
 from oci_drata.collection.storage import StorageCollectionResult
@@ -707,6 +709,36 @@ def _flatten_iam_policy(policy: Any, *, timestamp: str | None) -> dict[str, Any]
     }
 
 
+def _flatten_cloud_guard_configuration(
+    configuration: Any, *, tenancy_id: str | None, timestamp: str | None
+) -> dict[str, Any]:
+    # Cloud Guard's Configuration has no id/compartmentId of its own -- it's a
+    # tenancy-wide singleton, not a resource with an OCID. The tenancy OCID is the
+    # only stable, unique identifier available for upsert-by-id.
+    return {
+        "id": tenancy_id or "cloud-guard-configuration",
+        "evidenceType": "cloud_guard_configuration",
+        "name": "Cloud Guard",
+        "timestamp": timestamp,
+        "compartmentId": tenancy_id,
+        "cloudGuardStatus": configuration.status,
+    }
+
+
+def _flatten_alarm(alarm: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": alarm.id,
+        "evidenceType": "monitoring_alarm",
+        "name": alarm.display_name,
+        "timestamp": timestamp,
+        "region": alarm.region,
+        "compartmentId": alarm.compartment_id,
+        "alarmEnabled": alarm.is_enabled,
+        "alarmNamespace": alarm.namespace,
+        "alarmQuery": alarm.query,
+    }
+
+
 def build_flat_records(
     *,
     decisions: DecisionsConfig,
@@ -716,6 +748,8 @@ def build_flat_records(
     autonomous_database: AutonomousDatabaseCollectionResult,
     identity: IdentityCollectionResult,
     object_storage: ObjectStorageCollectionResult,
+    cloud_guard: CloudGuardCollectionResult,
+    monitoring: MonitoringCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
     """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
@@ -797,7 +831,17 @@ def build_flat_records(
         if getattr(key, "lifecycle_state", None) not in _IDENTITY_DELETED_STATES
     ]
 
+    # Monitoring alarms: OCI's general DELETED/DELETING convention, same caveat as
+    # identity above -- not directly confirmed against Monitoring's own lifecycle
+    # enum (no LIFECYCLE_STATE_* constants are exposed on AlarmSummary to check
+    # against), but consistent with every other non-legacy OCI resource this
+    # project has seen so far.
+    kept_alarms, _excluded_alarms = split_by_lifecycle(
+        monitoring.alarms, exclude_states=_IDENTITY_DELETED_STATES
+    )
+
     timestamp = normalize.normalize_timestamp(completed_at)
+    tenancy_id = discovery.tenancy.id if discovery.tenancy is not None else None
     records = sorted(
         [
             _flatten_instance(i, ingress_by_instance_id[i.id], timestamp=timestamp)
@@ -810,7 +854,17 @@ def build_flat_records(
         + [_flatten_iam_user(u, timestamp=timestamp) for u in kept_users]
         + [_flatten_api_key(k, timestamp=timestamp) for k in kept_api_keys]
         + [_flatten_iam_policy(p, timestamp=timestamp) for p in kept_policies]
-        + [_flatten_bucket(b, timestamp=timestamp) for b in object_storage.buckets],
+        + [_flatten_bucket(b, timestamp=timestamp) for b in object_storage.buckets]
+        + (
+            [
+                _flatten_cloud_guard_configuration(
+                    cloud_guard.configuration, tenancy_id=tenancy_id, timestamp=timestamp
+                )
+            ]
+            if cloud_guard.configuration is not None
+            else []
+        )
+        + [_flatten_alarm(a, timestamp=timestamp) for a in kept_alarms],
         key=lambda r: r["id"],
     )
 
@@ -822,6 +876,8 @@ def build_flat_records(
             "autonomousDatabase": autonomous_database.complete,
             "identity": identity.complete,
             "objectStorage": object_storage.complete,
+            "cloudGuard": cloud_guard.complete,
+            "monitoring": monitoring.complete,
         },
         discovery_complete=discovery.complete,
     )

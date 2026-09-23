@@ -140,6 +140,10 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_namespace",
         "list_buckets",
         "get_bucket",
+        # Cloud Guard (collection/cloud_guard.py)
+        "get_configuration",
+        # Monitoring (collection/monitoring.py)
+        "list_alarms",
     }
 )
 

@@ -33,6 +33,13 @@ oci:
     # Optional, defaults to false if omitted. Reads bucket-level metadata only
     # (public access setting, encryption key, versioning) -- never object contents.
     objectStorage: false
+    # Optional, defaults to false if omitted. Reads the tenancy's Cloud Guard
+    # configuration status only (enabled/disabled) -- no findings/detector detail.
+    cloudGuard: false
+    # Optional, defaults to false if omitted. Reads alarm definitions (whether an
+    # alarm exists and is enabled for a given metric query) -- never metric data
+    # itself or alarm history.
+    monitoring: false
 
 decisions:
   administrativePorts: [22, 3389]
