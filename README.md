@@ -271,6 +271,33 @@ Allow group oci-drata-collector to read web-app-firewalls in tenancy
   have a WAF attached" the way `oci.waf`'s `load_balancer_id` field can.
 * `list_web_app_firewalls` is the only operation this domain calls.
 
+### 4.7 Optional: KMS Vault (`oci.services.kmsVault`)
+
+**Off by default** (`kmsVault: false` unless set otherwise). Reads
+whether a KMS key has auto-rotation enabled and when it last rotated —
+never key material, never a wrapping/unwrapping operation.
+
+```text
+Allow group oci-drata-collector to inspect vaults in tenancy
+Allow group oci-drata-collector to read vaults in tenancy
+Allow group oci-drata-collector to inspect keys in tenancy
+Allow group oci-drata-collector to read keys in tenancy
+```
+
+* Confirmed against Oracle's own Key Management policy reference (not
+  just SDK introspection, unlike most of this section) — `vaults` covers
+  `ListVaults`/`GetVault`, `keys` covers `ListKeys`/`GetKey`.
+* Structurally different from every other collector in this project:
+  `KmsManagementClient` (the client that actually lists/reads keys) must
+  be constructed with the specific vault's own `management_endpoint` —
+  resolved from that vault's own `list_vaults` response field, not a
+  plain regional endpoint. See `oci_auth.py::endpoint_client` and
+  `collection/kms_vault.py`.
+* Rotation timing (`auto_key_rotation_details.time_of_last_rotation`) is
+  only present on the full `Key` model, not the lighter `KeySummary`
+  `list_keys` returns — `get_key` per key is a genuine per-item fan-out,
+  not an optional enrichment step.
+
 ## 5. Execution
 
 ```bash

@@ -20,6 +20,7 @@ from oci_drata.collection.database_base import DatabaseBaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.exadata_detection import ExadataDetectionResult
 from oci_drata.collection.identity import IdentityCollectionResult
+from oci_drata.collection.kms_vault import KmsVaultCollectionResult
 from oci_drata.collection.load_balancer import LoadBalancerCollectionResult
 from oci_drata.collection.monitoring import MonitoringCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
@@ -782,6 +783,23 @@ def _flatten_waf(waf: Any, *, timestamp: str | None) -> dict[str, Any]:
     }
 
 
+def _flatten_kms_key(key: Any, *, timestamp: str | None) -> dict[str, Any]:
+    rotation_details = getattr(key, "auto_key_rotation_details", None)
+    return {
+        "id": key.id,
+        "evidenceType": "kms_key",
+        "name": key.display_name,
+        "timestamp": timestamp,
+        "region": key.region,
+        "compartmentId": key.compartment_id,
+        "vaultId": key.vault_id,
+        "autoRotationEnabled": key.is_auto_rotation_enabled,
+        "lastRotationAt": normalize.normalize_timestamp(
+            getattr(rotation_details, "time_of_last_rotation", None)
+        ),
+    }
+
+
 def build_flat_records(
     *,
     decisions: DecisionsConfig,
@@ -795,6 +813,7 @@ def build_flat_records(
     monitoring: MonitoringCollectionResult,
     load_balancer: LoadBalancerCollectionResult,
     waf: WafCollectionResult,
+    kms_vault: KmsVaultCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
     """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
@@ -899,6 +918,14 @@ def build_flat_records(
         waf.web_app_firewalls, exclude_states=_IDENTITY_DELETED_STATES
     )
 
+    # Key's real lifecycle enum (confirmed via oci.key_management.models.Key's own
+    # LIFECYCLE_STATE_* constants) includes DELETED/DELETING alongside ENABLED/
+    # DISABLED/etc -- DISABLED keys are still real, reportable evidence, only
+    # DELETED/DELETING are excluded here.
+    kept_keys, _excluded_keys = split_by_lifecycle(
+        kms_vault.keys, exclude_states=_IDENTITY_DELETED_STATES
+    )
+
     timestamp = normalize.normalize_timestamp(completed_at)
     backend_set_health_records = [
         _flatten_backend_set_health(lb, backend_set_name, health, timestamp=timestamp)
@@ -933,7 +960,8 @@ def build_flat_records(
         + [_flatten_alarm(a, timestamp=timestamp) for a in kept_alarms]
         + [_flatten_load_balancer(lb, timestamp=timestamp) for lb in kept_load_balancers]
         + backend_set_health_records
-        + [_flatten_waf(w, timestamp=timestamp) for w in kept_wafs],
+        + [_flatten_waf(w, timestamp=timestamp) for w in kept_wafs]
+        + [_flatten_kms_key(k, timestamp=timestamp) for k in kept_keys],
         key=lambda r: r["id"],
     )
 
@@ -949,6 +977,7 @@ def build_flat_records(
             "monitoring": monitoring.complete,
             "loadBalancer": load_balancer.complete,
             "waf": waf.complete,
+            "kmsVault": kms_vault.complete,
         },
         discovery_complete=discovery.complete,
     )

@@ -116,3 +116,16 @@ def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySi
     already was."""
 
     return cast(T, GuardedOciClient(client_cls(signer.region_config(region))))
+
+
+def endpoint_client(
+    client_cls: Callable[..., T], signer: TenancySigner, *, region: str, service_endpoint: str
+) -> T:
+    """Like regional_client, but for a client class that needs an explicit
+    per-resource service endpoint instead of the region's default one --
+    e.g. KmsManagementClient, whose endpoint is resolved per-vault from that
+    vault's own ``management_endpoint`` field (see collection/kms_vault.py).
+    Still wrapped in GuardedOciClient, same as every other client this project
+    constructs -- the endpoint differs, the allowlist enforcement doesn't."""
+
+    return cast(T, GuardedOciClient(client_cls(signer.region_config(region), service_endpoint)))

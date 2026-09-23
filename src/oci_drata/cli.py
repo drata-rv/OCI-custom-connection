@@ -29,6 +29,7 @@ from oci_drata.collection.database_base import DatabaseBaseCollectionResult, col
 from oci_drata.collection.discovery import DiscoveryResult, discover
 from oci_drata.collection.exadata_detection import detect_exadata
 from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
+from oci_drata.collection.kms_vault import KmsVaultCollectionResult, collect_kms_vault
 from oci_drata.collection.load_balancer import LoadBalancerCollectionResult, collect_load_balancer
 from oci_drata.collection.monitoring import MonitoringCollectionResult, collect_monitoring
 from oci_drata.collection.networking import NetworkingCollectionResult, collect_networking
@@ -121,6 +122,7 @@ def _run_independent_collectors(
     MonitoringCollectionResult,
     LoadBalancerCollectionResult,
     WafCollectionResult,
+    KmsVaultCollectionResult,
 ]:
     services = app_config.oci.services
     jobs: dict[str, Callable[[], Any]] = {
@@ -140,6 +142,7 @@ def _run_independent_collectors(
         "monitoring": lambda: collect_monitoring(signer, discovery, services, retry_policy=retry_policy),
         "load_balancer": lambda: collect_load_balancer(signer, discovery, services, retry_policy=retry_policy),
         "waf": lambda: collect_waf(signer, discovery, services, retry_policy=retry_policy),
+        "kms_vault": lambda: collect_kms_vault(signer, discovery, services, retry_policy=retry_policy),
     }
     max_workers = max(1, min(len(jobs), app_config.runtime.max_concurrency))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -159,6 +162,7 @@ def _run_independent_collectors(
         results["monitoring"],
         results["load_balancer"],
         results["waf"],
+        results["kms_vault"],
     )
 
 
@@ -193,6 +197,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
         compute_result, storage_result, networking_result, database_base_result,
         autonomous_result, vpn_result, identity_result, object_storage_result,
         cloud_guard_result, monitoring_result, load_balancer_result, waf_result,
+        kms_vault_result,
     ) = _run_independent_collectors(signer, discovery, app_config, retry_policy)
     exadata_result = detect_exadata(
         signer, discovery, app_config.oci.services,
@@ -295,6 +300,7 @@ def run(app_config: AppConfig, *, dry_run: bool) -> RunResult:
             identity=identity_result, object_storage=object_storage_result,
             cloud_guard=cloud_guard_result, monitoring=monitoring_result,
             load_balancer=load_balancer_result, waf=waf_result,
+            kms_vault=kms_vault_result,
             completed_at=completed_at,
             dry_run=dry_run, report=report,
         )
@@ -324,6 +330,7 @@ def _run_flat_records(
     monitoring: MonitoringCollectionResult,
     load_balancer: LoadBalancerCollectionResult,
     waf: WafCollectionResult,
+    kms_vault: KmsVaultCollectionResult,
     completed_at: datetime.datetime,
     dry_run: bool,
     report: dict[str, Any],
@@ -337,7 +344,7 @@ def _run_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,
         autonomous_database=autonomous_database, identity=identity,
         object_storage=object_storage, cloud_guard=cloud_guard, monitoring=monitoring,
-        load_balancer=load_balancer, waf=waf,
+        load_balancer=load_balancer, waf=waf, kms_vault=kms_vault,
         networking=networking, completed_at=completed_at,
     )
     flat_schema = load_flat_schema()

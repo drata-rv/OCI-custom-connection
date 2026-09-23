@@ -149,6 +149,10 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_backend_set_health",
         # Web Application Firewall (collection/waf.py)
         "list_web_app_firewalls",
+        # KMS vault (collection/kms_vault.py)
+        "list_vaults",
+        "list_keys",
+        "get_key",
     }
 )
 

@@ -33,6 +33,9 @@
     "alarmQuery": { "type": ["string", "null"] },
     "isPrivate": { "type": ["boolean", "null"] },
     "loadBalancerId": { "type": ["string", "null"] },
-    "backendSetHealthStatus": { "type": ["string", "null"] }
+    "backendSetHealthStatus": { "type": ["string", "null"] },
+    "vaultId": { "type": ["string", "null"] },
+    "autoRotationEnabled": { "type": ["boolean", "null"] },
+    "lastRotationAt": { "type": ["string", "null"] }
   }
 }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from oci_drata.oci_auth import TenancySigner, regional_client
+from oci_drata.oci_auth import TenancySigner, endpoint_client, regional_client
 from oci_drata.security import OciOperationNotAllowedError
 
 
@@ -61,3 +61,32 @@ def test_regional_client_returns_a_guarded_client() -> None:
     assert client.list_instances() == ["ok"]
     with pytest.raises(OciOperationNotAllowedError):
         client.create_instance()
+
+
+class _FakeKmsManagementClient:
+    def __init__(self, config: dict, service_endpoint: str) -> None:
+        self.config = config
+        self.service_endpoint = service_endpoint
+
+    def list_keys(self, **kwargs):
+        return ["ok"]
+
+    def create_key(self, **kwargs):
+        return "should never run"
+
+
+def test_endpoint_client_passes_service_endpoint_and_returns_a_guarded_client() -> None:
+    """KmsManagementClient (and anything else needing a per-resource endpoint
+    instead of the region's default one) takes service_endpoint as a required
+    positional arg regional_client() has no way to supply -- endpoint_client is
+    the dedicated construction path for that shape, same guard as regional_client."""
+
+    signer = TenancySigner(base_config={"region": "us-ashburn-1"})
+    client = endpoint_client(
+        _FakeKmsManagementClient, signer, region="us-ashburn-1",
+        service_endpoint="https://vault1.kms.us-ashburn-1.oraclecloud.com",
+    )
+
+    assert client.list_keys() == ["ok"]
+    with pytest.raises(OciOperationNotAllowedError):
+        client.create_key()

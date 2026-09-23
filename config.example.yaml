@@ -46,6 +46,9 @@ oci:
     # Optional, defaults to false if omitted. Reads whether a Web App Firewall is
     # attached to a load balancer -- never firewall rule/policy detail.
     waf: false
+    # Optional, defaults to false if omitted. Reads whether a KMS key has auto-
+    # rotation enabled and when it last rotated -- never key material itself.
+    kmsVault: false
 
 decisions:
   administrativePorts: [22, 3389]
