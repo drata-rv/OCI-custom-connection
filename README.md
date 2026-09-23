@@ -237,6 +237,22 @@ Allow group oci-drata-collector to read alarms in tenancy
   "CpuUtilization"`) to check for a specific monitored metric, since this
   collector doesn't parse or classify alarm queries by metric type.
 
+### 4.5 Optional: Load Balancer (`oci.services.loadBalancer`)
+
+**Off by default** (`loadBalancer: false` unless set otherwise). Reads
+whether a load balancer is public or private, and backend-set health
+status — never listener/certificate configuration or traffic data.
+
+```text
+Allow group oci-drata-collector to inspect load-balancers in tenancy
+Allow group oci-drata-collector to read load-balancers in tenancy
+```
+
+* `list_load_balancers` already returns full detail (no separate
+  `get_load_balancer` needed) and includes each load balancer's backend
+  set names directly — `get_backend_set_health` is then one call per
+  (load balancer, backend set) pair, fanned out concurrently.
+
 ## 5. Execution
 
 ```bash

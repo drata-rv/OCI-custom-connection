@@ -40,6 +40,9 @@ oci:
     # alarm exists and is enabled for a given metric query) -- never metric data
     # itself or alarm history.
     monitoring: false
+    # Optional, defaults to false if omitted. Reads load balancer public/private
+    # setting and backend-set health status only.
+    loadBalancer: false
 
 decisions:
   administrativePorts: [22, 3389]

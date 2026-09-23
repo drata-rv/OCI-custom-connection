@@ -20,6 +20,7 @@ from oci_drata.collection.database_base import DatabaseBaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.exadata_detection import ExadataDetectionResult
 from oci_drata.collection.identity import IdentityCollectionResult
+from oci_drata.collection.load_balancer import LoadBalancerCollectionResult
 from oci_drata.collection.monitoring import MonitoringCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult
@@ -739,6 +740,35 @@ def _flatten_alarm(alarm: Any, *, timestamp: str | None) -> dict[str, Any]:
     }
 
 
+def _flatten_load_balancer(lb: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        "id": lb.id,
+        "evidenceType": "load_balancer",
+        "name": lb.display_name,
+        "timestamp": timestamp,
+        "region": lb.region,
+        "compartmentId": lb.compartment_id,
+        "isPrivate": lb.is_private,
+    }
+
+
+def _flatten_backend_set_health(
+    lb: Any, backend_set_name: str, health: Any, *, timestamp: str | None
+) -> dict[str, Any]:
+    return {
+        # A backend set name is only unique within its own load balancer, not
+        # tenancy-wide -- composite id to keep upsert-by-id meaningful.
+        "id": f"{lb.id}:{backend_set_name}",
+        "evidenceType": "load_balancer_backend_set",
+        "name": backend_set_name,
+        "timestamp": timestamp,
+        "region": lb.region,
+        "compartmentId": lb.compartment_id,
+        "loadBalancerId": lb.id,
+        "backendSetHealthStatus": health.status,
+    }
+
+
 def build_flat_records(
     *,
     decisions: DecisionsConfig,
@@ -750,6 +780,7 @@ def build_flat_records(
     object_storage: ObjectStorageCollectionResult,
     cloud_guard: CloudGuardCollectionResult,
     monitoring: MonitoringCollectionResult,
+    load_balancer: LoadBalancerCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
     """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
@@ -840,7 +871,21 @@ def build_flat_records(
         monitoring.alarms, exclude_states=_IDENTITY_DELETED_STATES
     )
 
+    # LoadBalancer's real lifecycle enum is DELETED/DELETING/ACTIVE/CREATING/FAILED
+    # (confirmed via oci.load_balancer.models.LoadBalancer's own LIFECYCLE_STATE_*
+    # constants) -- same DELETED/DELETING exclusion convention as identity/alarms.
+    kept_load_balancers, _excluded_load_balancers = split_by_lifecycle(
+        load_balancer.load_balancers, exclude_states=_IDENTITY_DELETED_STATES
+    )
+
     timestamp = normalize.normalize_timestamp(completed_at)
+    backend_set_health_records = [
+        _flatten_backend_set_health(lb, backend_set_name, health, timestamp=timestamp)
+        for lb in kept_load_balancers
+        for backend_set_name in (lb.backend_sets or {})
+        for health in [load_balancer.backend_set_health_by_key.get((lb.id, backend_set_name))]
+        if health is not None
+    ]
     tenancy_id = discovery.tenancy.id if discovery.tenancy is not None else None
     records = sorted(
         [
@@ -864,7 +909,9 @@ def build_flat_records(
             if cloud_guard.configuration is not None
             else []
         )
-        + [_flatten_alarm(a, timestamp=timestamp) for a in kept_alarms],
+        + [_flatten_alarm(a, timestamp=timestamp) for a in kept_alarms]
+        + [_flatten_load_balancer(lb, timestamp=timestamp) for lb in kept_load_balancers]
+        + backend_set_health_records,
         key=lambda r: r["id"],
     )
 
@@ -878,6 +925,7 @@ def build_flat_records(
             "objectStorage": object_storage.complete,
             "cloudGuard": cloud_guard.complete,
             "monitoring": monitoring.complete,
+            "loadBalancer": load_balancer.complete,
         },
         discovery_complete=discovery.complete,
     )

@@ -30,6 +30,9 @@
     "cloudGuardStatus": { "type": ["string", "null"] },
     "alarmEnabled": { "type": ["boolean", "null"] },
     "alarmNamespace": { "type": ["string", "null"] },
-    "alarmQuery": { "type": ["string", "null"] }
+    "alarmQuery": { "type": ["string", "null"] },
+    "isPrivate": { "type": ["boolean", "null"] },
+    "loadBalancerId": { "type": ["string", "null"] },
+    "backendSetHealthStatus": { "type": ["string", "null"] }
   }
 }

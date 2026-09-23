@@ -144,6 +144,9 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_configuration",
         # Monitoring (collection/monitoring.py)
         "list_alarms",
+        # Load Balancer (collection/load_balancer.py)
+        "list_load_balancers",
+        "get_backend_set_health",
     }
 )
 
