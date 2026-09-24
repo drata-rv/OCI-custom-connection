@@ -51,7 +51,12 @@ def test_collect_waf_returns_load_balancer_joined_firewalls(
         id="w1", compartment_id="c1", backend_type="LOAD_BALANCER", load_balancer_id="lb1",
     )
     client = MagicMock()
-    client.list_web_app_firewalls.return_value = _response(data=[waf1])
+    # list_web_app_firewalls returns a WebAppFirewallCollection wrapper, not a bare
+    # list -- confirmed live against a real tenancy (paginate()'s generic "response.data
+    # or []" assumption crashes on the real shape with TypeError: not iterable).
+    client.list_web_app_firewalls.return_value = _response(
+        data=oci.waf.models.WebAppFirewallCollection(items=[waf1])
+    )
     monkeypatch.setattr("oci_drata.collection.waf.regional_client", lambda client_cls, signer, *, region: client)
 
     result = collect_waf(signer=MagicMock(), discovery=discovery, services=_services(waf=True))
