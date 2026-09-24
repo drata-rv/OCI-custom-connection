@@ -1,0 +1,11 @@
+{
+  "description": "Fails an autonomous database with a public endpoint hostname present. Mirrors AWS/Azure 'Database Public Endpoint Disabled'.",
+  "evidenceType": "autonomous_database",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "autonomous_database" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "publicEndpointHostname", "operator": "equal", "value": null } ]
+  }
+}

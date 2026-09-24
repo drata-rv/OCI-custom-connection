@@ -614,7 +614,7 @@ def build_snapshot(
     )
 
 
-# -- Flat-record architecture (see PLAN.md) --------------------------------
+# -- Flat-record architecture ------------------------------------------------
 #
 # One small record per collected resource, POSTed as {"data": [...]} to a single
 # flat schema/resourceId -- replaces the nested resources.*/findings[] design
@@ -633,10 +633,9 @@ class FlatRecordsResult:
     domain_complete: dict[str, bool]
     discovery_complete: bool
     # Per-evidenceType count of resources dropped by lifecycle exclusion (deleted/
-    # terminated). build_snapshot's nested path surfaces this via warnings[]; this path
-    # had no equivalent, so a recordCount of 0 was indistinguishable from "every real
-    # instance is terminated" versus "nothing was ever collected" -- see PLAN.md/README
-    # troubleshooting for the incident this was found from.
+    # terminated). build_snapshot's nested path surfaces this via warnings[]; this
+    # path has no equivalent, so a recordCount of 0 is otherwise indistinguishable
+    # from "every real instance is terminated" versus "nothing was ever collected".
     excluded_counts: dict[str, int]
     # instance<->vnic/storage joins that couldn't resolve (relationships.py). Computed
     # but previously discarded here -- unlike build_snapshot, which hard-blocks upload
@@ -644,10 +643,9 @@ class FlatRecordsResult:
     unresolved_relationship_count: int
 
 
-# Every evidenceType shares one flat schema/resource in Drata (see PLAN.md), and
-# Drata's schema importer auto-adds every top-level property to that schema's own
-# `required` list -- confirmed live: a schema submitted with no `required` array at
-# all came back from Drata with all 27 properties required. `additionalProperties:
+# Every evidenceType shares one flat schema/resource in Drata, and Drata's schema
+# importer auto-adds every top-level property to that schema's own `required` list,
+# even when the submitted schema declares none. `additionalProperties:
 # true` on the schema doesn't help with *missing* required ones. Every _flatten_*
 # function below must therefore emit every field, not just the ones relevant to its
 # own evidenceType -- an omitted field fails per-record validation even though the
@@ -713,14 +711,13 @@ def _flatten_iam_user(user: Any, *, timestamp: str | None) -> dict[str, Any]:
 
 
 def _flatten_api_key(api_key: Any, *, timestamp: str | None) -> dict[str, Any]:
-    # api_key.key_id is OCI's own real, unique identifier for this resource, but its
-    # documented format is "TENANCY_OCID/USER_OCID/FINGERPRINT" -- confirmed live,
-    # this can be 200+ characters, well past an undocumented length limit Drata
-    # enforces on the id field platform-side (not visible in the registered schema
-    # itself; 204 chars was rejected, 124 was accepted). The tenancy segment is
-    # redundant here anyway -- this whole resource already scopes to one tenancy --
-    # so user_id/fingerprint keeps the same real uniqueness guarantee at roughly
-    # half the length.
+    # api_key.key_id is OCI's own unique identifier for this resource, but its
+    # documented format ("TENANCY_OCID/USER_OCID/FINGERPRINT") can exceed an
+    # undocumented length limit Drata enforces on the id field platform-side, not
+    # visible in the registered schema itself. The tenancy segment is redundant
+    # here anyway -- this whole resource already scopes to one tenancy -- so
+    # user_id/fingerprint keeps the same uniqueness guarantee at roughly half the
+    # length.
     return {
         **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": f"{api_key.user_id}/{api_key.fingerprint}",

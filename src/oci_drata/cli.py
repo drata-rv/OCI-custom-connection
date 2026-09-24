@@ -234,8 +234,7 @@ class RunResult:
     snapshot_status: str | None
     uploaded: bool
     report: dict[str, Any]
-    # Flat-record architecture (see PLAN.md) -- populated only when
-    # drata.flatResourceId is configured; None otherwise, no behavior change.
+    # Populated only when drata.flatResourceId is configured; None otherwise.
     flat_records: list[dict[str, Any]] | None = None
 
 
@@ -447,10 +446,10 @@ def _run_flat_records(
     dry_run: bool,
     report: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Builds and (outside dry-run) uploads flat records to drata.flatResourceId --
-    the flat-record architecture, additive alongside the nested-schema path above
-    (see PLAN.md). Mutates ``report`` in place with a "flatRecords" key; never
-    affects the nested path's own uploadDecision/exit_code."""
+    """Builds and (outside dry-run) uploads flat records to drata.flatResourceId,
+    additive alongside the nested-schema path above. Mutates ``report`` in place
+    with a "flatRecords" key; never affects the nested path's own
+    uploadDecision/exit_code."""
 
     flat_result = build_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,

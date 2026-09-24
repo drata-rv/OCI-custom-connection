@@ -52,8 +52,8 @@ def test_collect_waf_returns_load_balancer_joined_firewalls(
     )
     client = MagicMock()
     # list_web_app_firewalls returns a WebAppFirewallCollection wrapper, not a bare
-    # list -- confirmed live against a real tenancy (paginate()'s generic "response.data
-    # or []" assumption crashes on the real shape with TypeError: not iterable).
+    # list -- paginate()'s generic "response.data or []" assumption crashes on the
+    # real shape with TypeError: not iterable.
     client.list_web_app_firewalls.return_value = _response(
         data=oci.waf.models.WebAppFirewallCollection(items=[waf1])
     )

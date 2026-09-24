@@ -36,9 +36,8 @@ schemas/flat-record.schema.json → delivery/drata.py::upsert_records()
 
 Records never carry a precomputed compliance verdict. Drata's own Custom
 Test `evaluator` decides what counts as compliant against the raw facts
-below (e.g. `publicIngressPorts intersectsAny [22, 3389]`). See `PLAN.md`'s
-"Correction" section for the rationale and how it applies to any future
-evidenceType.
+below (e.g. `publicIngressPorts intersectsAny [22, 3389]`). Any new
+evidenceType follows the same rule: emit facts, never a verdict.
 
 | `evidenceType` | Collector | `oci.services` toggle | Raw facts |
 |---|---|---|---|
@@ -64,10 +63,6 @@ Custom Test would need to pattern-match; they're shipped as real data a
 reviewer or test author can use, not as a fully clean single-operator
 check the way every other field in this table is.
 
-`PLAN.md` (working doc, not permanent documentation) has the full
-rationale for this path, including the AWS/Azure native-connector
-coverage-gap analysis driving which evidenceType gets added next.
-
 ### 1.2 Nested-schema path (original design, still the default, superseded)
 
 ```text
@@ -80,8 +75,8 @@ One aggregate JSON record per tenancy (`schemas/oci-snapshot-1.0.0.json`),
 uploaded via `delivery/drata.py::upsert_record()` — a single object, not a
 batch. This runs unconditionally today (no opt-in), independently of the
 flat-record path above; the two don't share a resourceId or interfere with
-each other. Left in place until the flat-record path is proven out further
-and this one is deliberately retired — see `PLAN.md`.
+each other. Retiring this path is pending a decision on migrating any
+Custom Tests already built against `findings[].status` (see §9).
 
 ### 1.3 Shared layers (both paths)
 
@@ -562,65 +557,51 @@ flat-record path (§1.1) has its own, currently more significant, gaps:
   would need Drata operator pattern-matching a Custom Test author sets
   up, not a simple `equal`/`exist` check the way every other field in the
   table is.
-* **OKE (Kubernetes) audit-logging evidence does not exist.** Checked
-  before writing anything: it's not a field on the cluster object, it's a
-  separate OCI Logging-service resource attached to the cluster — a
-  cross-service lookup this collector doesn't do.
-* **The AWS/Azure native-connector coverage target this path is being
-  built against (`PLAN.md`) is stated as "60%" without a locatable
-  original source** in git history or `PLAN.md` itself.
-* **A `200` from Drata's batch endpoint is not proof every record in
-  the batch was stored — `delivery/drata.py` now checks for this, but
-  the underlying platform behavior is worth knowing.** Confirmed live:
-  the endpoint can return `200` for the whole call while individual
-  records inside failed their own schema validation, each carrying its
-  own `error` field in the response body. `upsert_record`/
-  `upsert_records` parse that body and only report `uploaded: true`
-  when every record in the call is error-free; a partial or full
-  per-record failure now shows up as `delivery_failed` with a summary
-  of which record ids failed and why, instead of a false `uploaded:
-  true`. Two related, confirmed-live facts every field on every record
-  must account for: every field ever added to the shared flat schema
-  becomes required (null where inapplicable) on every record, since
-  Drata's importer auto-adds a `required: [...]` list on import
-  covering every top-level property; and the `id` field has an
+* **OKE (Kubernetes) audit-logging evidence does not exist.** It's not a
+  field on the cluster object — it's a separate OCI Logging-service
+  resource attached to the cluster, a cross-service lookup this collector
+  doesn't do.
+* **A `200` from Drata's batch endpoint is not proof every record in the
+  batch was stored.** The endpoint can return `200` for the whole call
+  while individual records inside failed their own schema validation,
+  each carrying its own `error` field in the response body.
+  `upsert_record`/`upsert_records` parse that body and only report
+  `uploaded: true` when every record in the call is error-free; a partial
+  or full per-record failure shows up as `delivery_failed` with a summary
+  of which record ids failed and why. Two related platform facts every
+  field on every record must account for: every field ever added to the
+  shared flat schema becomes required (null where inapplicable) on every
+  record, since Drata's importer auto-adds a `required: [...]` list on
+  import covering every top-level property; and the `id` field has an
   undocumented length limit enforced platform-side, not visible in the
-  registered schema itself (confirmed: 204 characters rejected, 124
-  accepted) — keep every evidenceType's `id` well under that.
+  registered schema itself — keep every evidenceType's `id` well under
+  200 characters.
 * **The nested-schema path (§1.2) still uploads a precomputed compliance
-  verdict** (`findings[].status`/`expected`/`observed`) on every real
-  run by default — exactly the pattern [§1.1](#11-flat-record-path-current-direction-opt-in-via-drataflatresourceid)
-  and the Correction section of `PLAN.md` say never to do. It was kept
-  running, unchanged, deliberately, until the flat-record path was
-  proven out further (see `PLAN.md`'s sequencing) — retiring it or
-  stripping the verdict fields from what gets uploaded needs a decision
-  first, since Custom Tests may already be built in Drata against
-  `findings[].status`.
+  verdict** (`findings[].status`/`expected`/`observed`) on every run by
+  default — the same pattern [§1.1](#11-flat-record-path-current-direction-opt-in-via-drataflatresourceid)
+  avoids. Retiring it, or stripping the verdict fields from what gets
+  uploaded, needs a decision first: Custom Tests may already be built in
+  Drata against `findings[].status`.
 
 ## 10. Example Custom Tests
 
-**`custom-tests/`'s 8 JSON files are stale — do not paste them in as-is.**
-They target the nested-schema path's shape (`resources.instances[]`,
-`snapshotStatus`, etc. — §1.2, still what the default upload path
-produces), and their operator names/nesting pattern were validated
-against Drata's engine *source code*, not against this connection's own
-live Advanced Editor. Real production use found the gap that source-level
-validation missed: Drata's Advanced Editor **rejected the array-quantifier
-JSON pattern several of these files use, live, for this connection's
-actual registered schema.** `custom-tests/README.md` documents this in
-detail; treat every file in that directory as a historical record, not
-a working example, until it's rewritten (tracked in `PLAN.md`).
+`custom-tests/` holds Advanced Editor JSON for the flat-record path
+(§1.1), one file per evidenceType. Each file has an `evaluator` (the
+pass/fail condition) and a `filteringCriteria` (mode `exclusion`) — paste
+them into the Advanced Editor's two separate fields, not one blob.
+Filtering is required because every evidenceType shares one resource: an
+unscoped evaluator would also run against every other record type, where
+its fact is `null`.
 
-For a test format that **is** confirmed against a live Custom Test build
-(captured directly from Drata's own UI, not source code — see `PLAN.md`'s
-"Real Custom Test authoring reference"), and against the current
-flat-record path (§1.1): build a Custom Test in the UI with a raw-fact
-`evaluator` condition, e.g. for `evidenceType: "instance"`:
+Minimal example, for `evidenceType: "instance"`:
 
 ```json
 { "all": [ { "fact": "hasPublicAddress", "operator": "equal", "value": false } ] }
 ```
 
-Evaluation threshold "All results must pass" (`assertion: "nofail"`).
-This exact shape was pushed live and confirmed to correctly flag
-noncompliant vs. compliant records — see `PLAN.md` for the full trace.
+Evaluation threshold: "All results must pass" (`assertion: "nofail"`).
+
+Drata's Advanced Editor does not accept an array-quantifier condition
+(`operator: all`/`any` over a `path` into a nested array) against this
+connection's registered schema — every file in `custom-tests/` uses a
+flat, single-value `fact`/`operator`/`value` condition instead.

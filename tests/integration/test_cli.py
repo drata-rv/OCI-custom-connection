@@ -292,7 +292,7 @@ def test_main_test_mode_skips_nested_upload_even_if_config_says_upload(
     assert exit_code == cli.EXIT_BLOCKED  # nested path didn't upload and this wasn't a dry run
 
 
-# -- Flat-record architecture (see PLAN.md) -- opt-in via drata.flatResourceId --
+# -- Flat-record architecture -- opt-in via drata.flatResourceId --
 
 
 def _app_config_with_flat_resource(flat_resource_id: int = 99):
@@ -318,7 +318,7 @@ def test_flat_records_dry_run_never_uploads(monkeypatch: pytest.MonkeyPatch, pat
     assert len(result.flat_records) == 2  # one instance, one autonomous database
     instance_record = next(r for r in result.flat_records if r["evidenceType"] == "instance")
     assert instance_record["id"] == "ocid1.instance.oc1..vm1"
-    assert "status" not in instance_record  # raw facts only -- no precomputed verdict, see PLAN.md
+    assert "status" not in instance_record  # raw facts only -- no precomputed verdict
     assert instance_record["hasPublicAddress"] is True
     assert instance_record["publicIngressPorts"] == [3389]
 

@@ -6,8 +6,8 @@ raise -- returned as ``DeliveryResult`` with ``error_class``: auth/validation ar
 non-retryable, 429/5xx get bounded retry.
 
 ``upsert_record`` POSTs a single ``{"data": record}`` (the original nested-schema
-path). ``upsert_records`` POSTs ``{"data": [...]}`` in batches of 500 (the flat-record
-architecture -- see PLAN.md), sharing the same retry/classification logic.
+path). ``upsert_records`` POSTs ``{"data": [...]}`` in batches of 500 (the
+flat-record architecture), sharing the same retry/classification logic.
 """
 
 from __future__ import annotations
@@ -121,9 +121,9 @@ def upsert_records(
     session: requests.Session | None = None,
 ) -> list[DeliveryResult]:
     """Upsert ``records`` in batches of ``_BATCH_SIZE``, POSTing ``{"data": [...]}`` per
-    batch (the flat-record architecture -- see PLAN.md). Returns one DeliveryResult per
-    batch, in order; a failed batch doesn't stop the rest, so a caller can see exactly
-    which batches landed. Same upsert-by-id, additive semantics as ``upsert_record``."""
+    batch. Returns one DeliveryResult per batch, in order; a failed batch doesn't stop
+    the rest, so a caller can see exactly which batches landed. Same upsert-by-id,
+    additive semantics as ``upsert_record``."""
 
     if not records:
         return []
@@ -278,9 +278,9 @@ def _upsert_with_retry(
 
 def _first_per_record_error(response: requests.Response) -> str | None:
     """A 200/201 batch response body is a list of per-record results, each optionally
-    carrying its own {"error": {"message", "code"}} -- confirmed live against a real
-    connection. A single-record response may be one such object directly rather than
-    a list of them; both shapes are checked. Returns a bounded summary of every failed
+    carrying its own {"error": {"message", "code"}}. A single-record response may be
+    one such object directly rather than a list of them; both shapes are checked.
+    Returns a bounded summary of every failed
     record's own id + message (not just the first) so a caller can act on exactly
     which ones didn't land, or None if every item in the response is error-free.
     Returns None (not a failure) if the body isn't JSON or isn't shaped like either

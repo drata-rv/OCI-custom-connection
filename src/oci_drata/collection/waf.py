@@ -8,10 +8,10 @@ carries ``load_balancer_id`` directly, joinable against collection/load_balancer
 ``list_web_app_firewalls`` is already full-fidelity (no drill-down call needed).
 
 ``list_web_app_firewalls`` returns a ``WebAppFirewallCollection``, not a bare
-list (confirmed live against a real tenancy -- paginate()'s ``response.data or
-[]`` assumption crashes on it with ``TypeError: not iterable``); ``_unwrap``
-adapts it to the plain list :func:`pagination.paginate` expects, same pattern
-as ``collection/database_autonomous.py``'s ``_unwrap_peers`` for
+list -- paginate()'s ``response.data or []`` assumption crashes on it with
+``TypeError: not iterable``. ``_unwrap`` adapts it to the plain list
+:func:`pagination.paginate` expects, same pattern as
+``collection/database_autonomous.py``'s ``_unwrap_peers`` for
 ``list_autonomous_database_peers``, the one other operation in this project
 with this shape.
 """

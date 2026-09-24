@@ -121,8 +121,8 @@ def _public_ingress_from_rules(
 ) -> tuple[set[int], bool, bool]:
     """Raw counterpart to _permissive_admin_ports -- reports every specific port a
     public-source rule names, with no administrative-ports allowlist applied (that
-    policy decision belongs in the Drata Custom Test, not the collector -- see
-    PLAN.md). A rule with no port restriction, or a genuine multi-port range, can't
+    policy decision belongs in the Drata Custom Test, not the collector). A rule
+    with no port restriction, or a genuine multi-port range, can't
     be represented as discrete port numbers without enumerating up to 65536
     entries, so it's folded into the has_ranged flag instead of silently dropped or
     truncated. Returns (named ports, has_ranged, evidence_complete)."""
@@ -184,9 +184,9 @@ def derive_public_ingress_facts(
     internet_gateway_ids: set[str],
     public_source_cidrs: tuple[str, ...],
 ) -> dict[str, PublicIngressFacts]:
-    """Raw-fact counterpart to derive_instance_exposure, for the flat-record path
-    (see PLAN.md) -- reports what's actually reachable from the public internet
-    with no administrative-ports policy applied. Keyed by instance id rather than
+    """Raw-fact counterpart to derive_instance_exposure, for the flat-record path --
+    reports what's actually reachable from the public internet with no
+    administrative-ports policy applied. Keyed by instance id rather than
     returning replaced Instance objects, since these facts don't belong on the
     Instance model the old nested-schema path still uses."""
 

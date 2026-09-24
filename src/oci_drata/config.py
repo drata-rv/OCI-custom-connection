@@ -304,9 +304,8 @@ class DrataConfig:
     api_token_secret_ref: SecretRef
     allow_alternate_host: bool = False
     # Resource ID of a second Custom Connection resource registered with
-    # schemas/flat-record.schema.json (see PLAN.md). None/absent leaves the
-    # flat-record publish path disabled entirely -- default behavior is
-    # unchanged from before that path existed.
+    # schemas/flat-record.schema.json. None/absent leaves the flat-record
+    # publish path disabled entirely.
     flat_resource_id: int | None = None
 
 

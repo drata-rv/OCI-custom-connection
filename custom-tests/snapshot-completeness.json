@@ -1,9 +1,0 @@
-{
-  "all": [
-    {
-      "fact": "snapshotStatus",
-      "operator": "equal",
-      "value": "complete"
-    }
-  ]
-}
