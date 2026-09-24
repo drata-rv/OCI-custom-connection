@@ -249,7 +249,10 @@ def paginate(
             result.error_message = exc.error_message
             result.request_ids.extend(exc.request_ids)
             result.retry_delays_seconds.extend(exc.retry_delays)
-            logger.warning(
+            # DEBUG, not WARNING -- a tenancy with many compartments repeats the same
+            # (service, operation, error_code) failure once per compartment/region;
+            # cli.py logs one aggregated WARNING per distinct combination instead.
+            logger.debug(
                 "operation failed after retry exhaustion",
                 extra={
                     "service": service,

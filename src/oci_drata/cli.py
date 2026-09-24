@@ -69,6 +69,28 @@ def _domain_all_skipped(operations: list[OperationResult]) -> bool:
     return bool(operations) and all(op.status == "skipped" for op in operations)
 
 
+def _log_operation_failure_summary(operations: list[OperationResult]) -> None:
+    """One aggregated WARNING per distinct (service, operation, error_code), instead of
+    the per-call DEBUG log in pagination.py repeating once per compartment/region -- a
+    tenancy with many compartments would otherwise flood the log with dozens of
+    identical lines for the same underlying gap."""
+
+    counts: dict[tuple[str, str, str | None], int] = {}
+    for op in operations:
+        if op.status not in ("failed", "unsupported"):
+            continue
+        key = (op.service, op.operation, op.error_code)
+        counts[key] = counts.get(key, 0) + 1
+    for (service, operation, error_code), occurrences in sorted(counts.items()):
+        logger.warning(
+            "operation failed after retry exhaustion",
+            extra={
+                "service": service, "operation": operation,
+                "error_code": error_code, "occurrences": occurrences,
+            },
+        )
+
+
 def _access_summary(operations: list[OperationResult]) -> dict[str, Any]:
     """``operations`` must be every OperationResult (pagination.py) from every collector
     this run invoked, not just what one delivery path consumes. Groups them by
@@ -296,6 +318,7 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         *cloud_guard_result.operations, *monitoring_result.operations,
         *load_balancer_result.operations, *waf_result.operations, *kms_vault_result.operations,
     ]
+    _log_operation_failure_summary(all_operations)
     access_summary = _access_summary(all_operations)
     if access_summary["compartmentsWithAuthGap"]:
         logger.warning(

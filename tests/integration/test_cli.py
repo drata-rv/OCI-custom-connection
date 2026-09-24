@@ -71,11 +71,30 @@ def test_complete_run_uploads(patched_collectors: MagicMock) -> None:
 # -- _access_summary: distinguishes real access gaps from compartments with no data --
 
 
-def _op(compartment_id, status="success", error_code=None, item_count=0):
+def _op(compartment_id, status="success", error_code=None, item_count=0, service="s", operation="o"):
     return OperationResult(
-        service="s", operation="o", region=None, compartment_id=compartment_id,
+        service=service, operation=operation, region=None, compartment_id=compartment_id,
         status=status, error_code=error_code, item_count=item_count,
     )
+
+
+def test_log_operation_failure_summary_aggregates_by_service_operation_error_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    operations = [
+        _op("c1", status="failed", error_code="NotAuthorizedOrNotFound", service="database", operation="list_x"),
+        _op("c2", status="failed", error_code="NotAuthorizedOrNotFound", service="database", operation="list_x"),
+        _op("c3", status="failed", error_code="NotAuthorizedOrNotFound", service="database", operation="list_x"),
+        _op("c4", status="success", service="database", operation="list_x"),
+        _op("c5", status="failed", error_code="TooManyRequests", service="compute", operation="list_y"),
+    ]
+    with caplog.at_level("WARNING", logger="oci_drata.cli"):
+        cli._log_operation_failure_summary(operations)
+
+    assert len(caplog.records) == 2
+    by_operation = {r.operation: r for r in caplog.records}  # type: ignore[attr-defined]
+    assert by_operation["list_x"].occurrences == 3  # type: ignore[attr-defined]
+    assert by_operation["list_y"].occurrences == 1  # type: ignore[attr-defined]
 
 
 def test_access_summary_groups_by_compartment() -> None:
