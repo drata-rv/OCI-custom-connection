@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "hasRangedPublicIngress",
+      "operator": "equal",
+      "value": false
+    }
+  ]
+}

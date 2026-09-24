@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "hasPublicAddress",
+      "operator": "equal",
+      "value": false
+    }
+  ]
+}

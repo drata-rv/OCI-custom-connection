@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "backendSetHealthStatus",
+      "operator": "equal",
+      "value": "OK"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "mode": "exclusion",
+  "evaluator": {
+    "all": [
+      {
+        "fact": "evidenceType",
+        "operator": "notEqual",
+        "value": "instance"
+      }
+    ]
+  }
+}

@@ -586,22 +586,39 @@ flat-record path (§1.1) has its own, currently more significant, gaps:
 ## 10. Example Custom Tests
 
 `custom-tests/` holds Advanced Editor JSON for the flat-record path
-(§1.1), one file per evidenceType. Each file has an `evaluator` (the
-pass/fail condition) and a `filteringCriteria` (mode `exclusion`) — paste
-them into the Advanced Editor's two separate fields, not one blob.
+(§1.1), two files per test — each file is the bare JSON for exactly one
+Advanced Editor field, ready to paste as-is:
+
+- `<name>.evaluator.json` → the main condition field (the pass/fail rule).
+- `<name>.filtering-criteria.json` → the "Add Filtering Criteria" field.
+
 Filtering is required because every evidenceType shares one resource: an
 unscoped evaluator would also run against every other record type, where
-its fact is `null`.
+its fact is `null`. Each filtering-criteria file excludes every record
+whose `evidenceType` doesn't match the test's target type — Drata's
+Advanced Editor only offers an exclusion mode, so "test only `instance`
+records" is expressed as "drop every record where `evidenceType` is not
+`instance`," not a positive inclusion filter.
 
-Minimal example, for `evidenceType: "instance"`:
-
-```json
-{ "all": [ { "fact": "hasPublicAddress", "operator": "equal", "value": false } ] }
-```
-
-Evaluation threshold: "All results must pass" (`assertion: "nofail"`).
+Evaluation threshold for every test below: "All results must pass"
+(`assertion: "nofail"`).
 
 Drata's Advanced Editor does not accept an array-quantifier condition
 (`operator: all`/`any` over a `path` into a nested array) against this
-connection's registered schema — every file in `custom-tests/` uses a
-flat, single-value `fact`/`operator`/`value` condition instead.
+connection's registered schema — every evaluator file uses a flat,
+single-value `fact`/`operator`/`value` condition instead.
+
+| Test | evidenceType | What it checks |
+|---|---|---|
+| `instance-not-publicly-exposed` | `instance` | Fails an instance with any public IP address. Mirrors AWS/Azure "Instance Not Publicly Accessible." |
+| `instance-no-exposed-admin-ports` | `instance` | Fails an instance with SSH (22) or RDP (3389) reachable from a public source. |
+| `instance-no-unenumerable-public-ingress` | `instance` | Fails an instance whose public-source ingress rule is port-unrestricted or a genuine multi-port range — too wide to enumerate as discrete ports; a failure means the security rules need direct review. |
+| `iam-user-mfa-enabled` | `iam_user` | Fails a user with MFA not activated. Mirrors AWS/Azure "MFA enabled for accounts." |
+| `api-key-rotated-recently` | `api_key` | Fails an API signing key created more than 90 days ago — adjust the threshold to the deployment's own rotation policy. Mirrors AWS "IAM Access Key Rotation." |
+| `bucket-no-public-access` | `bucket` | Fails a bucket whose `publicAccessType` isn't `NoPublicAccess`. Mirrors AWS/Azure "Cloud Storage Public Access Disabled." |
+| `bucket-versioning-enabled` | `bucket` | Fails a bucket whose `versioning` isn't `Enabled`. Mirrors AWS/Azure "Storage Data Versioned or Retained." |
+| `autonomous-database-no-public-endpoint` | `autonomous_database` | Fails a database with a public endpoint hostname present. Mirrors AWS/Azure "Database Public Endpoint Disabled." |
+| `autonomous-database-customer-managed-key` | `autonomous_database` | Fails a database with no customer-managed KMS key. Only meaningful when `decisions.requireCustomerManagedDatabaseKeys` is enabled — Oracle-managed encryption is the default and is itself compliant otherwise. |
+| `cloud-guard-enabled` | `cloud_guard_configuration` | Fails if the tenancy's Cloud Guard status isn't `ENABLED`. Mirrors AWS GuardDuty "threat detection in place." Tenancy-wide singleton — one record per tenancy. |
+| `load-balancer-backend-set-healthy` | `load_balancer_backend_set` | Fails a backend set whose health status isn't `OK`. Collapses AWS's separate latency/error-rate/unhealthy-host checks into one status check. |
+| `kms-key-auto-rotation-enabled` | `kms_key` | Fails a KMS key with auto-rotation disabled. Mirrors AWS "CMK Rotation" / Azure "Key Vault Key Expiration." |

@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "cloudGuardStatus",
+      "operator": "equal",
+      "value": "ENABLED"
+    }
+  ]
+}
