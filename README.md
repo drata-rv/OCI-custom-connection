@@ -569,17 +569,24 @@ flat-record path (§1.1) has its own, currently more significant, gaps:
 * **The AWS/Azure native-connector coverage target this path is being
   built against (`PLAN.md`) is stated as "60%" without a locatable
   original source** in git history or `PLAN.md` itself.
-* **A successful-looking upload is not proof of persistence.** Drata's
-  batch records endpoint can return `200`/`uploaded=True` for a record
-  that doesn't match the resource's *registered* schema, while silently
-  not storing it — confirmed by pushing a brand-new record id and
-  reading it back absent. Every field ever added to the shared flat
-  schema becomes required (null where inapplicable) on every record,
-  since Drata's importer auto-adds a `required: [...]` list on import
-  covering every top-level property. Until this is fixed (a code path
-  that reads records back after upload to confirm), don't trust an
-  `uploaded: true` `collection-report.json` alone — spot-check the
-  connection's actual stored records after a real upload.
+* **A `200` from Drata's batch endpoint is not proof every record in
+  the batch was stored — `delivery/drata.py` now checks for this, but
+  the underlying platform behavior is worth knowing.** Confirmed live:
+  the endpoint can return `200` for the whole call while individual
+  records inside failed their own schema validation, each carrying its
+  own `error` field in the response body. `upsert_record`/
+  `upsert_records` parse that body and only report `uploaded: true`
+  when every record in the call is error-free; a partial or full
+  per-record failure now shows up as `delivery_failed` with a summary
+  of which record ids failed and why, instead of a false `uploaded:
+  true`. Two related, confirmed-live facts every field on every record
+  must account for: every field ever added to the shared flat schema
+  becomes required (null where inapplicable) on every record, since
+  Drata's importer auto-adds a `required: [...]` list on import
+  covering every top-level property; and the `id` field has an
+  undocumented length limit enforced platform-side, not visible in the
+  registered schema itself (confirmed: 204 characters rejected, 124
+  accepted) — keep every evidenceType's `id` well under that.
 * **The nested-schema path (§1.2) still uploads a precomputed compliance
   verdict** (`findings[].status`/`expected`/`observed`) on every real
   run by default — exactly the pattern [§1.1](#11-flat-record-path-current-direction-opt-in-via-drataflatresourceid)
