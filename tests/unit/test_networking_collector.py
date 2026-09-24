@@ -33,7 +33,7 @@ def discovery() -> SimpleNamespace:
 def test_collect_networking_merges_concurrent_nsg_results(
     monkeypatch: pytest.MonkeyPatch, discovery: SimpleNamespace
 ) -> None:
-    """P2-1 regression: list_network_security_group_security_rules/_vnics per NSG was
+    """list_network_security_group_security_rules/_vnics per NSG was
     parallelized. Every NSG's rules and vnic membership (two NSGs here) must still be
     correctly keyed and merged regardless of which worker thread produced them."""
 

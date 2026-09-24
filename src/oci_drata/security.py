@@ -1,12 +1,13 @@
 """Allow/deny lists enforcing read-only, least-privilege OCI access, enforced twice:
 
 - ``tests/unit/test_operation_allowlist.py`` ast-scans ``src/oci_drata/collection`` at
-  build time and fails on any call not in :data:`ALLOWED_OCI_OPERATIONS` or matching
-  :data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS`.
+  build time against :data:`ALLOWED_OCI_OPERATIONS`, :data:`FORBIDDEN_OPERATION_PREFIXES`,
+  and :data:`FORBIDDEN_OPERATIONS`.
 - :class:`GuardedOciClient` (returned by ``oci_auth.regional_client``) checks every
-  ``list_*``/``get_*`` attribute access against the same allow/deny lists at the moment
-  of the call, not just at CI time -- catches a dynamically resolved or aliased method
-  name the static AST scan can't see (``getattr(client, name)()``, a rebound method).
+  callable attribute access against the same lists at call time, catching a name
+  resolved dynamically or via alias that the static scan can't see. Every real OCI SDK
+  client method is read-shaped (``list_*``/``get_*``) or a mutation verb -- there's no
+  third category, so any callable outside the allowlist is refused.
 """
 
 from __future__ import annotations
@@ -62,16 +63,15 @@ FORBIDDEN_OPERATIONS: frozenset[str] = frozenset(
     }
 )
 
-# Allowed list_*/get_* operations, grouped by spec section. Keep in sync with
-# TRACEABILITY.md and the collectors that call these names.
+# Allowed list_*/get_* operations, grouped by collector module; keep in sync with callers.
 ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
     {
-        # 5.1 Discovery
+        # Discovery (collection/discovery.py)
         "get_tenancy",
         "list_region_subscriptions",
         "list_compartments",
         "list_availability_domains",
-        # 5.2 Compute and Windows classification
+        # Compute and Windows classification (collection/compute.py)
         "list_instances",
         "get_instance",
         "get_image",
@@ -79,12 +79,12 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_vnic",
         "list_private_ips",
         "get_public_ip_by_private_ip_id",
-        # 5.3 Boot and block storage
+        # Boot and block storage (collection/storage.py)
         "list_boot_volumes",
         "list_boot_volume_attachments",
         "list_volumes",
         "list_volume_attachments",
-        # 5.4 Network exposure
+        # Network exposure (collection/networking.py)
         "list_vcns",
         "list_subnets",
         "list_route_tables",
@@ -93,7 +93,7 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_network_security_groups",
         "list_network_security_group_security_rules",
         "list_network_security_group_vnics",
-        # 5.5 Base Database Service
+        # Base Database Service (collection/database_base.py)
         "list_db_systems",
         "get_db_system",
         "list_db_homes",
@@ -104,7 +104,7 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_backup",
         "list_data_guard_associations",
         "get_data_guard_association",
-        # 5.6 Autonomous Database
+        # Autonomous Database (collection/database_autonomous.py)
         "list_autonomous_databases",
         "get_autonomous_database",
         "list_autonomous_database_backups",
@@ -112,12 +112,12 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_autonomous_database_dataguard_associations",
         "get_autonomous_database_dataguard_association",
         "list_autonomous_database_peers",
-        # 5.7 Exadata detection (minimal, no drill-down)
+        # Exadata detection, minimal, no drill-down (collection/exadata_detection.py)
         "list_cloud_vm_clusters",
         "list_exadata_infrastructures",
         "list_cloud_exadata_infrastructures",
         "list_autonomous_exadata_infrastructures",
-        # 5.8 Site-to-Site VPN
+        # Site-to-Site VPN (collection/vpn.py)
         "list_ip_sec_connections",
         "get_ip_sec_connection",
         "list_ip_sec_connection_tunnels",
@@ -129,6 +129,29 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_drg_attachments",
         "list_drg_route_rules",
         "list_drg_route_tables",
+        # Identity, opt-in only (collection/identity.py) -- reads user MFA status, API key
+        # ages, and raw IAM policy text. list_api_keys returns only each key's public
+        # fingerprint/value; no auth-token/credential-retrieval call is allowlisted here.
+        "list_users",
+        "list_api_keys",
+        "list_policies",
+        # Object Storage (collection/object_storage.py)
+        "get_namespace",
+        "list_buckets",
+        "get_bucket",
+        # Cloud Guard (collection/cloud_guard.py)
+        "get_configuration",
+        # Monitoring (collection/monitoring.py)
+        "list_alarms",
+        # Load Balancer (collection/load_balancer.py)
+        "list_load_balancers",
+        "get_backend_set_health",
+        # Web Application Firewall (collection/waf.py)
+        "list_web_app_firewalls",
+        # KMS vault (collection/kms_vault.py)
+        "list_vaults",
+        "list_keys",
+        "get_key",
     }
 )
 
@@ -149,16 +172,11 @@ class OciOperationNotAllowedError(Exception):
 
 
 class GuardedOciClient:
-    """Wraps a raw OCI SDK client object; every ``list_*``/``get_*`` attribute access is
-    checked against the allow/deny lists above at the moment of access, fail-closed on
-    anything not explicitly allowed. Any other attribute (non-operation methods,
-    internal client state) passes through untouched -- this only narrows the operation
-    surface, it never changes behavior for an allowed call.
-
-    Defense in depth alongside test_operation_allowlist.py's static AST scan: this
-    catches a name the scan can't see because it's resolved dynamically
-    (``getattr(client, name)()``) or through an alias, not just a literal
-    ``client.list_x(...)`` call site.
+    """Wraps a raw OCI SDK client; every callable attribute access is checked against the
+    allow/deny lists above at call time, fail-closed on anything not explicitly allowed.
+    Non-callable attributes (e.g. ``base_client``) pass through untouched. Catches names
+    resolved dynamically or via alias that the static scan (test_operation_allowlist.py)
+    can't see.
     """
 
     def __init__(self, client: Any) -> None:
@@ -169,15 +187,16 @@ class GuardedOciClient:
         attr = getattr(client, name)
         if not callable(attr):
             return attr
-        # Checked regardless of name shape -- a mutation-shaped call (create_*,
-        # terminate_*, ...) resolved dynamically (getattr(client, name)()) must be
-        # blocked here too, not only when it matches the list_/get_ check below.
+        # Checked regardless of name shape -- a dynamically resolved mutation call
+        # must be blocked here too, not just literal create_*/terminate_* call sites.
         if is_forbidden_operation(name):
             raise OciOperationNotAllowedError(
                 f"OCI operation {name!r} is forbidden (mutation/lifecycle/credential-"
                 f"retrieval-shaped) -- refusing to call it"
             )
-        if (name.startswith("list_") or name.startswith("get_")) and not is_allowed_operation(name):
+        # Every callable, not just list_*/get_* shaped -- no third category of OCI SDK
+        # client method exists, so anything not explicitly allowlisted is refused.
+        if not is_allowed_operation(name):
             raise OciOperationNotAllowedError(
                 f"OCI operation {name!r} is not in the read-only allowlist "
                 f"(security.ALLOWED_OCI_OPERATIONS) -- refusing to call it"

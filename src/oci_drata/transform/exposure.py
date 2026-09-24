@@ -1,12 +1,10 @@
 """Network exposure derivation for compute instances (spec 5.4).
 
-effectiveIngressExposure reflects administrative-port reachability only, not general port exposure.
-Missing route/rule/membership evidence yields unknown; only no public address short-circuits to not_exposed.
-Source is evaluated by real CIDR containment/overlap (ipaddress), not string equality: a rule's source
-counts as public when it is globally routable (excludes RFC1918/loopback/link-local/CGNAT/reserved, per
-ipaddress.is_global) AND overlaps a configured publicSourceCidrs reference network. A source that fails to
-parse, or an NSG-typed source (membership not resolved -- no NSG-to-NSG chain resolution in this MVP),
-marks evidence incomplete for that VNIC rather than silently excluding the rule.
+effectiveIngressExposure reflects administrative-port reachability, not general port exposure. Missing
+route/rule/membership evidence yields unknown; only no public address short-circuits to not_exposed.
+A source counts as public via real CIDR overlap (ipaddress.is_global) against publicSourceCidrs, never
+string equality; a source that fails to parse, or an NSG-typed source (membership unresolved), marks
+evidence incomplete rather than excluding the rule.
 """
 
 from __future__ import annotations
@@ -74,10 +72,9 @@ def _permissive_admin_ports(
     public_reference_networks: tuple[_IpNetwork, ...],
     is_ingress: Callable[[Any], bool] | None = None,
 ) -> tuple[set[int], bool]:
-    """Returns (exposed administrative ports, evidence_complete). evidence_complete is False when a rule's
-    source can't be resolved to a definite public/private verdict (unparseable CIDR, or NSG-typed source
-    whose membership this MVP doesn't resolve) -- such a rule can't be proven safe, so it must not be
-    silently dropped from consideration."""
+    """Returns (exposed administrative ports, evidence_complete); evidence_complete is False when a
+    source can't be resolved to public/private (unparseable CIDR, or unresolved NSG membership) --
+    such rules can't be proven safe and must not be silently dropped."""
 
     exposed: set[int] = set()
     evidence_complete = True
@@ -111,6 +108,184 @@ def _permissive_admin_ports(
             if _rule_covers_port(tcp_options, port):
                 exposed.add(port)
     return exposed, evidence_complete
+
+
+def _public_ingress_from_rules(
+    rules: Iterable[Any],
+    *,
+    public_reference_networks: tuple[_IpNetwork, ...],
+    is_ingress: Callable[[Any], bool] | None = None,
+) -> tuple[set[int], bool, bool]:
+    """Raw counterpart to _permissive_admin_ports: reports every port a public-source rule names, with
+    no administrative-ports allowlist applied (that policy belongs in the Drata Custom Test, not here).
+    An unrestricted or multi-port rule can't be enumerated as discrete ports, so it's folded into
+    has_ranged instead of dropped or truncated. Returns (named ports, has_ranged, evidence_complete)."""
+
+    named_ports: set[int] = set()
+    has_ranged = False
+    evidence_complete = True
+    for rule in rules:
+        if is_ingress is not None and not is_ingress(rule):
+            continue
+        protocol = getattr(rule, "protocol", None)
+        if protocol not in _TCP_PROTOCOLS:
+            continue
+        source = getattr(rule, "source", None)
+        source_type = getattr(rule, "source_type", None)
+
+        if source_type == "SERVICE_CIDR_BLOCK":
+            continue  # Oracle-managed service network, never internet-sourced.
+        if source_type == "NETWORK_SECURITY_GROUP":
+            evidence_complete = False
+            continue
+        if source_type not in (None, "CIDR_BLOCK"):
+            evidence_complete = False
+            continue
+
+        source_network = _parse_network(source) if source else None
+        if source_network is None:
+            evidence_complete = False
+            continue
+        if not _is_effectively_public(source_network, public_reference_networks):
+            continue
+
+        tcp_options = getattr(rule, "tcp_options", None)
+        port_range = getattr(tcp_options, "destination_port_range", None) if tcp_options else None
+        if port_range is None:
+            has_ranged = True  # no port restriction on this rule: every port is open
+        elif port_range.min is None or port_range.max is None or port_range.min != port_range.max:
+            has_ranged = True  # a real multi-port range, not one specific port
+        else:
+            named_ports.add(port_range.min)
+    return named_ports, has_ranged, evidence_complete
+
+
+@dataclasses.dataclass(frozen=True)
+class PublicIngressFacts:
+    has_public_address: bool | None
+    public_ingress_ports: tuple[int, ...]
+    has_ranged_public_ingress: bool | None
+
+
+def derive_public_ingress_facts(
+    instances: list[Instance],
+    *,
+    vnics_by_id: dict[str, Vnic],
+    subnets_by_id: dict[str, Any],
+    route_tables_by_id: dict[str, Any],
+    security_lists_by_id: dict[str, Any],
+    nsg_security_rules_by_nsg_id: dict[str, list[Any]],
+    internet_gateway_ids: set[str],
+    public_source_cidrs: tuple[str, ...],
+) -> dict[str, PublicIngressFacts]:
+    """Raw-fact counterpart to derive_instance_exposure for the flat-record path: reports public-internet
+    reachability with no administrative-ports policy applied. Returns a dict keyed by instance id, since
+    these facts don't belong on the Instance model the nested-schema path uses."""
+
+    public_reference_networks = tuple(
+        n for n in (_parse_network(c) for c in public_source_cidrs) if n is not None
+    )
+    return {
+        instance.id: _derive_public_ingress_one(
+            instance, vnics_by_id, subnets_by_id, route_tables_by_id,
+            security_lists_by_id, nsg_security_rules_by_nsg_id,
+            internet_gateway_ids, public_reference_networks,
+        )
+        for instance in instances
+    }
+
+
+def _derive_public_ingress_one(
+    instance: Instance,
+    vnics_by_id: dict[str, Vnic],
+    subnets_by_id: dict[str, Any],
+    route_tables_by_id: dict[str, Any],
+    security_lists_by_id: dict[str, Any],
+    nsg_security_rules_by_nsg_id: dict[str, list[Any]],
+    internet_gateway_ids: set[str],
+    public_reference_networks: tuple[_IpNetwork, ...],
+) -> PublicIngressFacts:
+    if not instance.vnic_ids:
+        return PublicIngressFacts(
+            has_public_address=None, public_ingress_ports=(), has_ranged_public_ingress=None
+        )
+
+    instance_vnics = [vnics_by_id[v] for v in instance.vnic_ids if v in vnics_by_id]
+    if len(instance_vnics) != len(instance.vnic_ids):
+        return PublicIngressFacts(
+            has_public_address=None, public_ingress_ports=(), has_ranged_public_ingress=None
+        )
+
+    has_public_address = any(v.public_addresses for v in instance_vnics)
+    if not has_public_address:
+        return PublicIngressFacts(
+            has_public_address=False, public_ingress_ports=(), has_ranged_public_ingress=False
+        )
+
+    public_vnics = [v for v in instance_vnics if v.public_addresses]
+    route_evidence_complete = True
+    ingress_evidence_complete = True
+    has_igw_route = False
+    named_ports: set[int] = set()
+    has_ranged = False
+
+    for vnic in public_vnics:
+        subnet = subnets_by_id.get(vnic.subnet_id)
+        if subnet is None:
+            route_evidence_complete = False
+            ingress_evidence_complete = False
+            continue
+
+        route_table_id = getattr(subnet, "route_table_id", None)
+        route_table = route_tables_by_id.get(route_table_id) if route_table_id else None
+        if route_table is None:
+            route_evidence_complete = False
+        elif _has_igw_route(getattr(route_table, "route_rules", None) or (), internet_gateway_ids):
+            has_igw_route = True
+
+        for security_list_id in getattr(subnet, "security_list_ids", None) or ():
+            security_list = security_lists_by_id.get(security_list_id)
+            if security_list is None:
+                ingress_evidence_complete = False
+                continue
+            ports, ranged, complete = _public_ingress_from_rules(
+                getattr(security_list, "ingress_security_rules", None) or (),
+                public_reference_networks=public_reference_networks,
+            )
+            named_ports |= ports
+            has_ranged = has_ranged or ranged
+            ingress_evidence_complete = ingress_evidence_complete and complete
+
+        for nsg_id in vnic.nsg_ids:
+            if nsg_id not in nsg_security_rules_by_nsg_id:
+                ingress_evidence_complete = False
+                continue
+            ports, ranged, complete = _public_ingress_from_rules(
+                nsg_security_rules_by_nsg_id[nsg_id],
+                public_reference_networks=public_reference_networks,
+                is_ingress=lambda rule: getattr(rule, "direction", None) == "INGRESS",
+            )
+            named_ports |= ports
+            has_ranged = has_ranged or ranged
+            ingress_evidence_complete = ingress_evidence_complete and complete
+
+    if not route_evidence_complete or not ingress_evidence_complete:
+        return PublicIngressFacts(
+            has_public_address=True,
+            public_ingress_ports=tuple(sorted(named_ports)),
+            has_ranged_public_ingress=None,
+        )
+
+    if not has_igw_route:
+        return PublicIngressFacts(
+            has_public_address=True, public_ingress_ports=(), has_ranged_public_ingress=False
+        )
+
+    return PublicIngressFacts(
+        has_public_address=True,
+        public_ingress_ports=tuple(sorted(named_ports)),
+        has_ranged_public_ingress=has_ranged,
+    )
 
 
 def derive_instance_exposure(

@@ -33,7 +33,7 @@ def discovery() -> SimpleNamespace:
 def test_collect_vpn_merges_concurrent_per_connection_tunnel_results(
     monkeypatch: pytest.MonkeyPatch, discovery: SimpleNamespace
 ) -> None:
-    """P2-1 regression: list_ip_sec_connection_tunnels per connection was a fully
+    """list_ip_sec_connection_tunnels per connection was a fully
     serial loop. Two connections' tunnels (c1/t1, c2/t2) must merge correctly, keyed
     by the right connection id, regardless of which worker thread produced which."""
 
@@ -74,7 +74,7 @@ def test_collect_vpn_merges_concurrent_per_connection_tunnel_results(
 def test_collect_vpn_merges_concurrent_per_drg_route_table_results(
     monkeypatch: pytest.MonkeyPatch, discovery: SimpleNamespace
 ) -> None:
-    """P2-1 regression: list_drg_route_tables + per-table list_drg_route_rules per DRG
+    """list_drg_route_tables + per-table list_drg_route_rules per DRG
     was a fully serial loop. Two DRGs with distinct route tables/rules must merge
     correctly, keyed by the right DRG/table id."""
 

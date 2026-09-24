@@ -165,6 +165,15 @@ def _apply_single_override(
                 f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} targets an unknown "
                 f"path segment {segment!r}; overrides may only touch existing config keys"
             )
+        if is_forbidden_key(matched_key):
+            # Every segment is checked, not just the leaf: provider/name/path aren't
+            # credential-shaped names, so skipping this would let an override reach
+            # inside a secretRef and redirect which env var or file a secret resolves from.
+            raise ConfigError(
+                f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} passes through a "
+                f"credential field {matched_key!r}; overrides may never reach inside one, "
+                f"even to change a non-secret subfield"
+            )
         node = node[matched_key]
         if not isinstance(node, MutableMapping):
             raise ConfigError(
@@ -252,6 +261,16 @@ class OciServicesConfig:
     autonomous_database: bool
     exadata_detection: bool
     site_to_site_vpn: bool
+    # Broader trust footprint than the other domains: reads user MFA status, API key
+    # ages, and raw IAM policy statement text. Opt-in, off unless explicitly enabled --
+    # see README Section 4 for the additional least-privilege policy grant it needs.
+    identity: bool = False
+    object_storage: bool = False
+    cloud_guard: bool = False
+    monitoring: bool = False
+    load_balancer: bool = False
+    waf: bool = False
+    kms_vault: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -282,6 +301,10 @@ class DrataConfig:
     record_id: str
     api_token_secret_ref: SecretRef
     allow_alternate_host: bool = False
+    # Resource ID of a second Custom Connection resource registered with
+    # schemas/flat-record.schema.json. None/absent leaves the flat-record
+    # publish path disabled entirely.
+    flat_resource_id: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -339,6 +362,35 @@ def _require_int(
     return value
 
 
+def _optional_bool(mapping: Mapping[str, Any], key: str, *, context: str, default: bool) -> bool:
+    """Like _require_bool, but absent means `default` instead of a ConfigError --
+    for a field added after existing deployments were configured, where requiring
+    it would break every config.yaml that predates it."""
+
+    if key not in mapping or mapping[key] is None:
+        return default
+    value = mapping[key]
+    if not isinstance(value, bool):
+        raise ConfigError(
+            f"{context}.{key}: expected true or false (unquoted), got {value!r} "
+            f"({type(value).__name__}) -- a quoted string is not a boolean"
+        )
+    return value
+
+
+def _optional_int(
+    mapping: Mapping[str, Any], key: str, *, context: str, minimum: int | None = None
+) -> int | None:
+    if key not in mapping or mapping[key] is None:
+        return None
+    value = mapping[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{context}.{key}: expected an integer or null, got {value!r}")
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{context}.{key}: must be >= {minimum}, got {value}")
+    return value
+
+
 def _require_port_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[int, ...]:
     raw_list = _require(mapping, key, context=context)
     if not isinstance(raw_list, list) or not raw_list:
@@ -352,10 +404,8 @@ def _require_port_list(mapping: Mapping[str, Any], key: str, *, context: str) ->
 
 
 def _require_cidr_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[str, ...]:
-    """Fails at config-load time, before any OCI collection, rather than letting a
-    malformed or empty entry silently make transform.exposure.ExposureConfig's reference
-    set empty -- which would make every exposure check resolve to not_exposed regardless
-    of what the collected security rules actually allow."""
+    """Validates here, before collection -- an empty reference set would silently
+    make every exposure check resolve to not_exposed, regardless of actual rules."""
 
     raw_list = _require(mapping, key, context=context)
     if not isinstance(raw_list, list) or not raw_list:
@@ -423,7 +473,8 @@ _OCI_COMPARTMENTS_KEYS = frozenset({"roots", "excludeOcids"})
 _OCI_SERVICES_KEYS = frozenset(
     {
         "compute", "networkExposure", "blockStorage", "baseDatabase",
-        "autonomousDatabase", "exadataDetection", "siteToSiteVpn",
+        "autonomousDatabase", "exadataDetection", "siteToSiteVpn", "identity",
+        "objectStorage", "cloudGuard", "monitoring", "loadBalancer", "waf", "kmsVault",
     }
 )
 _DECISIONS_KEYS = frozenset(
@@ -434,7 +485,10 @@ _DECISIONS_KEYS = frozenset(
     }
 )
 _DRATA_KEYS = frozenset(
-    {"baseUrl", "connectionId", "resourceId", "recordId", "apiTokenSecretRef", "allowAlternateHost"}
+    {
+        "baseUrl", "connectionId", "resourceId", "recordId", "apiTokenSecretRef",
+        "allowAlternateHost", "flatResourceId",
+    }
 )
 _RUNTIME_KEYS = frozenset({"maxPayloadBytes", "maxConcurrency", "logLevel", "dryRun"})
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -495,6 +549,17 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
             services_raw, "exadataDetection", context="oci.services"
         ),
         site_to_site_vpn=_require_bool(services_raw, "siteToSiteVpn", context="oci.services"),
+        identity=_optional_bool(services_raw, "identity", context="oci.services", default=False),
+        object_storage=_optional_bool(
+            services_raw, "objectStorage", context="oci.services", default=False
+        ),
+        cloud_guard=_optional_bool(services_raw, "cloudGuard", context="oci.services", default=False),
+        monitoring=_optional_bool(services_raw, "monitoring", context="oci.services", default=False),
+        load_balancer=_optional_bool(
+            services_raw, "loadBalancer", context="oci.services", default=False
+        ),
+        waf=_optional_bool(services_raw, "waf", context="oci.services", default=False),
+        kms_vault=_optional_bool(services_raw, "kmsVault", context="oci.services", default=False),
     )
 
     oci_config = OciConfig(
@@ -549,6 +614,7 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         record_id=_require(drata_raw, "recordId", context="drata"),
         api_token_secret_ref=api_token_secret_ref,
         allow_alternate_host=allow_alternate_host,
+        flat_resource_id=_optional_int(drata_raw, "flatResourceId", context="drata", minimum=1),
     )
 
     runtime_raw = _require(raw, "runtime", context="$")

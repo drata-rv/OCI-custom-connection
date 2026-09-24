@@ -1,0 +1,11 @@
+{
+  "description": "Fails an API signing key created more than 90 days ago -- adjust the value to the deployment's own rotation policy; there is no decisions.* config field for this, it's a Custom-Test-level threshold. Mirrors AWS 'IAM Access Key Rotation'. keyCreatedAt is OCI's own time_created on the key, read straight through.",
+  "evidenceType": "api_key",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "api_key" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "keyCreatedAt", "operator": "withinLastDays", "value": 90 } ]
+  }
+}

@@ -11,9 +11,8 @@ SAMPLE_CONFIG = Path(__file__).resolve().parent.parent.parent / "config.example.
 
 
 def _sample_config_with_real_drata_ids(tmp_path: Path) -> Path:
-    """config.example.yaml's connectionId/resourceId are deliberately invalid
-    placeholders (0) so an unedited copy fails config load, not just upload -- tests that
-    aren't specifically exercising that placeholder need a copy with real-shaped ids."""
+    """connectionId/resourceId in config.example.yaml are invalid placeholders (0);
+    tests not exercising that rejection need a copy with real-shaped ids."""
 
     raw = yaml.safe_load(SAMPLE_CONFIG.read_text())
     raw["drata"]["connectionId"] = 101
@@ -44,9 +43,8 @@ def test_sample_config_loads(tmp_path: Path) -> None:
 
 
 def test_sample_config_placeholder_drata_ids_rejected_unedited() -> None:
-    """config.example.yaml's connectionId: 0 / resourceId: 0 must fail at config-load
-    time if a customer forgets to replace them, not silently pass through to a
-    confusing failure at Drata upload time."""
+    """connectionId: 0 / resourceId: 0 must fail at config-load time, before an
+    unedited config reaches Drata upload with a confusing error."""
 
     with pytest.raises(ConfigError, match="connectionId"):
         load_config(SAMPLE_CONFIG, env={"DRATA_API_TOKEN": "unused"})
@@ -99,6 +97,22 @@ def test_env_override_cannot_target_secret_field() -> None:
         )
 
 
+def test_env_override_cannot_reach_inside_a_secret_ref_to_redirect_it() -> None:
+    """A leaf-only check would still let this through: apiTokenSecretRef itself isn't
+    the segment being assigned, only traversed through -- provider/name/path aren't
+    credential-shaped names themselves, so this would otherwise silently redirect
+    which env var the real token resolves from."""
+
+    with pytest.raises(ConfigError, match="credential"):
+        load_config(
+            SAMPLE_CONFIG,
+            env={
+                "DRATA_API_TOKEN": "unused",
+                "OCI_DRATA__DRATA__APITOKENSECRETREF__NAME": "ATTACKER_CONTROLLED_VAR",
+            },
+        )
+
+
 def test_env_override_unknown_path_rejected() -> None:
     with pytest.raises(ConfigError, match="unknown"):
         load_config(SAMPLE_CONFIG, env={"DRATA_API_TOKEN": "unused", "OCI_DRATA__NOPE__X": "y"})
@@ -145,14 +159,14 @@ def test_redact_config_for_display_masks_secret_ref() -> None:
 
 
 # --------------------------------------------------------------------------
-# Strict field validation (P1: loose bool()/int() conversion accepted a quoted
-# "false" as truthy, zero/negative ids, out-of-range ports, and unknown keys)
+# Strict field validation: loose bool()/int() conversion used to accept a
+# quoted "false" as truthy, zero/negative ids, out-of-range ports, unknown keys.
 # --------------------------------------------------------------------------
 
 
 def test_quoted_false_string_is_rejected_not_silently_true(tmp_path: Path) -> None:
-    """bool("false") is True in Python -- a YAML author quoting a boolean by habit must
-    get a config error, not a silently-inverted service toggle."""
+    """bool("false") is True in Python; a quoted boolean must raise a config error,
+    not silently invert the toggle."""
 
     raw = _valid_config_dict()
     raw["oci"]["services"]["compute"] = "false"  # YAML string, not a bool
@@ -223,9 +237,8 @@ def test_unknown_top_level_key_rejected(tmp_path: Path) -> None:
 
 
 def test_unknown_nested_key_rejected(tmp_path: Path) -> None:
-    """A typo'd optional field (e.g. excludeOcids misspelled) previously vanished
-    silently -- .get() on the correctly-spelled key just defaulted to empty, and the
-    typo'd key sat there unused. Now caught by the unknown-key check."""
+    """A typo'd optional field (e.g. excludeOcids misspelled) must error -- .get() on
+    the correct key would silently default to empty while the typo sits unused."""
 
     raw = _valid_config_dict()
     raw["oci"]["compartments"]["excludeOcid"] = ["ocid1.compartment.oc1..typo"]
@@ -251,8 +264,8 @@ def test_invalid_log_level_rejected(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# publicSourceCidrs: malformed/empty entries must fail before collection, not
-# silently make ExposureConfig's reference set empty (-> everything not_exposed)
+# publicSourceCidrs: malformed/empty entries must fail before collection --
+# an empty reference set makes ExposureConfig treat everything as not_exposed.
 # --------------------------------------------------------------------------
 
 
@@ -278,8 +291,8 @@ def test_valid_public_source_cidrs_load(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# drata.baseUrl allowlist (P1: arbitrary host accepted, bearer token could be
-# sent anywhere)
+# drata.baseUrl allowlist: without it, the bearer token could be sent to any
+# host.
 # --------------------------------------------------------------------------
 
 

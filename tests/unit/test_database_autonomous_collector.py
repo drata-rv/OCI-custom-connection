@@ -33,7 +33,7 @@ def discovery() -> SimpleNamespace:
 def test_collect_autonomous_database_merges_concurrent_per_adb_results(
     monkeypatch: pytest.MonkeyPatch, discovery: SimpleNamespace
 ) -> None:
-    """P2-1 regression: backups/dataguard/peers per ADB was a fully serial loop. Two
+    """backups/dataguard/peers per ADB was a fully serial loop. Two
     ADBs with distinct backup/dataguard/peer data must merge correctly (keyed by the
     right ADB id) regardless of which worker thread produced which result."""
 

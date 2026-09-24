@@ -35,7 +35,7 @@ def test_near_budget_is_false_when_comfortably_under() -> None:
 
 
 def test_near_budget_is_true_when_close_but_still_within() -> None:
-    """P2-2: an early warning before the hard ceiling blocks upload outright."""
+    """an early warning before the hard ceiling blocks upload outright."""
     record = {"data": "x" * 850}
     size = len(serialize_deterministic(record))
     result = check_payload_size(record, max_bytes=int(size / 0.9))  # ~90% of budget used

@@ -1,8 +1,6 @@
 """Tenancy, region, and compartment discovery; runs once before all other collectors.
-
-Derives approved_regions (subscribed+READY) and approved_compartment_ids
-(root subtree, allow/deny applied); its failures count as required-domain
-failures.
+Derives approved_regions (subscribed+READY) and approved_compartment_ids (root
+subtree, allow/deny applied); failures here count as required-domain failures.
 """
 
 from __future__ import annotations
@@ -44,14 +42,10 @@ class DiscoveryResult:
 
 
 def _discovery_region(signer: TenancySigner) -> str:
-    """Identity calls (get_tenancy/list_region_subscriptions/list_compartments) work from
-    any subscribed region and return tenancy-wide data. Bootstrapping from the first
-    *configured* region (oci.regions.allow[0]) fails before producing a useful diagnostic
-    when that entry is misspelled or unsubscribed -- the region hasn't been validated yet
-    at that point, that's what this call is for. The OCI SDK config file's own `region` is
-    already validated by oci.config.validate_config() (required, pattern-checked) before a
-    TenancySigner exists at all, so it's a safe, always-known-good bootstrap point,
-    independent of the allow-list this call is validating."""
+    """Identity calls return tenancy-wide data from any subscribed region, so
+    signer.base_config["region"] -- already validated by oci.config.validate_config() --
+    works as a safe bootstrap point before the configured region allow-list itself is
+    validated."""
 
     return signer.base_config["region"]
 
@@ -90,33 +84,37 @@ def discover(
 
     approved_regions, unready_regions = _resolve_regions(app_config, region_sub_op)
 
-    all_compartments: list[Any] = []
-    seen_compartment_ids: set[str] = set()
-    for root in app_config.oci.compartments.roots:
-        root_id = tenancy_ocid if root == "tenancy" else root
-        op = paginate(
-            service="identity",
-            operation="list_compartments",
-            call=identity.list_compartments,
-            region=region,
-            compartment_id=root_id,
-            compartment_id_in_subtree=True,
-            access_level="ANY",
-            retry_policy=retry_policy,
-        )
-        operations.append(op)
-        # Compartments aren't regional; stamped with discovery region only to satisfy schema's non-null region field.
-        for c in stamp_region(op.items, region):
-            # Overlapping configured roots (e.g. an ancestor and one of its own descendants
-            # both listed) would otherwise walk the same compartment's subtree twice.
-            if c.id not in seen_compartment_ids:
-                seen_compartment_ids.add(c.id)
-                all_compartments.append(c)
+    # compartment_id_in_subtree=True is valid only when compartment_id is the tenancy
+    # root (OCI API constraint). Configured roots other than "tenancy" can't use it
+    # directly, so list the whole tenancy once and filter client-side to each root's
+    # own subtree via parent pointers (_expand_to_subtrees, same logic as exclusions
+    # below).
+    tenancy_wide_op = paginate(
+        service="identity",
+        operation="list_compartments",
+        call=identity.list_compartments,
+        region=region,
+        compartment_id=tenancy_ocid,
+        compartment_id_in_subtree=True,
+        access_level="ANY",
+        retry_policy=retry_policy,
+    )
+    operations.append(tenancy_wide_op)
+    # Compartments aren't regional; stamped with discovery region only to satisfy schema's non-null region field.
+    tenancy_wide_compartments = list(stamp_region(tenancy_wide_op.items, region))
 
-    # list_compartments never returns the root itself; roots stay in scope separately.
     root_ids = {
         (tenancy_ocid if root == "tenancy" else root) for root in app_config.oci.compartments.roots
     }
+    if "tenancy" in app_config.oci.compartments.roots:
+        all_compartments = tenancy_wide_compartments
+    else:
+        in_scope_ids = set()
+        for root_id in root_ids:
+            in_scope_ids |= _expand_to_subtrees(tenancy_wide_compartments, {root_id})
+        all_compartments = [c for c in tenancy_wide_compartments if c.id in in_scope_ids]
+
+    # list_compartments never returns the root itself; roots stay in scope separately.
 
     excluded_configured = set(app_config.oci.compartments.exclude_ocids)
     excluded = _expand_to_subtrees(all_compartments, excluded_configured)
@@ -158,11 +156,9 @@ def discover(
 
 
 def _expand_to_subtrees(all_compartments: list[Any], seed_ids: set[str]) -> set[str]:
-    """Expands a set of excluded compartment OCIDs to include every descendant, computed
-    from each compartment's own compartment_id (its parent) as returned by
-    list_compartments. Excluding a parent while leaving its children in scope is the exact
-    surprising/unsafe case this closes -- exclusion must apply to the whole subtree, not
-    just the exact OCID configured."""
+    """Expands a set of excluded compartment OCIDs to every descendant, via each
+    compartment's compartment_id (parent) from list_compartments -- so excluding a
+    parent also excludes its children."""
 
     children_by_parent: dict[str, list[str]] = {}
     for c in all_compartments:
@@ -186,7 +182,7 @@ def _resolve_regions(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     configured = app_config.oci.regions.allow
     if not region_sub_op.ok:
-        # API failure, not a subscription fact: treat all configured regions unready (can't prove otherwise).
+        # Can't confirm subscription status on API failure; treat all configured regions as unready.
         return (), tuple(configured)
 
     ready_by_name = {

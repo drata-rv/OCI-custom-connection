@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string" },
+    "evidenceType": { "type": "string" },
+    "name": { "type": ["string", "null"] },
+    "timestamp": { "type": "string" },
+    "region": { "type": ["string", "null"] },
+    "compartmentId": { "type": ["string", "null"] },
+    "osClassification": { "type": ["string", "null"] },
+    "hasPublicAddress": { "type": ["boolean", "null"] },
+    "publicIngressPorts": {
+      "type": "array",
+      "items": { "type": "number" }
+    },
+    "hasRangedPublicIngress": { "type": ["boolean", "null"] },
+    "kmsKeyId": { "type": ["string", "null"] },
+    "publicEndpointHostname": { "type": ["string", "null"] },
+    "mfaActivated": { "type": ["boolean", "null"] },
+    "userId": { "type": ["string", "null"] },
+    "keyCreatedAt": { "type": ["string", "null"] },
+    "statements": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "publicAccessType": { "type": ["string", "null"] },
+    "versioning": { "type": ["string", "null"] },
+    "cloudGuardStatus": { "type": ["string", "null"] },
+    "alarmEnabled": { "type": ["boolean", "null"] },
+    "alarmNamespace": { "type": ["string", "null"] },
+    "alarmQuery": { "type": ["string", "null"] },
+    "isPrivate": { "type": ["boolean", "null"] },
+    "loadBalancerId": { "type": ["string", "null"] },
+    "backendSetHealthStatus": { "type": ["string", "null"] },
+    "vaultId": { "type": ["string", "null"] },
+    "autoRotationEnabled": { "type": ["boolean", "null"] },
+    "lastRotationAt": { "type": ["string", "null"] }
+  }
+}

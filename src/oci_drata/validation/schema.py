@@ -1,14 +1,8 @@
-"""Validates aggregate record against oci_drata/schemas/oci-snapshot-1.0.0.json via jsonschema Draft-07.
+"""Validates a record against oci_drata/schemas/oci-snapshot-1.0.0.json (jsonschema Draft-07).
 
-Every resource definition is a single flat object (no allOf/$ref composition):
-additionalProperties: false only reliably rejects unexpected fields within one schema's own
-local properties, not across allOf branches -- composing over commonResource via allOf let
-type-specific branches silently accept fields outside their own declared set, and
-commonResource itself had to stay additionalProperties: true for that composition to
-validate at all, so every resource type was permissive to arbitrary extra fields. Flattening
-(duplicating commonResource's fields directly into each concrete definition) avoids the
-allOf/additionalProperties interaction entirely rather than depending on validator-specific
-allOf semantics (AJV and Draft-07 differ here) or a newer draft's unevaluatedProperties.
+Resource definitions are flattened, not allOf-composed: additionalProperties: false does not
+restrict fields across allOf branches, so composing over commonResource left every resource
+type accepting arbitrary extra fields.
 """
 
 from __future__ import annotations
@@ -23,6 +17,7 @@ import jsonschema
 
 SCHEMA_RESOURCE_PACKAGE = "oci_drata.schemas"
 SCHEMA_RESOURCE_NAME = "oci-snapshot-1.0.0.json"
+FLAT_SCHEMA_RESOURCE_NAME = "flat-record.schema.json"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,6 +41,19 @@ def load_schema(path: Path | str | None = None) -> dict[str, Any]:
             schema = json.load(fh)
     else:
         resource = importlib.resources.files(SCHEMA_RESOURCE_PACKAGE).joinpath(SCHEMA_RESOURCE_NAME)
+        schema = json.loads(resource.read_text(encoding="utf-8"))
+    jsonschema.Draft7Validator.check_schema(schema)
+    return schema
+
+
+def load_flat_schema(path: Path | str | None = None) -> dict[str, Any]:
+    if path is not None:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            schema = json.load(fh)
+    else:
+        resource = importlib.resources.files(SCHEMA_RESOURCE_PACKAGE).joinpath(
+            FLAT_SCHEMA_RESOURCE_NAME
+        )
         schema = json.loads(resource.read_text(encoding="utf-8"))
     jsonschema.Draft7Validator.check_schema(schema)
     return schema

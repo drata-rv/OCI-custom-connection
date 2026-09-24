@@ -18,12 +18,9 @@ def serialize_deterministic(record: dict[str, Any]) -> bytes:
 
 @dataclasses.dataclass(frozen=True)
 class PayloadSizeResult:
-    """P2-2: a single aggregate record has a hard scaling ceiling by design (one Drata
-    Custom Connection record per tenancy). near_budget is an early warning, surfaced in
-    the local collection report/logs (not baked into the uploaded record itself, which
-    would change its own measured size) so an operator sees the tenancy approaching the
-    ceiling before it becomes a hard failure. See TRACEABILITY.md for the documented
-    migration path (per-resource or multiple domain records) if this is ever reached."""
+    """Size-check result for one tenancy's aggregate record, which has a hard ceiling (`max_bytes`).
+    near_budget only warns externally (report/logs) — folding it into the record would change
+    the record's own measured size."""
 
     byte_size: int
     max_bytes: int

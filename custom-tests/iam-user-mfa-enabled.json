@@ -1,0 +1,11 @@
+{
+  "description": "Fails an IAM user with MFA not activated. Mirrors AWS/Azure 'MFA enabled for accounts'. mfaActivated is read straight off OCI's own is_mfa_activated field.",
+  "evidenceType": "iam_user",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "iam_user" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "mfaActivated", "operator": "equal", "value": true } ]
+  }
+}

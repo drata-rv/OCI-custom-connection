@@ -1,9 +1,8 @@
 """Joins raw attachment/reference tables onto already-normalized resources;
-records an :class:`~oci_drata.models.UnresolvedRelationship` instead of
-dropping a child whose parent (or vice versa) can't be found. Database join
-functions correlate raw/normalized lists positionally (zip) -- callers must
-normalize each raw list into its counterpart with a single order-preserving
-pass."""
+an unmatched parent/child pair gets an
+:class:`~oci_drata.models.UnresolvedRelationship` record. Join functions
+correlate raw/normalized lists positionally (zip) -- callers must normalize
+each raw list into its counterpart with a single order-preserving pass."""
 
 from __future__ import annotations
 
@@ -167,9 +166,9 @@ def _link(
     parent_type: str,
     unresolved: list[UnresolvedRelationship],
 ) -> None:
-    """Bidirectional relatedResourceIds link, mutates resources_by_id in
-    place. Records UnresolvedRelationship instead of dropping the child when
-    the parent isn't in the collected set."""
+    """Bidirectional relatedResourceIds link; mutates resources_by_id in
+    place. Records UnresolvedRelationship for a parent not in the collected
+    set."""
 
     if not parent_id:
         return
@@ -327,9 +326,8 @@ def resolve_autonomous_database_relationships(
             unresolved=unresolved,
         )
 
-    # Peers are id/region pointers only, no separate resource row -- folded
-    # directly into owning ADB's related_resource_ids. Already keyed by ADB
-    # id at collection time; no unresolved-tracking needed.
+    # Peers have no resource row of their own -- fold directly into owning
+    # ADB's related_resource_ids. Pre-keyed by ADB id; no unresolved-tracking.
     for adb_id, raw_peers in autonomous_database_peers_by_adb_id.items():
         peer_ids = {p.id for p in raw_peers if getattr(p, "id", None)}
         if adb_id in by_id and peer_ids:

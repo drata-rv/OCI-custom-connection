@@ -22,9 +22,8 @@ from oci_drata.pagination import (
     stamp_region,
 )
 
-# P2-1: bounds the per-db_system/per-db_home/per-database enrichment fan-out within one
-# region iteration. Independent of runtime.maxConcurrency, which bounds concurrency
-# *between* collectors.
+# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
+# pagination.run_concurrently).
 _PER_ITEM_CONCURRENCY = 8
 
 
@@ -98,8 +97,6 @@ def collect_database_base(
             region_db_systems.extend(stamp_region(op.items, region))
         db_systems.extend(region_db_systems)
 
-        # P2-1: list_db_homes per db_system was a fully serial loop. Each db_system's
-        # call is independent (pagination.run_concurrently).
         def _list_db_homes(
             db_system: Any, *, _client: Any = client, _region: str = region
         ) -> tuple[OperationResult, list[Any]]:
@@ -122,7 +119,6 @@ def collect_database_base(
             region_db_homes.extend(items)
         db_homes.extend(region_db_homes)
 
-        # P2-1: list_databases per db_home, same pattern.
         def _list_databases(
             db_home: Any, *, _client: Any = client, _region: str = region
         ) -> tuple[OperationResult, list[Any]]:
@@ -145,7 +141,6 @@ def collect_database_base(
             region_databases.extend(items)
         databases.extend(region_databases)
 
-        # P2-1: list_backups + list_data_guard_associations per database, same pattern.
         def _list_backups_and_dg(
             database: Any, *, _client: Any = client, _region: str = region
         ) -> tuple[list[OperationResult], list[Any], list[Any]]:

@@ -1,10 +1,9 @@
 """Drata Custom Connection upsert client.
 
-POSTs ``{"data": record}`` to
-``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
-200/201 both mean success (upsert by the record's own ``id`` field inside
-``data``). Failures never raise -- returned as ``DeliveryResult`` with
-``error_class``: auth/validation are non-retryable, 429/5xx get bounded retry.
+POSTs to ``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
+200/201 both mean success (upsert by each record's own ``id``). Failures never raise --
+returned as ``DeliveryResult``, with auth/validation non-retryable and 429/5xx retried
+with backoff.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _AUTH_STATUS = frozenset({401, 403})
 _VALIDATION_STATUS = frozenset({400, 404, 409, 422})
 _REQUEST_ID_HEADERS = ("X-Request-Id", "X-Request-ID", "Request-Id", "X-Correlation-Id")
+_BATCH_SIZE = 500
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,10 +53,9 @@ def _request_id(response: requests.Response) -> str | None:
 
 
 def _retry_after_seconds(response: requests.Response, *, max_delay_seconds: float) -> float | None:
-    """Retry-After is either an integer seconds count or an HTTP-date (RFC 9110 §10.2.3).
-    Returns None if absent or unparseable as either -- caller falls back to jitter. Capped
-    at max_delay_seconds regardless of what the server asked for, so a misbehaving or
-    compromised server can't stall this indefinitely."""
+    """Retry-After is seconds or an HTTP-date (RFC 9110 §10.2.3); None if unparseable, so
+    caller falls back to jitter. Capped at max_delay_seconds regardless of the server's
+    ask, so a misbehaving or compromised server can't stall retries indefinitely."""
 
     raw = response.headers.get("Retry-After")
     if not raw:
@@ -106,6 +105,47 @@ def upsert_record(
             http.close()
 
 
+def upsert_records(
+    drata_config: DrataConfig,
+    records: list[dict[str, Any]],
+    *,
+    max_attempts: int = 5,
+    base_delay_seconds: float = 1.0,
+    max_delay_seconds: float = 30.0,
+    timeout_seconds: float = 30.0,
+    session: requests.Session | None = None,
+) -> list[DeliveryResult]:
+    """Upserts ``records`` in batches of ``_BATCH_SIZE``, POSTing ``{"data": [...]}`` per
+    batch. Returns one DeliveryResult per batch, in order; a failed batch doesn't stop
+    the rest."""
+
+    if not records:
+        return []
+
+    token = drata_config.api_token_secret_ref.resolve()
+    url = (
+        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
+        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
+    )
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    batches = [records[i : i + _BATCH_SIZE] for i in range(0, len(records), _BATCH_SIZE)]
+    owns_session = session is None
+    http = session if session is not None else requests.Session()
+
+    try:
+        return [
+            _upsert_with_retry(
+                http, url, {"data": batch}, headers,
+                max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
+                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
+            )
+            for batch in batches
+        ]
+    finally:
+        if owns_session:
+            http.close()
+
+
 def _upsert_with_retry(
     http: requests.Session,
     url: str,
@@ -140,6 +180,25 @@ def _upsert_with_retry(
             continue
 
         if response.status_code in (200, 201):
+            # Drata's batch endpoint can return 200 even when individual records fail
+            # their own schema validation (per-record "error" field) -- 200/201 here
+            # proves the request was accepted, not that anything was stored.
+            per_record_error = _first_per_record_error(response)
+            if per_record_error is not None:
+                logger.warning(
+                    "drata upload returned 200 but at least one record failed "
+                    "per-record validation -- nothing in this batch is confirmed stored",
+                    extra={"status_code": response.status_code, "error": per_record_error},
+                )
+                return DeliveryResult(
+                    uploaded=False,
+                    created=None,
+                    status_code=response.status_code,
+                    attempts=attempt,
+                    error_class="validation",
+                    error_message=per_record_error,
+                    request_id=_request_id(response),
+                )
             logger.info(
                 "drata upload succeeded",
                 extra={"status_code": response.status_code, "attempts": attempt},
@@ -207,6 +266,42 @@ def _upsert_with_retry(
             error_message=_safe_body(response),
             request_id=_request_id(response),
         )
+
+
+def _first_per_record_error(response: requests.Response) -> str | None:
+    """Body is a list of per-record results, or a single such object for a single-record
+    call; each optionally carries {"error": {"message", "code"}}. Returns a bounded
+    summary of every failed record's id + message, or None if none failed or the body
+    isn't JSON/shaped as expected -- best-effort on top of the HTTP status, not a
+    replacement for it."""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    items = payload if isinstance(payload, list) else [payload]
+    failures = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        error = item.get("error")
+        if not error:
+            continue
+        record_id = None
+        data = item.get("data")
+        if isinstance(data, dict):
+            record_id = data.get("id")
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        failures.append(f"{record_id!r}: {message}")
+
+    if not failures:
+        return None
+    shown = failures[:5]
+    summary = "; ".join(shown)
+    if len(failures) > len(shown):
+        summary += f"; and {len(failures) - len(shown)} more"
+    return f"{len(failures)}/{len(items)} record(s) failed per-record validation: {summary}"
 
 
 def _safe_body(response: requests.Response) -> str:

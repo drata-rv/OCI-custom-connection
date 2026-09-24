@@ -1,8 +1,10 @@
 # OCI-to-Drata Custom Connection
 
 Read-only Oracle Cloud Infrastructure configuration-evidence collector that
-normalizes findings into one schema-valid JSON record and upserts it into
-an existing Drata Custom Connection.
+lightly normalizes OCI's raw API data into small, per-resource JSON records
+and upserts them into an existing Drata Custom Connection. Compliance
+verdicts are computed by Drata's own Custom Tests against these raw facts —
+never precomputed by this collector (see [§1](#1-architecture)).
 
 ## Contents
 
@@ -15,8 +17,53 @@ an existing Drata Custom Connection.
 7. [Troubleshooting](#7-troubleshooting)
 8. [Deployment acceptance checklist](#8-deployment-acceptance-checklist)
 9. [Known MVP limitations](#9-known-mvp-limitations)
+10. [Example Custom Tests](#10-example-custom-tests)
 
 ## 1. Architecture
+
+Two delivery paths currently coexist against the same OCI collectors and the
+same shared layers (config, auth, pagination, security allowlist — see the
+table below). **New collector work lands on the flat-record path only.**
+
+### 1.1 Flat-record path (current direction, opt-in via `drata.flatResourceId`)
+
+```text
+OCI API → collectors (raw SDK objects) → light normalize/relationships
+(raw facts only, never a computed pass/fail) →
+transform/aggregate.py::build_flat_records() →
+schemas/flat-record.schema.json → delivery/drata.py::upsert_records()
+```
+
+Records never carry a precomputed compliance verdict. Drata's own Custom
+Test `evaluator` decides what counts as compliant against the raw facts
+below (e.g. `publicIngressPorts intersectsAny [22, 3389]`). Any new
+evidenceType follows the same rule: emit facts, never a verdict.
+
+| `evidenceType` | Collector | `oci.services` toggle | Raw facts |
+|---|---|---|---|
+| `instance` | `collection/compute.py` + `transform/exposure.py::derive_public_ingress_facts()` | `compute` + `networkExposure` | `hasPublicAddress`, `publicIngressPorts`, `hasRangedPublicIngress` |
+| `autonomous_database` | `collection/database_autonomous.py` | `autonomousDatabase` | `kmsKeyId`, `publicEndpointHostname` |
+| `iam_user` | `collection/identity.py` | `identity` (opt-in — broader trust footprint, §4.1) | `mfaActivated` |
+| `api_key` | `collection/identity.py` | `identity` (opt-in) | `userId`, `keyCreatedAt` |
+| `iam_policy` | `collection/identity.py` | `identity` (opt-in) | `statements` (raw text — evidence, not a confirmed single-operator test) |
+| `bucket` | `collection/object_storage.py` | `objectStorage` (opt-in, §4.2) | `kmsKeyId`, `publicAccessType`, `versioning` |
+| `cloud_guard_configuration` | `collection/cloud_guard.py` | `cloudGuard` (opt-in, §4.3) | `cloudGuardStatus` |
+| `monitoring_alarm` | `collection/monitoring.py` | `monitoring` (opt-in, §4.4) | `alarmEnabled`, `alarmNamespace`, `alarmQuery` (evidence only) |
+| `load_balancer` | `collection/load_balancer.py` | `loadBalancer` (opt-in, §4.5) | `isPrivate` |
+| `load_balancer_backend_set` | `collection/load_balancer.py` | `loadBalancer` (opt-in) | `loadBalancerId`, `backendSetHealthStatus` |
+| `waf` | `collection/waf.py` | `waf` (opt-in, §4.6) | `loadBalancerId` (joins to `load_balancer`) |
+| `kms_key` | `collection/kms_vault.py` | `kmsVault` (opt-in, §4.7) | `vaultId`, `autoRotationEnabled`, `lastRotationAt` |
+
+`instance`/`autonomous_database` need no extra opt-in beyond the base
+services already enabled by default. Every other evidenceType is off
+unless its `oci.services.*` flag is explicitly set — see §4 for what each
+one reads and why it's not on by default. "Evidence only" fields
+(`iam_policy.statements`, `monitoring_alarm.alarmQuery`) are raw strings a
+Custom Test would need to pattern-match; they're shipped as real data a
+reviewer or test author can use, not as a fully clean single-operator
+check the way every other field in this table is.
+
+### 1.2 Nested-schema path (original design, still the default, superseded)
 
 ```text
 OCI API → collectors (raw SDK objects) → normalize → relationships →
@@ -24,17 +71,26 @@ exposure/vpn_posture → findings → aggregate (one record) →
 schema + size validation → completeness decision → Drata upsert
 ```
 
+One aggregate JSON record per tenancy (`schemas/oci-snapshot-1.0.0.json`),
+uploaded via `delivery/drata.py::upsert_record()` — a single object, not a
+batch. This runs unconditionally today (no opt-in), independently of the
+flat-record path above; the two don't share a resourceId or interfere with
+each other. Retiring this path is pending a decision on migrating any
+Custom Tests already built against `findings[].status` (see §9).
+
+### 1.3 Shared layers (both paths)
+
 | Layer | Module(s) |
 |---|---|
 | Config/secrets | `src/oci_drata/config.py`, `redaction.py` |
-| Auth | `src/oci_drata/oci_auth.py` |
+| Auth | `src/oci_drata/oci_auth.py` — `regional_client()` for a plain regional endpoint, `endpoint_client()` for a client needing an explicit per-resource endpoint (e.g. KMS's per-vault `management_endpoint`) |
 | Pagination/retry | `src/oci_drata/pagination.py` |
-| Collectors | `src/oci_drata/collection/*.py` (one per spec §5.x section) |
+| Collectors | `src/oci_drata/collection/*.py` (one per OCI resource domain) |
 | Transform | `src/oci_drata/transform/*.py` |
 | Validation | `src/oci_drata/validation/*.py` |
 | Delivery | `src/oci_drata/delivery/drata.py` |
 | Entry point | `src/oci_drata/cli.py` |
-| Security allowlist | `src/oci_drata/security.py`, enforced twice: statically by `tests/unit/test_operation_allowlist.py` (AST scan at build time) and at runtime by `GuardedOciClient` (every OCI client `regional_client()` returns is wrapped; an operation outside the allowlist raises the moment it's called, not just when the static scan sees it) |
+| Security allowlist | `src/oci_drata/security.py`, enforced twice: statically by `tests/unit/test_operation_allowlist.py` (AST scan at build time) and at runtime by `GuardedOciClient` (every OCI client `regional_client()`/`endpoint_client()` returns is wrapped; an operation outside the allowlist raises the moment it's called, not just when the static scan sees it) |
 
 Every `list_*`/`get_*` call goes through `pagination.paginate()` or
 `pagination.call_once()`, with one exception —
@@ -43,7 +99,9 @@ treat a 404 (no public IP assigned) as a synthetic success rather than a
 domain failure. Pagination, bounded retry with full-jitter exponential
 backoff, and `opc-request-id` capture happen in one place, not per
 collector. Collectors return raw OCI SDK objects; `transform/normalize.py`
-is the only place raw fields get allowlisted into the schema's shape.
+(nested path) or each collector-specific `_flatten_*` function in
+`transform/aggregate.py` (flat path) is the only place raw fields get
+allowlisted into a schema's shape.
 
 ## 2. Setup
 
@@ -79,6 +137,28 @@ cp config.example.yaml config.yaml
 `config.yaml` is git-ignored; never commit it once it has real
 `connectionId`/`resourceId`/`expectedTenancyOcid` values. See
 [config.example.yaml](config.example.yaml) for every field.
+
+**Before the first real run, confirm `oci.compartments.roots`/
+`regions.allow` actually match what the API-signing user's OCI policy
+grants read access to.** This tool always attempts every compartment
+under the configured root(s), in every configured region, for every
+enabled service — it has no way to know in advance which of them the
+policy actually covers, so a scope wider than the policy produces a
+large `NotAuthorizedOrNotFound` flood on the first run, not a clean
+one. Two ways to avoid finding this out the hard way:
+
+* In the OCI Console, check which compartments the group backing this
+  policy is actually granted `read` in (Identity → Policies), and set
+  `compartments.roots` to that compartment directly rather than
+  `tenancy`, if the policy is scoped narrower than the whole tenancy.
+* Or run once with `--test` first (§5) and read
+  `collection-report.json`'s `accessSummary` — `compartmentsWithAuthGap`
+  is exactly where the policy doesn't reach; `compartmentsWithRealData`
+  is where it does *and* something was actually found. Note `--test`
+  bounds wall-clock time, not scope — a policy that's much narrower
+  than the configured scope can still produce a large `operationsFailed`
+  count inside that time budget, since auth failures fail near-instantly
+  with no retry backoff.
 
 ## 3. Secret provisioning
 
@@ -120,8 +200,8 @@ cannot target a credential-shaped field.
 IAM policy reference](https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/corepolicyreference.htm)
 and the Database service's policy reference before granting in
 production.** This list is derived from the collectors' actual OCI SDK
-calls (see [TRACEABILITY.md](TRACEABILITY.md)) and general OCI policy
-conventions — not from a live check against Oracle's policy verb tables.
+calls and general OCI policy conventions — not from a live check against
+Oracle's policy verb tables.
 
 Create a dedicated group (e.g. `oci-drata-collector`) and a dedicated
 API-signing user with no other access, then:
@@ -145,12 +225,11 @@ Notes:
 * `use network-security-groups` is required — Oracle's policy mapping
   requires it for `list_network_security_group_security_rules` and
   `list_network_security_group_vnics`, though this collector performs no
-  mutation. Spec §5.4 calls this out; do not widen it beyond
-  `network-security-groups`.
+  mutation. Do not widen it beyond `network-security-groups`.
 * `instance-family`/`virtual-network-family`/`volume-family`/
   `database-family` are OCI's own policy aggregate groupings; confirm they
   cover every specific resource type this collector reads (full list in
-  [TRACEABILITY.md](TRACEABILITY.md)) and narrow to individual resource
+  `security.py::ALLOWED_OCI_OPERATIONS`) and narrow to individual resource
   types (e.g. `instance`, `vnic`, `subnet`) if your organization's policy
   standard requires it instead of family-level grants.
 * Never grant `manage`, `all-resources`, any secret-family / Vault
@@ -160,6 +239,143 @@ Notes:
   at runtime (`security.py::GuardedOciClient` — every OCI client is
   wrapped, and blocks any such operation the moment it's called, even if
   resolved dynamically or through an alias the static scan wouldn't see).
+
+### 4.1 Optional: Identity (`oci.services.identity`)
+
+**Off by default** (`identity: false` unless set otherwise in
+`config.yaml`) — a materially broader trust footprint than everything
+above. It reads every user's MFA-enabled status, every API signing key's
+fingerprint and creation date (never the key material itself), and every
+IAM policy's raw statement text tenancy-wide. Decide deliberately before
+enabling it; it is not required for the compute/storage/networking/
+database evidence this connector otherwise collects.
+
+```text
+Allow group oci-drata-collector to inspect users in tenancy
+Allow group oci-drata-collector to read users in tenancy
+Allow group oci-drata-collector to inspect policies in tenancy
+Allow group oci-drata-collector to read policies in tenancy
+```
+
+* `list_api_keys` returns each key's `fingerprint`/`time_created`/
+  `lifecycle_state` — never `key_value` (the key's own public-key PEM
+  content) is read by anything this collector does with it; nothing about
+  a private key ever leaves the customer's tenancy regardless, since OCI
+  API signing keys are asymmetric and only the public key is ever
+  registered with OCI in the first place.
+* No credential, session token, or password is ever read — enforced the
+  same way as the rest of this policy, statically and at runtime (see
+  above). `get_windows_instance_initial_credentials` and similar remain
+  denylisted regardless of what's granted here.
+
+### 4.2 Optional: Object Storage (`oci.services.objectStorage`)
+
+**Off by default** (`objectStorage: false` unless set otherwise). Reads
+bucket-level metadata only — public access setting, encryption key
+presence, versioning state. Never lists or reads object (file) contents.
+
+```text
+Allow group oci-drata-collector to inspect buckets in tenancy
+Allow group oci-drata-collector to read buckets in tenancy
+```
+
+* Deliberately `buckets`, not `object-family` — the latter also covers
+  object (file) contents and object-level operations this collector has
+  no use for and never calls.
+* `get_namespace`/`list_buckets`/`get_bucket` are the only three
+  operations this domain calls (`security.py::ALLOWED_OCI_OPERATIONS`);
+  none reads or lists object contents.
+
+### 4.3 Optional: Cloud Guard (`oci.services.cloudGuard`)
+
+**Off by default** (`cloudGuard: false` unless set otherwise). Reads only
+whether Cloud Guard itself is enabled/disabled for the tenancy — never
+findings, detector recipes, or target configuration detail.
+
+```text
+Allow group oci-drata-collector to inspect cloud-guard-config in tenancy
+Allow group oci-drata-collector to read cloud-guard-config in tenancy
+```
+
+* `get_configuration` is the only operation this domain calls.
+
+### 4.4 Optional: Monitoring (`oci.services.monitoring`)
+
+**Off by default** (`monitoring: false` unless set otherwise). Reads alarm
+*definitions* — whether an alarm exists, is enabled, and what metric query
+it watches. Never reads metric data points or alarm firing history.
+
+```text
+Allow group oci-drata-collector to inspect alarms in tenancy
+Allow group oci-drata-collector to read alarms in tenancy
+```
+
+* `list_alarms` is the only operation this domain calls.
+* An alarm's raw `query` (MQL string) is surfaced as evidence, not
+  evaluated — a Custom Test would need to pattern-match it (e.g. `contains
+  "CpuUtilization"`) to check for a specific monitored metric, since this
+  collector doesn't parse or classify alarm queries by metric type.
+
+### 4.5 Optional: Load Balancer (`oci.services.loadBalancer`)
+
+**Off by default** (`loadBalancer: false` unless set otherwise). Reads
+whether a load balancer is public or private, and backend-set health
+status — never listener/certificate configuration or traffic data.
+
+```text
+Allow group oci-drata-collector to inspect load-balancers in tenancy
+Allow group oci-drata-collector to read load-balancers in tenancy
+```
+
+* `list_load_balancers` already returns full detail (no separate
+  `get_load_balancer` needed) and includes each load balancer's backend
+  set names directly — `get_backend_set_health` is then one call per
+  (load balancer, backend set) pair, fanned out concurrently.
+
+### 4.6 Optional: Web Application Firewall (`oci.services.waf`)
+
+**Off by default** (`waf: false` unless set otherwise). Reads whether a
+Web App Firewall is attached to a load balancer — never firewall rule or
+policy detail.
+
+```text
+Allow group oci-drata-collector to inspect web-app-firewalls in tenancy
+Allow group oci-drata-collector to read web-app-firewalls in tenancy
+```
+
+* Deliberately the current `oci.waf` service (API version 2021), not the
+  older `oci.waas` (Web Application Acceleration and Security, API
+  version 2018) — `WaasPolicySummary` is keyed by DNS domain with no OCID
+  link to any load balancer, so it can't answer "does load balancer X
+  have a WAF attached" the way `oci.waf`'s `load_balancer_id` field can.
+* `list_web_app_firewalls` is the only operation this domain calls.
+
+### 4.7 Optional: KMS Vault (`oci.services.kmsVault`)
+
+**Off by default** (`kmsVault: false` unless set otherwise). Reads
+whether a KMS key has auto-rotation enabled and when it last rotated —
+never key material, never a wrapping/unwrapping operation.
+
+```text
+Allow group oci-drata-collector to inspect vaults in tenancy
+Allow group oci-drata-collector to read vaults in tenancy
+Allow group oci-drata-collector to inspect keys in tenancy
+Allow group oci-drata-collector to read keys in tenancy
+```
+
+* Confirmed against Oracle's own Key Management policy reference (not
+  just SDK introspection, unlike most of this section) — `vaults` covers
+  `ListVaults`/`GetVault`, `keys` covers `ListKeys`/`GetKey`.
+* Structurally different from every other collector in this project:
+  `KmsManagementClient` (the client that actually lists/reads keys) must
+  be constructed with the specific vault's own `management_endpoint` —
+  resolved from that vault's own `list_vaults` response field, not a
+  plain regional endpoint. See `oci_auth.py::endpoint_client` and
+  `collection/kms_vault.py`.
+* Rotation timing (`auto_key_rotation_details.time_of_last_rotation`) is
+  only present on the full `Key` model, not the lighter `KeySummary`
+  `list_keys` returns — `get_key` per key is a genuine per-item fan-out,
+  not an optional enrichment step.
 
 ## 5. Execution
 
@@ -174,12 +390,28 @@ oci-drata --config config.yaml
 ```
 
 Exit codes: `0` success (uploaded, or a dry run that wasn't a schema
-failure) · `1` blocked — a **valid** outcome meaning nothing was uploaded
-because the snapshot wasn't complete (see `collection-report.json` for
-why) · `2` configuration/auth error · `3` unexpected failure.
+failure) · `1` blocked — nothing was uploaded, either because the
+snapshot wasn't complete (a **valid** outcome, see
+`collection-report.json` for why) *or* because collection succeeded but
+the Drata delivery call itself failed (auth/network/5xx exhausted
+retries — check `deliveryErrorClass`/`error_class` in the report, this
+is not the same situation as an incomplete scope) · `2`
+configuration/auth error · `3` unexpected failure.
 
 `runtime.dryRun` in `config.yaml` sets the default; `--dry-run` on the
 command line always wins.
+
+```bash
+# Sample mode: stops collecting after 30s instead of scanning the whole
+# tenancy, keeping whatever real data was gathered by then -- fast,
+# low-volume, for building/testing a Custom Test against real data. Every
+# OCI call shares one retry policy (pagination.py::RetryPolicy.deadline),
+# so this bounds every domain at once. Never uploads the original/nested
+# snapshot (a partial scan can't honestly claim tenancy-wide
+# completeness) -- but the flat-record path uploads normally if
+# runtime.dryRun is false, since each record is standalone evidence.
+oci-drata --config config.yaml --test
+```
 
 ## 6. Validating output
 
@@ -213,15 +445,14 @@ Windows VM scenario.
 | `AuthError: OCI SDK config tenancy does not match configured oci.expectedTenancyOcid` | The `~/.oci/config` profile points at a different tenancy than `config.yaml` expects — a fail-closed guard against pointing the collector at the wrong tenancy. |
 | `snapshotStatus: incomplete`, reasons mention `not subscribed/READY` | A region in `oci.regions.allow` isn't actually subscribed in this tenancy, or `list_region_subscriptions` itself failed. |
 | `snapshotStatus: incomplete`, reasons mention a collector by name | That domain had a failed operation after retry exhaustion — check `collection-report.json`'s operations for `status: failed` and `errorCode`. Common cause: the policy in §4 doesn't cover a resource type this deployment actually uses. |
-| `snapshotStatus: incomplete`, reason mentions Exadata | Exadata (or Exadata-backed dedicated Autonomous) was detected. Per spec, this MVP never claims complete database coverage when Exadata is present — see [§9](#9-known-mvp-limitations). |
+| Large `operationsFailed` count, mostly `NotAuthorizedOrNotFound` | `oci.compartments.roots`/`regions.allow` reach further than this API user's OCI policy grants. Check `collection-report.json`'s `accessSummary`: `compartmentsWithAuthGap` is where the policy doesn't cover this run's scope; `compartmentsWithRealData` is where it does *and* something was actually found. If the compartment you expect data in isn't in `compartmentsWithRealData`, narrow `compartments.roots` to it directly rather than guessing — a broad scope with a narrow policy produces exactly this flood, and `--test`'s time budget doesn't protect against it (auth failures fail near-instantly, so thousands can happen inside 30s). |
+| `snapshotStatus: incomplete`, reason mentions Exadata | Exadata (or Exadata-backed dedicated Autonomous) was detected. This tool never claims complete database coverage when Exadata is present — see [§9](#9-known-mvp-limitations). |
 | `snapshotStatus: failed`, reason mentions schema | The record itself didn't validate — this should not happen against unmodified collector code; check `collection-report.json`'s `schemaErrors` and file an issue rather than working around it. |
 | Drata upload returns `error_class: auth` | Bearer token invalid/expired, or wrong `connectionId`/`resourceId`. The local snapshot is still `complete`; only delivery failed — nothing was overwritten in Drata. |
 | Drata upload returns `error_class: validation` | Drata rejected the payload (400/404/409/422) — check the connection's own schema still matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
-| Log line `payload approaching size budget`, `collection-report.json`'s `payloadNearBudget: true` | Serialized record is at/above 80% of `runtime.maxPayloadBytes` but still under it — upload still proceeds. Early warning before this tenancy's resource count hits the hard ceiling and uploads start failing; see [TRACEABILITY.md §6](TRACEABILITY.md#6-single-record-scaling-ceiling-p2-2) for the migration path if that happens. |
+| Log line `payload approaching size budget`, `collection-report.json`'s `payloadNearBudget: true` | Serialized record is at/above 80% of `runtime.maxPayloadBytes` but still under it — upload still proceeds. Early warning before this tenancy's resource count hits the hard ceiling and uploads start failing; see `PayloadSizeResult`'s docstring (`validation/size.py`) for the migration path if that happens. |
 
 ## 8. Deployment acceptance checklist
-
-From spec §13, adapted as a literal checklist:
 
 - [ ] API-signing user authenticates; policy in §4 confirmed to grant no
       mutation permission.
@@ -266,7 +497,7 @@ See the cited module docstrings for detail.
 * **`findings[]` is a small, spec-anchored set** (`transform/findings.py`)
   — public exposure, customer-managed-key (when required by config),
   database public endpoint, VPN redundancy — not an exhaustive control
-  catalog. Custom Tests remain manually authored in the Drata UI per spec.
+  catalog. Custom Tests remain manually authored in the Drata UI.
   Each assertion name states its exact predicate
   (`OCI-COMPUTE-ADMIN-PORT-EXPOSURE` checks the *configured administrative
   ports* only, not general exposure; `OCI-ADB-PUBLIC-ENDPOINT-PRESENT`
@@ -276,8 +507,8 @@ See the cited module docstrings for detail.
   Effective ADB reachability derivation is not implemented.
 * **No noncritical-relationship classification**
   (`validation/completeness.py`) — every unresolved relationship blocks
-  upload by default, matching spec §10's stated default, but the spec's
-  "unless explicitly noncritical" escape hatch isn't implemented.
+  upload by default; an "unless explicitly noncritical" escape hatch isn't
+  implemented.
 * **Lifecycle-state exclusion (TERMINATED/TERMINATING)** covers compute
   instances, boot/block volumes, the full base DB chain (db system → db
   home → database → backup/Data Guard association), the autonomous DB
@@ -306,11 +537,71 @@ See the cited module docstrings for detail.
   Evaluate `now - collectedAt > freshnessThresholdHours` yourself: in a
   Custom Test authored in the Drata UI (this tool creates none), or in
   separate monitoring on the collector's own run cadence.
-* **Exadata detection is existence-only, no drill-down**, per spec §5.7 —
-  a tenancy with Exadata will show `snapshotStatus: incomplete`
-  indefinitely for the database domain until a phase-two decision is made
-  (spec §15).
-* **This MVP has not been run against a live OCI tenancy or Drata
-  connection.** Every scenario in this repo is a mocked unit/integration
-  test. Complete the checklist in §8 before treating its output as
-  compliance evidence.
+* **Exadata detection is existence-only, no drill-down** — a tenancy with
+  Exadata will show `snapshotStatus: incomplete` indefinitely for the
+  database domain until deeper detection is built.
+* **Every scenario in this repo's test suite is mocked.** Complete the
+  checklist in §8 against a real tenancy and Drata connection before
+  treating a deployment's output as compliance evidence.
+
+The limitations above are specific to the nested-schema path (§1.2). The
+flat-record path (§1.1) has its own, currently more significant, gaps:
+
+* **Only `instance` and `autonomous_database` have been proven against a
+  real, live Drata Custom Test** — pushed real records, built a test in
+  the UI, confirmed correct per-record pass/fail evaluation. Every other
+  evidenceType in the §1.1 table is schema-valid and unit-tested but not
+  yet confirmed against a live Drata evaluator.
+* **`iam_policy` and `monitoring_alarm` are evidence, not a clean
+  automated check** — their raw string fields (`statements`, `alarmQuery`)
+  would need Drata operator pattern-matching a Custom Test author sets
+  up, not a simple `equal`/`exist` check the way every other field in the
+  table is.
+* **OKE (Kubernetes) audit-logging evidence does not exist.** It's not a
+  field on the cluster object — it's a separate OCI Logging-service
+  resource attached to the cluster, a cross-service lookup this collector
+  doesn't do.
+* **A `200` from Drata's batch endpoint is not proof every record in the
+  batch was stored.** The endpoint can return `200` for the whole call
+  while individual records inside failed their own schema validation,
+  each carrying its own `error` field in the response body.
+  `upsert_record`/`upsert_records` parse that body and only report
+  `uploaded: true` when every record in the call is error-free; a partial
+  or full per-record failure shows up as `delivery_failed` with a summary
+  of which record ids failed and why. Two related platform facts every
+  field on every record must account for: every field ever added to the
+  shared flat schema becomes required (null where inapplicable) on every
+  record, since Drata's importer auto-adds a `required: [...]` list on
+  import covering every top-level property; and the `id` field has an
+  undocumented length limit enforced platform-side, not visible in the
+  registered schema itself — keep every evidenceType's `id` well under
+  200 characters.
+* **The nested-schema path (§1.2) still uploads a precomputed compliance
+  verdict** (`findings[].status`/`expected`/`observed`) on every run by
+  default — the same pattern [§1.1](#11-flat-record-path-current-direction-opt-in-via-drataflatresourceid)
+  avoids. Retiring it, or stripping the verdict fields from what gets
+  uploaded, needs a decision first: Custom Tests may already be built in
+  Drata against `findings[].status`.
+
+## 10. Example Custom Tests
+
+`custom-tests/` holds Advanced Editor JSON for the flat-record path
+(§1.1), one file per evidenceType. Each file has an `evaluator` (the
+pass/fail condition) and a `filteringCriteria` (mode `exclusion`) — paste
+them into the Advanced Editor's two separate fields, not one blob.
+Filtering is required because every evidenceType shares one resource: an
+unscoped evaluator would also run against every other record type, where
+its fact is `null`.
+
+Minimal example, for `evidenceType: "instance"`:
+
+```json
+{ "all": [ { "fact": "hasPublicAddress", "operator": "equal", "value": false } ] }
+```
+
+Evaluation threshold: "All results must pass" (`assertion: "nofail"`).
+
+Drata's Advanced Editor does not accept an array-quantifier condition
+(`operator: all`/`any` over a `path` into a nested array) against this
+connection's registered schema — every file in `custom-tests/` uses a
+flat, single-value `fact`/`operator`/`value` condition instead.

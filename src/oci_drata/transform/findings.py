@@ -1,5 +1,5 @@
-"""Derived-fact assertions (spec 7.2, 7.4): one Finding per resource per security predicate.
-Emits per-resource facts only; pass/fail rollup across resources is done by the consuming Custom Test.
+"""Derived-fact assertions: one Finding per resource per security predicate.
+Emits per-resource facts only; pass/fail rollup happens in the consuming Custom Test.
 """
 
 from __future__ import annotations
@@ -12,11 +12,9 @@ DERIVATION_VERSION = "1.3.0"
 def compute_exposure_findings(
     instances: list[Instance], *, administrative_ports: tuple[int, ...]
 ) -> list[Finding]:
-    """assertion_id and reason both name the exact predicate evaluated -- public
-    reachability of the *configured administrative ports* (decisions.administrativePorts),
-    not general public exposure on every port. The full configured port set is always in
-    the reason, not only the exposed subset, so a reader can see what was actually
-    checked even on a pass/unknown result, not just on a fail."""
+    """Checks reachability of the configured administrative ports only
+    (decisions.administrativePorts), not all ports. Reason always lists the full
+    configured port set, even on pass/unknown, so what was checked stays visible."""
 
     findings = []
     for instance in instances:
@@ -104,13 +102,10 @@ def database_customer_managed_key_findings(
 
 
 def database_public_endpoint_findings(autonomous_databases: list[DatabaseResource]) -> list[Finding]:
-    """assertion_id names exactly what's checked -- presence of a public endpoint
-    hostname, not effective reachability. An ADB can carry a public_endpoint hostname
-    while access is still restricted by an allow-list ACL or a private endpoint; this
-    MVP doesn't resolve effective reachability through those, so the reason makes that
-    explicit rather than letting a bare pass/fail imply a broader guarantee than the
-    derivation provides. accessControlEnabled/privateEndpointConfigured are included for
-    the reviewer to weigh, not folded into the verdict."""
+    """Checks presence of a public endpoint hostname only, not effective reachability --
+    an ADB can carry one while an ACL or private endpoint still restricts access.
+    accessControlEnabled/privateEndpointConfigured ride along in the reason for
+    review, not folded into the verdict."""
 
     findings = []
     for adb in autonomous_databases:

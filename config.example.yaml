@@ -25,6 +25,30 @@ oci:
     autonomousDatabase: true
     exadataDetection: true
     siteToSiteVpn: true
+    # Optional, defaults to false if omitted. Broader trust footprint than the other
+    # domains above -- reads user MFA status, API key ages, and raw IAM policy
+    # statement text (never credentials/secrets). See README Section 4 for the
+    # additional least-privilege policy grant this needs before enabling it.
+    identity: false
+    # Optional, defaults to false if omitted. Reads bucket-level metadata only
+    # (public access setting, encryption key, versioning) -- never object contents.
+    objectStorage: false
+    # Optional, defaults to false if omitted. Reads the tenancy's Cloud Guard
+    # configuration status only (enabled/disabled) -- no findings/detector detail.
+    cloudGuard: false
+    # Optional, defaults to false if omitted. Reads alarm definitions (whether an
+    # alarm exists and is enabled for a given metric query) -- never metric data
+    # itself or alarm history.
+    monitoring: false
+    # Optional, defaults to false if omitted. Reads load balancer public/private
+    # setting and backend-set health status only.
+    loadBalancer: false
+    # Optional, defaults to false if omitted. Reads whether a Web App Firewall is
+    # attached to a load balancer -- never firewall rule/policy detail.
+    waf: false
+    # Optional, defaults to false if omitted. Reads whether a KMS key has auto-
+    # rotation enabled and when it last rotated -- never key material itself.
+    kmsVault: false
 
 decisions:
   administrativePorts: [22, 3389]
@@ -39,7 +63,7 @@ decisions:
 
 drata:
   # baseUrl hostname must be public-api.drata.com unless allowAlternateHost: true is set
-  # explicitly (e.g. a regional/dedicated Drata instance) -- see README §4.
+  # explicitly (e.g. a regional/dedicated Drata instance) -- see README §7.
   baseUrl: https://public-api.drata.com/public/v2
   # connectionId/resourceId must both be replaced with real positive IDs from the
   # customer's own Drata Custom Connection -- 0 is a deliberate placeholder that fails
@@ -50,6 +74,12 @@ drata:
   apiTokenSecretRef:
     provider: env
     name: DRATA_API_TOKEN
+  # Optional. Resource ID of a SECOND Custom Connection resource registered with
+  # schemas/flat-record.schema.json -- create it via a direct API call, not the
+  # web UI (a known Drata bug can corrupt the first resource's schema when a
+  # second is added via the UI). Leave null/unset to skip the flat-record
+  # publish path entirely; resourceId above is unaffected either way.
+  flatResourceId: null
 
 runtime:
   maxPayloadBytes: 4500000

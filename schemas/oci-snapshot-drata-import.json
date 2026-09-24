@@ -1,0 +1,2073 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "displayName": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "type": "string"
+    },
+    "collectorVersion": {
+      "type": "string"
+    },
+    "collectedAt": {
+      "type": "string"
+    },
+    "snapshotStatus": {
+      "type": "string"
+    },
+    "freshnessThresholdHours": {
+      "type": "number"
+    },
+    "tenancy": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "homeRegionKey": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "expectedRegions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "collectedRegions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "compartmentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excludedCompartmentIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "startedAt": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "derivationVersion": {
+          "type": "string"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "service": {
+                "type": "string"
+              },
+              "operation": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "pageCount": {
+                "type": "number"
+              },
+              "itemCount": {
+                "type": "number"
+              },
+              "requestIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "errorCode": {
+                "type": "string"
+              },
+              "errorMessage": {
+                "type": "string"
+              },
+              "retryDelaysSeconds": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "unresolvedRelationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceType": {
+                "type": "string"
+              },
+              "sourceId": {
+                "type": "string"
+              },
+              "targetType": {
+                "type": "string"
+              },
+              "targetId": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "collectionErrorCount": {
+          "type": "number"
+        },
+        "unsupportedResourceCount": {
+          "type": "number"
+        },
+        "windowsVmCount": {
+          "type": "number"
+        },
+        "windowsClassificationUnknownCount": {
+          "type": "number"
+        },
+        "publiclyAddressedWindowsVmCount": {
+          "type": "number"
+        },
+        "internetExposedWindowsVmCount": {
+          "type": "number"
+        },
+        "unknownExposureWindowsVmCount": {
+          "type": "number"
+        },
+        "attachedVolumeUnknownEncryptionCount": {
+          "type": "number"
+        },
+        "attachedVolumeWithoutCustomerManagedKeyCount": {
+          "type": "number"
+        },
+        "baseDatabaseCount": {
+          "type": "number"
+        },
+        "autonomousDatabaseCount": {
+          "type": "number"
+        },
+        "databasePublicEndpointCount": {
+          "type": "number"
+        },
+        "databaseBackupUnknownCount": {
+          "type": "number"
+        },
+        "exadataDetectedCount": {
+          "type": "number"
+        },
+        "ipsecConnectionCount": {
+          "type": "number"
+        },
+        "ipsecTunnelDownCount": {
+          "type": "number"
+        },
+        "ipsecTunnelUnknownCount": {
+          "type": "number"
+        },
+        "nonRedundantIpsecConnectionCount": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "compartments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "imageId": {
+                "type": "string"
+              },
+              "osClassification": {
+                "type": "string"
+              },
+              "hasPublicAddress": {
+                "type": "boolean"
+              },
+              "effectiveIngressExposure": {
+                "type": "string"
+              },
+              "exposedAdministrativePorts": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "vnicIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "volumeIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "vnics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "instanceId": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "nsgIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "privateAddresses": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicAddresses": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "privateIps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "publicIps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "bootVolumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "customerManagedKeyPresent": {
+                "type": "boolean"
+              },
+              "attachedInstanceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "blockVolumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "customerManagedKeyPresent": {
+                "type": "boolean"
+              },
+              "attachedInstanceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "bootVolumeAttachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "volumeAttachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "vcns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "subnets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "routeTables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "routeRules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "destination": {
+                      "type": "string"
+                    },
+                    "destinationType": {
+                      "type": "string"
+                    },
+                    "networkEntityId": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "internetGateways": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "isEnabled": {
+                "type": "boolean"
+              },
+              "vcnId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "securityLists": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "ingressRules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "direction": {
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "sourceType": {
+                      "type": "string"
+                    },
+                    "destination": {
+                      "type": "string"
+                    },
+                    "destinationType": {
+                      "type": "string"
+                    },
+                    "isStateless": {
+                      "type": "boolean"
+                    },
+                    "tcpPortRange": {},
+                    "udpPortRange": {},
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "egressRules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "direction": {
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "sourceType": {
+                      "type": "string"
+                    },
+                    "destination": {
+                      "type": "string"
+                    },
+                    "destinationType": {
+                      "type": "string"
+                    },
+                    "isStateless": {
+                      "type": "boolean"
+                    },
+                    "tcpPortRange": {},
+                    "udpPortRange": {},
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "networkSecurityGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "securityRules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "direction": {
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "sourceType": {
+                      "type": "string"
+                    },
+                    "destination": {
+                      "type": "string"
+                    },
+                    "destinationType": {
+                      "type": "string"
+                    },
+                    "isStateless": {
+                      "type": "boolean"
+                    },
+                    "tcpPortRange": {},
+                    "udpPortRange": {},
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "dbSystems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "backupStatus": {
+                "type": "string"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "relatedResourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicEndpointHostname": {
+                "type": "string"
+              },
+              "privateEndpointConfigured": {
+                "type": "boolean"
+              },
+              "publicEndpointPresent": {
+                "type": "boolean"
+              },
+              "accessControlEnabled": {
+                "type": "boolean"
+              },
+              "allowedSourceCount": {
+                "type": "number"
+              },
+              "mtlsRequired": {
+                "type": "boolean"
+              },
+              "networkSecurityGroupIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "backupRetentionDays": {
+                "type": "number"
+              },
+              "backupRetentionLocked": {
+                "type": "boolean"
+              },
+              "longTermBackupScheduleConfigured": {
+                "type": "boolean"
+              },
+              "shape": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "osVersion": {
+                "type": "string"
+              },
+              "nodeCount": {
+                "type": "number"
+              },
+              "diskRedundancy": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "lastBackupTimestamp": {
+                "type": "string"
+              },
+              "lastFailedBackupTimestamp": {
+                "type": "string"
+              },
+              "patchVersion": {
+                "type": "string"
+              },
+              "recoveryWindowDays": {
+                "type": "number"
+              },
+              "databaseManagementStatus": {
+                "type": "string"
+              },
+              "dataGuardRole": {
+                "type": "string"
+              },
+              "dataGuardPeerRole": {
+                "type": "string"
+              },
+              "dataGuardProtectionMode": {
+                "type": "string"
+              },
+              "dataGuardTransportType": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "dbHomes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "backupStatus": {
+                "type": "string"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "relatedResourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicEndpointHostname": {
+                "type": "string"
+              },
+              "privateEndpointConfigured": {
+                "type": "boolean"
+              },
+              "publicEndpointPresent": {
+                "type": "boolean"
+              },
+              "accessControlEnabled": {
+                "type": "boolean"
+              },
+              "allowedSourceCount": {
+                "type": "number"
+              },
+              "mtlsRequired": {
+                "type": "boolean"
+              },
+              "networkSecurityGroupIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "backupRetentionDays": {
+                "type": "number"
+              },
+              "backupRetentionLocked": {
+                "type": "boolean"
+              },
+              "longTermBackupScheduleConfigured": {
+                "type": "boolean"
+              },
+              "shape": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "osVersion": {
+                "type": "string"
+              },
+              "nodeCount": {
+                "type": "number"
+              },
+              "diskRedundancy": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "lastBackupTimestamp": {
+                "type": "string"
+              },
+              "lastFailedBackupTimestamp": {
+                "type": "string"
+              },
+              "patchVersion": {
+                "type": "string"
+              },
+              "recoveryWindowDays": {
+                "type": "number"
+              },
+              "databaseManagementStatus": {
+                "type": "string"
+              },
+              "dataGuardRole": {
+                "type": "string"
+              },
+              "dataGuardPeerRole": {
+                "type": "string"
+              },
+              "dataGuardProtectionMode": {
+                "type": "string"
+              },
+              "dataGuardTransportType": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "backupStatus": {
+                "type": "string"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "relatedResourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicEndpointHostname": {
+                "type": "string"
+              },
+              "privateEndpointConfigured": {
+                "type": "boolean"
+              },
+              "publicEndpointPresent": {
+                "type": "boolean"
+              },
+              "accessControlEnabled": {
+                "type": "boolean"
+              },
+              "allowedSourceCount": {
+                "type": "number"
+              },
+              "mtlsRequired": {
+                "type": "boolean"
+              },
+              "networkSecurityGroupIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "backupRetentionDays": {
+                "type": "number"
+              },
+              "backupRetentionLocked": {
+                "type": "boolean"
+              },
+              "longTermBackupScheduleConfigured": {
+                "type": "boolean"
+              },
+              "shape": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "osVersion": {
+                "type": "string"
+              },
+              "nodeCount": {
+                "type": "number"
+              },
+              "diskRedundancy": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "lastBackupTimestamp": {
+                "type": "string"
+              },
+              "lastFailedBackupTimestamp": {
+                "type": "string"
+              },
+              "patchVersion": {
+                "type": "string"
+              },
+              "recoveryWindowDays": {
+                "type": "number"
+              },
+              "databaseManagementStatus": {
+                "type": "string"
+              },
+              "dataGuardRole": {
+                "type": "string"
+              },
+              "dataGuardPeerRole": {
+                "type": "string"
+              },
+              "dataGuardProtectionMode": {
+                "type": "string"
+              },
+              "dataGuardTransportType": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "autonomousDatabases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "backupStatus": {
+                "type": "string"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "relatedResourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicEndpointHostname": {
+                "type": "string"
+              },
+              "privateEndpointConfigured": {
+                "type": "boolean"
+              },
+              "publicEndpointPresent": {
+                "type": "boolean"
+              },
+              "accessControlEnabled": {
+                "type": "boolean"
+              },
+              "allowedSourceCount": {
+                "type": "number"
+              },
+              "mtlsRequired": {
+                "type": "boolean"
+              },
+              "networkSecurityGroupIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "backupRetentionDays": {
+                "type": "number"
+              },
+              "backupRetentionLocked": {
+                "type": "boolean"
+              },
+              "longTermBackupScheduleConfigured": {
+                "type": "boolean"
+              },
+              "shape": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "osVersion": {
+                "type": "string"
+              },
+              "nodeCount": {
+                "type": "number"
+              },
+              "diskRedundancy": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "lastBackupTimestamp": {
+                "type": "string"
+              },
+              "lastFailedBackupTimestamp": {
+                "type": "string"
+              },
+              "patchVersion": {
+                "type": "string"
+              },
+              "recoveryWindowDays": {
+                "type": "number"
+              },
+              "databaseManagementStatus": {
+                "type": "string"
+              },
+              "dataGuardRole": {
+                "type": "string"
+              },
+              "dataGuardPeerRole": {
+                "type": "string"
+              },
+              "dataGuardProtectionMode": {
+                "type": "string"
+              },
+              "dataGuardTransportType": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "backups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "backupStatus": {
+                "type": "string"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "relatedResourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicEndpointHostname": {
+                "type": "string"
+              },
+              "privateEndpointConfigured": {
+                "type": "boolean"
+              },
+              "publicEndpointPresent": {
+                "type": "boolean"
+              },
+              "accessControlEnabled": {
+                "type": "boolean"
+              },
+              "allowedSourceCount": {
+                "type": "number"
+              },
+              "mtlsRequired": {
+                "type": "boolean"
+              },
+              "networkSecurityGroupIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "backupRetentionDays": {
+                "type": "number"
+              },
+              "backupRetentionLocked": {
+                "type": "boolean"
+              },
+              "longTermBackupScheduleConfigured": {
+                "type": "boolean"
+              },
+              "shape": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "osVersion": {
+                "type": "string"
+              },
+              "nodeCount": {
+                "type": "number"
+              },
+              "diskRedundancy": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "lastBackupTimestamp": {
+                "type": "string"
+              },
+              "lastFailedBackupTimestamp": {
+                "type": "string"
+              },
+              "patchVersion": {
+                "type": "string"
+              },
+              "recoveryWindowDays": {
+                "type": "number"
+              },
+              "databaseManagementStatus": {
+                "type": "string"
+              },
+              "dataGuardRole": {
+                "type": "string"
+              },
+              "dataGuardPeerRole": {
+                "type": "string"
+              },
+              "dataGuardProtectionMode": {
+                "type": "string"
+              },
+              "dataGuardTransportType": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "dataGuardAssociations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "backupStatus": {
+                "type": "string"
+              },
+              "kmsKeyId": {
+                "type": "string"
+              },
+              "relatedResourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "publicEndpointHostname": {
+                "type": "string"
+              },
+              "privateEndpointConfigured": {
+                "type": "boolean"
+              },
+              "publicEndpointPresent": {
+                "type": "boolean"
+              },
+              "accessControlEnabled": {
+                "type": "boolean"
+              },
+              "allowedSourceCount": {
+                "type": "number"
+              },
+              "mtlsRequired": {
+                "type": "boolean"
+              },
+              "networkSecurityGroupIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "backupRetentionDays": {
+                "type": "number"
+              },
+              "backupRetentionLocked": {
+                "type": "boolean"
+              },
+              "longTermBackupScheduleConfigured": {
+                "type": "boolean"
+              },
+              "shape": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "osVersion": {
+                "type": "string"
+              },
+              "nodeCount": {
+                "type": "number"
+              },
+              "diskRedundancy": {
+                "type": "string"
+              },
+              "subnetId": {
+                "type": "string"
+              },
+              "lastBackupTimestamp": {
+                "type": "string"
+              },
+              "lastFailedBackupTimestamp": {
+                "type": "string"
+              },
+              "patchVersion": {
+                "type": "string"
+              },
+              "recoveryWindowDays": {
+                "type": "number"
+              },
+              "databaseManagementStatus": {
+                "type": "string"
+              },
+              "dataGuardRole": {
+                "type": "string"
+              },
+              "dataGuardPeerRole": {
+                "type": "string"
+              },
+              "dataGuardProtectionMode": {
+                "type": "string"
+              },
+              "dataGuardTransportType": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "cpes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "drgs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "drgAttachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "ipsecConnections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "cpeId": {
+                "type": "string"
+              },
+              "drgId": {
+                "type": "string"
+              },
+              "tunnelIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tunnelCount": {
+                "type": "number"
+              },
+              "upTunnelCount": {
+                "type": "number"
+              },
+              "redundancyStatus": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "ipsecTunnels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "compartmentId": {
+                "type": "string"
+              },
+              "displayName": {
+                "type": "string"
+              },
+              "lifecycleState": {
+                "type": "string"
+              },
+              "timeCreated": {
+                "type": "string"
+              },
+              "definedTags": {
+                "type": "object"
+              },
+              "freeformTags": {
+                "type": "object"
+              },
+              "ipsecConnectionId": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "routing": {
+                "type": "string"
+              },
+              "ikeVersion": {
+                "type": "string"
+              },
+              "bgpState": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assertionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "resourceType": {
+            "type": "string"
+          },
+          "resourceId": {
+            "type": "string"
+          },
+          "resourceName": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "compartmentId": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "sourceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "derivationVersion": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "resourceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
