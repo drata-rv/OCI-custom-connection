@@ -451,7 +451,7 @@ def test_deleted_users_and_their_api_keys_are_excluded() -> None:
     )
 
     ids = {r["id"] for r in result.records}
-    assert ids == {"u1", "key1"}
+    assert ids == {"u1", "u1/aa:bb:cc"}
     assert result.excluded_counts["iamUser"] == 1  # deleted_user, not its orphaned key
 
 
@@ -512,7 +512,8 @@ def test_api_key_reports_raw_creation_timestamp_for_rotation_age_checks() -> Non
     )
 
     key_record = next(r for r in result.records if r["evidenceType"] == "api_key")
-    assert key_record["id"] == "ocid1.apikey.oc1..key1"
+    assert key_record["id"] == "u1/aa:bb:cc:dd"  # user_id/fingerprint, not the much
+    # longer key_id (tenancy/user/fingerprint) -- see _flatten_api_key's docstring
     assert key_record["userId"] == "u1"
     assert key_record["keyCreatedAt"] == "2020-06-01T00:00:00Z"
     assert "status" not in key_record  # no precomputed "rotation overdue" verdict

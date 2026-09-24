@@ -644,10 +644,35 @@ class FlatRecordsResult:
     unresolved_relationship_count: int
 
 
+# Every evidenceType shares one flat schema/resource in Drata (see PLAN.md), and
+# Drata's schema importer auto-adds every top-level property to that schema's own
+# `required` list -- confirmed live: a schema submitted with no `required` array at
+# all came back from Drata with all 27 properties required. `additionalProperties:
+# true` on the schema doesn't help with *missing* required ones. Every _flatten_*
+# function below must therefore emit every field, not just the ones relevant to its
+# own evidenceType -- an omitted field fails per-record validation even though the
+# batch endpoint's HTTP status still reports 200 (see delivery/drata.py). The two
+# array-typed fields default to `[]`, not `None`: the schema declares them as plain
+# `"type": "array"`, with no `"null"` alternative, so a null would itself fail
+# validation.
+_FLAT_RECORD_FIELD_DEFAULTS: dict[str, Any] = {
+    "id": None, "evidenceType": None, "name": None, "timestamp": None,
+    "region": None, "compartmentId": None, "osClassification": None,
+    "hasPublicAddress": None, "publicIngressPorts": [], "hasRangedPublicIngress": None,
+    "kmsKeyId": None, "publicEndpointHostname": None, "mfaActivated": None,
+    "userId": None, "keyCreatedAt": None, "statements": [],
+    "publicAccessType": None, "versioning": None, "cloudGuardStatus": None,
+    "alarmEnabled": None, "alarmNamespace": None, "alarmQuery": None,
+    "isPrivate": None, "loadBalancerId": None, "backendSetHealthStatus": None,
+    "vaultId": None, "autoRotationEnabled": None, "lastRotationAt": None,
+}
+
+
 def _flatten_instance(
     instance: Instance, ingress: PublicIngressFacts, *, timestamp: str | None
 ) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": instance.id,
         "evidenceType": "instance",
         "name": instance.display_name,
@@ -663,6 +688,7 @@ def _flatten_instance(
 
 def _flatten_autonomous_database(resource: DatabaseResource, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": resource.id,
         "evidenceType": "autonomous_database",
         "name": resource.display_name,
@@ -676,6 +702,7 @@ def _flatten_autonomous_database(resource: DatabaseResource, *, timestamp: str |
 
 def _flatten_iam_user(user: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": user.id,
         "evidenceType": "iam_user",
         "name": user.name,
@@ -686,8 +713,17 @@ def _flatten_iam_user(user: Any, *, timestamp: str | None) -> dict[str, Any]:
 
 
 def _flatten_api_key(api_key: Any, *, timestamp: str | None) -> dict[str, Any]:
+    # api_key.key_id is OCI's own real, unique identifier for this resource, but its
+    # documented format is "TENANCY_OCID/USER_OCID/FINGERPRINT" -- confirmed live,
+    # this can be 200+ characters, well past an undocumented length limit Drata
+    # enforces on the id field platform-side (not visible in the registered schema
+    # itself; 204 chars was rejected, 124 was accepted). The tenancy segment is
+    # redundant here anyway -- this whole resource already scopes to one tenancy --
+    # so user_id/fingerprint keeps the same real uniqueness guarantee at roughly
+    # half the length.
     return {
-        "id": api_key.key_id,
+        **_FLAT_RECORD_FIELD_DEFAULTS,
+        "id": f"{api_key.user_id}/{api_key.fingerprint}",
         "evidenceType": "api_key",
         "name": api_key.fingerprint,
         "timestamp": timestamp,
@@ -698,6 +734,7 @@ def _flatten_api_key(api_key: Any, *, timestamp: str | None) -> dict[str, Any]:
 
 def _flatten_bucket(bucket: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": bucket.id,
         "evidenceType": "bucket",
         "name": bucket.name,
@@ -712,6 +749,7 @@ def _flatten_bucket(bucket: Any, *, timestamp: str | None) -> dict[str, Any]:
 
 def _flatten_iam_policy(policy: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": policy.id,
         "evidenceType": "iam_policy",
         "name": policy.name,
@@ -728,6 +766,7 @@ def _flatten_cloud_guard_configuration(
     # tenancy-wide singleton, not a resource with an OCID. The tenancy OCID is the
     # only stable, unique identifier available for upsert-by-id.
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": tenancy_id or "cloud-guard-configuration",
         "evidenceType": "cloud_guard_configuration",
         "name": "Cloud Guard",
@@ -739,6 +778,7 @@ def _flatten_cloud_guard_configuration(
 
 def _flatten_alarm(alarm: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": alarm.id,
         "evidenceType": "monitoring_alarm",
         "name": alarm.display_name,
@@ -753,6 +793,7 @@ def _flatten_alarm(alarm: Any, *, timestamp: str | None) -> dict[str, Any]:
 
 def _flatten_load_balancer(lb: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": lb.id,
         "evidenceType": "load_balancer",
         "name": lb.display_name,
@@ -767,6 +808,7 @@ def _flatten_backend_set_health(
     lb: Any, backend_set_name: str, health: Any, *, timestamp: str | None
 ) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         # A backend set name is only unique within its own load balancer, not
         # tenancy-wide -- composite id to keep upsert-by-id meaningful.
         "id": f"{lb.id}:{backend_set_name}",
@@ -782,6 +824,7 @@ def _flatten_backend_set_health(
 
 def _flatten_waf(waf: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": waf.id,
         "evidenceType": "waf",
         "name": waf.display_name,
@@ -795,6 +838,7 @@ def _flatten_waf(waf: Any, *, timestamp: str | None) -> dict[str, Any]:
 def _flatten_kms_key(key: Any, *, timestamp: str | None) -> dict[str, Any]:
     rotation_details = getattr(key, "auto_key_rotation_details", None)
     return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": key.id,
         "evidenceType": "kms_key",
         "name": key.display_name,

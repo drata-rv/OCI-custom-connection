@@ -186,6 +186,27 @@ def _upsert_with_retry(
             continue
 
         if response.status_code in (200, 201):
+            # Confirmed live: Drata's batch endpoint can return 200 for the HTTP call
+            # while every individual record inside failed its own schema validation --
+            # the per-record result carries its own "error" field, invisible if only
+            # the HTTP status is checked. A 200/201 here is proof the request was
+            # accepted, not proof anything was actually stored.
+            per_record_error = _first_per_record_error(response)
+            if per_record_error is not None:
+                logger.warning(
+                    "drata upload returned 200 but at least one record failed "
+                    "per-record validation -- nothing in this batch is confirmed stored",
+                    extra={"status_code": response.status_code, "error": per_record_error},
+                )
+                return DeliveryResult(
+                    uploaded=False,
+                    created=None,
+                    status_code=response.status_code,
+                    attempts=attempt,
+                    error_class="validation",
+                    error_message=per_record_error,
+                    request_id=_request_id(response),
+                )
             logger.info(
                 "drata upload succeeded",
                 extra={"status_code": response.status_code, "attempts": attempt},
@@ -253,6 +274,46 @@ def _upsert_with_retry(
             error_message=_safe_body(response),
             request_id=_request_id(response),
         )
+
+
+def _first_per_record_error(response: requests.Response) -> str | None:
+    """A 200/201 batch response body is a list of per-record results, each optionally
+    carrying its own {"error": {"message", "code"}} -- confirmed live against a real
+    connection. A single-record response may be one such object directly rather than
+    a list of them; both shapes are checked. Returns a bounded summary of every failed
+    record's own id + message (not just the first) so a caller can act on exactly
+    which ones didn't land, or None if every item in the response is error-free.
+    Returns None (not a failure) if the body isn't JSON or isn't shaped like either
+    case -- this is a best-effort check layered on top of the HTTP status, not a
+    replacement for it."""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    items = payload if isinstance(payload, list) else [payload]
+    failures = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        error = item.get("error")
+        if not error:
+            continue
+        record_id = None
+        data = item.get("data")
+        if isinstance(data, dict):
+            record_id = data.get("id")
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        failures.append(f"{record_id!r}: {message}")
+
+    if not failures:
+        return None
+    shown = failures[:5]
+    summary = "; ".join(shown)
+    if len(failures) > len(shown):
+        summary += f"; and {len(failures) - len(shown)} more"
+    return f"{len(failures)}/{len(items)} record(s) failed per-record validation: {summary}"
 
 
 def _safe_body(response: requests.Response) -> str:
