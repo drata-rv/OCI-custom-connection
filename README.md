@@ -24,7 +24,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Pinned install (matches CI):
+Pinned install (reproducible, matches `requirements-lock.txt`):
 
 ```bash
 pip install -r requirements-lock.txt
