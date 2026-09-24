@@ -1,7 +1,6 @@
-"""Load balancer collection: list_load_balancers (per region/compartment, already
-full-fidelity -- no LoadBalancerSummary type exists, ``list_load_balancers`` returns
-full ``LoadBalancer`` objects directly, backend set names included) -> per (load
-balancer, backend set name) concurrent fan-out for ``get_backend_set_health``.
+"""Load balancer collection: ``list_load_balancers`` returns full ``LoadBalancer``
+objects (no LoadBalancerSummary type) with backend set names included, then fans
+out per (load balancer, backend set name) for ``get_backend_set_health``.
 """
 
 from __future__ import annotations
@@ -25,15 +24,15 @@ from oci_drata.pagination import (
 )
 
 # Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently) -- same value used elsewhere in this project.
+# pagination.run_concurrently).
 _PER_BACKEND_SET_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
 class LoadBalancerCollectionResult:
     load_balancers: list[Any]
-    # Keyed by (load_balancer_id, backend_set_name) -- a backend set name is only
-    # unique within its own load balancer, not tenancy-wide.
+    # Keyed by (load_balancer_id, backend_set_name): backend set names aren't
+    # unique tenancy-wide, only within their own load balancer.
     backend_set_health_by_key: dict[tuple[str, str], Any]
     operations: list[OperationResult]
 
@@ -92,8 +91,8 @@ def collect_load_balancer(
             region_load_balancers.extend(stamp_region(op.items, region))
         load_balancers.extend(region_load_balancers)
 
-        # (load_balancer, backend_set_name) pairs -- backend set names come free
-        # from the list call above, no separate list_backend_sets call needed.
+        # Backend set names come free from the list call above; no separate
+        # list_backend_sets call needed.
         pairs = [
             (lb, backend_set_name)
             for lb in region_load_balancers
@@ -104,10 +103,9 @@ def collect_load_balancer(
             pair: tuple[Any, str], *, _client: Any = client, _region: str = region
         ) -> tuple[str, str, OperationResult]:
             lb, backend_set_name = pair
-            # get_backend_set_health takes no compartment_id -- call_once's own
-            # compartment_id parameter is metadata-only and never auto-forwarded
-            # (see pagination.py::call_once docstring), which doesn't matter here
-            # since this operation never needed one in the first place.
+            # get_backend_set_health takes no compartment_id; call_once's
+            # compartment_id param is metadata-only, never auto-forwarded
+            # (see pagination.py::call_once).
             op = call_once(
                 service="load_balancer",
                 operation="get_backend_set_health",

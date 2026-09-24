@@ -1,19 +1,13 @@
-"""Web Application Firewall collection: list_web_app_firewalls, per region/
-compartment. Deliberately ``oci.waf`` (the current, purpose-built WAF service,
-API version 2021), not ``oci.waas`` (the older Web Application Acceleration and
-Security service, API version 2018) -- ``WaasPolicySummary`` is keyed by DNS
-domain with no OCID link to any compute/network resource, so it can't answer
-"does load balancer X have a WAF attached"; ``WebAppFirewallLoadBalancerSummary``
-carries ``load_balancer_id`` directly, joinable against collection/load_balancer.py.
-``list_web_app_firewalls`` is already full-fidelity (no drill-down call needed).
+"""WAF collection via ``list_web_app_firewalls``, per region/compartment.
+
+Uses ``oci.waf``, not ``oci.waas``: ``WebAppFirewallLoadBalancerSummary`` carries
+``load_balancer_id``, joinable against collection/load_balancer.py; ``oci.waas``'s
+``WaasPolicySummary`` has no such link. Already full-fidelity -- no drill-down
+call needed.
 
 ``list_web_app_firewalls`` returns a ``WebAppFirewallCollection``, not a bare
-list -- paginate()'s ``response.data or []`` assumption crashes on it with
-``TypeError: not iterable``. ``_unwrap`` adapts it to the plain list
-:func:`pagination.paginate` expects, same pattern as
-``collection/database_autonomous.py``'s ``_unwrap_peers`` for
-``list_autonomous_database_peers``, the one other operation in this project
-with this shape.
+list; ``_unwrap`` adapts it to the plain list :func:`pagination.paginate`
+expects (same pattern as ``database_autonomous.py``'s ``_unwrap_peers``).
 """
 
 from __future__ import annotations

@@ -1,8 +1,6 @@
 """Tenancy, region, and compartment discovery; runs once before all other collectors.
-
-Derives approved_regions (subscribed+READY) and approved_compartment_ids
-(root subtree, allow/deny applied); its failures count as required-domain
-failures.
+Derives approved_regions (subscribed+READY) and approved_compartment_ids (root
+subtree, allow/deny applied); failures here count as required-domain failures.
 """
 
 from __future__ import annotations
@@ -44,14 +42,10 @@ class DiscoveryResult:
 
 
 def _discovery_region(signer: TenancySigner) -> str:
-    """Identity calls (get_tenancy/list_region_subscriptions/list_compartments) work from
-    any subscribed region and return tenancy-wide data. Bootstrapping from the first
-    *configured* region (oci.regions.allow[0]) fails before producing a useful diagnostic
-    when that entry is misspelled or unsubscribed -- the region hasn't been validated yet
-    at that point, that's what this call is for. The OCI SDK config file's own `region` is
-    already validated by oci.config.validate_config() (required, pattern-checked) before a
-    TenancySigner exists at all, so it's a safe, always-known-good bootstrap point,
-    independent of the allow-list this call is validating."""
+    """Identity calls return tenancy-wide data from any subscribed region, so
+    signer.base_config["region"] -- already validated by oci.config.validate_config() --
+    works as a safe bootstrap point before the configured region allow-list itself is
+    validated."""
 
     return signer.base_config["region"]
 
@@ -90,15 +84,11 @@ def discover(
 
     approved_regions, unready_regions = _resolve_regions(app_config, region_sub_op)
 
-    # compartment_id_in_subtree=True is only valid when compartment_id is the tenancy
-    # root itself (OCI's own documented constraint -- oci.identity.IdentityClient.
-    # list_compartments's docstring: "Can only be set to true when performing
-    # ListCompartments on the tenancy (root compartment)"). A configured root other
-    # than "tenancy" cannot use it directly, so instead of calling it per-root (which
-    # would silently misbehave for any non-tenancy root), list the whole tenancy once
-    # -- always a valid subtree call -- then filter client-side to each configured
-    # root's own subtree via parent pointers (_expand_to_subtrees, the same logic
-    # already used for exclusions below).
+    # compartment_id_in_subtree=True is valid only when compartment_id is the tenancy
+    # root (OCI API constraint). Configured roots other than "tenancy" can't use it
+    # directly, so list the whole tenancy once and filter client-side to each root's
+    # own subtree via parent pointers (_expand_to_subtrees, same logic as exclusions
+    # below).
     tenancy_wide_op = paginate(
         service="identity",
         operation="list_compartments",
@@ -166,11 +156,9 @@ def discover(
 
 
 def _expand_to_subtrees(all_compartments: list[Any], seed_ids: set[str]) -> set[str]:
-    """Expands a set of excluded compartment OCIDs to include every descendant, computed
-    from each compartment's own compartment_id (its parent) as returned by
-    list_compartments. Excluding a parent while leaving its children in scope is the exact
-    surprising/unsafe case this closes -- exclusion must apply to the whole subtree, not
-    just the exact OCID configured."""
+    """Expands a set of excluded compartment OCIDs to every descendant, via each
+    compartment's compartment_id (parent) from list_compartments -- so excluding a
+    parent also excludes its children."""
 
     children_by_parent: dict[str, list[str]] = {}
     for c in all_compartments:
@@ -194,7 +182,7 @@ def _resolve_regions(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     configured = app_config.oci.regions.allow
     if not region_sub_op.ok:
-        # API failure, not a subscription fact: treat all configured regions unready (can't prove otherwise).
+        # Can't confirm subscription status on API failure; treat all configured regions as unready.
         return (), tuple(configured)
 
     ready_by_name = {

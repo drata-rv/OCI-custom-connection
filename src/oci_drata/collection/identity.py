@@ -1,14 +1,9 @@
-"""Identity collection: list_users -> list_api_keys (per user, fanned out), plus
-list_policies per approved compartment. User and ApiKey are both full-fidelity from
-their list_* calls (no separate Summary type, no get_* drill-down needed -- same
-shape as Autonomous Database). Global/tenancy-scoped, not looped per region like
-compute/storage/networking -- collected once from the discovery region, mirroring
-collection/discovery.py's own IdentityClient usage.
+"""Collects users, per-user API keys (fanned out), and policies per approved
+compartment. Tenancy-scoped: collected once from the discovery region, never
+per-region. list_* responses are full-fidelity -- no drill-down calls needed.
 
-Broader trust footprint than every other collector in this project: reads user MFA
-status, API key ages, and raw IAM policy statement text. Off by default
-(oci.services.identity) -- see README Section 4 for the additional least-privilege
-policy grant this needs before a customer enables it.
+Broadest trust footprint of any collector here (MFA status, API key ages, raw
+policy text). Off by default; see README Section 4 for the required policy grant.
 """
 
 from __future__ import annotations

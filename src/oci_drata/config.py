@@ -166,11 +166,9 @@ def _apply_single_override(
                 f"path segment {segment!r}; overrides may only touch existing config keys"
             )
         if is_forbidden_key(matched_key):
-            # A leaf-only check here would still let an override reach INSIDE a
-            # secretRef object (provider/name/path aren't credential-shaped names
-            # themselves) and silently redirect which env var or file a secret
-            # resolves from -- every segment on the path must be checked, not just
-            # the one actually being assigned.
+            # Every segment is checked, not just the leaf: provider/name/path aren't
+            # credential-shaped names, so skipping this would let an override reach
+            # inside a secretRef and redirect which env var or file a secret resolves from.
             raise ConfigError(
                 f"environment override {ENV_OVERRIDE_PREFIX}{dotted_name} passes through a "
                 f"credential field {matched_key!r}; overrides may never reach inside one, "
@@ -406,10 +404,8 @@ def _require_port_list(mapping: Mapping[str, Any], key: str, *, context: str) ->
 
 
 def _require_cidr_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[str, ...]:
-    """Fails at config-load time, before any OCI collection, rather than letting a
-    malformed or empty entry silently make transform.exposure.ExposureConfig's reference
-    set empty -- which would make every exposure check resolve to not_exposed regardless
-    of what the collected security rules actually allow."""
+    """Validates here, before collection -- an empty reference set would silently
+    make every exposure check resolve to not_exposed, regardless of actual rules."""
 
     raw_list = _require(mapping, key, context=context)
     if not isinstance(raw_list, list) or not raw_list:

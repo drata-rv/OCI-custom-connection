@@ -39,10 +39,9 @@ class TenancySigner:
         return cfg
 
     def __repr__(self) -> str:
-        """base_config carries tenancy/user OCIDs, key fingerprint, and the private
-        key's filesystem path -- account metadata that shouldn't appear in logs or
-        exception tracebacks just because something formatted this object. Allowlist the
-        two fields safe to show rather than blocklist the sensitive ones."""
+        """Allowlists the two safe fields instead of blocklisting sensitive ones --
+        base_config carries tenancy/user OCIDs, key fingerprint, and private key
+        path, which must not leak into logs or tracebacks."""
 
         return (
             "TenancySigner(authentication_type='api_signing_user', "
@@ -69,10 +68,9 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
         raise AuthError(f"OCI SDK config file not found: {config_file}")
     config_file_mode = config_file.stat().st_mode
     if config_file_mode & (stat.S_IRWXG | stat.S_IRWXO):
-        # Only key_file was checked before -- but an operator can set pass_phrase
-        # directly in this ini file instead of privateKeyPassphraseSecretRef, and
-        # tenancy/user/fingerprint here are sensitive account metadata even without
-        # that. Same fail-closed check as the key file itself.
+        # Config file itself can carry pass_phrase directly (instead of via
+        # privateKeyPassphraseSecretRef), plus tenancy/user/fingerprint --
+        # sensitive metadata needing the same fail-closed check as key_file.
         raise AuthError(f"OCI SDK config file must not be group/world accessible: {config_file}")
 
     try:
@@ -83,13 +81,9 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
         ) from exc
 
     if "authentication_type" in raw_config:
-        # oci.config.validate_config() takes a different, more permissive path
-        # (skipping user/tenancy/fingerprint validation) when this ini-level field is
-        # set to e.g. instance_principal -- this project only implements and expects
-        # api_signing_user (checked above, but that's this app's own config.yaml
-        # field, a different thing from this OCI-SDK-ini-level one). Reject before
-        # validate_config ever sees it, rather than relying on the weaker validation
-        # path it would otherwise take.
+        # validate_config() skips user/tenancy/fingerprint checks when this INI field
+        # is set (e.g. instance_principal) -- distinct from this app's own auth.type
+        # checked above. Reject before validate_config sees it.
         raise AuthError(
             f"OCI SDK config profile {auth.profile!r} sets 'authentication_type', which "
             f"this project doesn't support -- only a plain api_signing_user profile "
@@ -125,14 +119,13 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
 
 
 def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySigner, *, region: str) -> T:
-    """Construct an OCI SDK client bound to one region; region is always
-    caller-supplied, never hard-coded.
+    """Construct an OCI SDK client bound to one region (caller-supplied, never
+    hard-coded).
 
-    Returns a GuardedOciClient wrapping the real client, not the client itself --
-    runtime enforcement alongside test_operation_allowlist.py's static AST scan
-    (see security.py). Cast back to T: GuardedOciClient proxies every attribute
-    access (as Any); an unrecognized operation raises at call time, same as a
-    raw OCI client call, just not statically checked by mypy."""
+    Returns a GuardedOciClient, cast back to T -- runtime enforcement alongside
+    test_operation_allowlist.py's static AST scan (see security.py). Unrecognized
+    operations raise at call time, not caught by mypy since attribute access is
+    untyped (Any)."""
 
     return cast(T, GuardedOciClient(client_cls(signer.region_config(region))))
 
@@ -140,11 +133,10 @@ def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySi
 def endpoint_client(
     client_cls: Callable[..., T], signer: TenancySigner, *, region: str, service_endpoint: str
 ) -> T:
-    """Like regional_client, but for a client class that needs an explicit
-    per-resource service endpoint instead of the region's default one --
-    e.g. KmsManagementClient, whose endpoint is resolved per-vault from that
-    vault's own ``management_endpoint`` field (see collection/kms_vault.py).
-    Still wrapped in GuardedOciClient, same as every other client this project
-    constructs -- the endpoint differs, the allowlist enforcement doesn't."""
+    """Like regional_client, for a client needing an explicit per-resource
+    endpoint instead of the region's default -- e.g. KmsManagementClient, whose
+    endpoint comes per-vault from ``management_endpoint`` (see
+    collection/kms_vault.py). Still wrapped in GuardedOciClient; only the
+    endpoint differs."""
 
     return cast(T, GuardedOciClient(client_cls(signer.region_config(region), service_endpoint)))

@@ -1,14 +1,6 @@
-"""Excludes resources whose lifecycle_state means they no longer meaningfully exist
-(TERMINATED/TERMINATING) from evidence. Never silently -- callers must report the
-excluded count via a Message in resources.warnings, not just drop the count.
-
-Every exclusion here is correlated: a terminated parent's children (a terminated
-instance's own vnic/volume attachments; a terminated db_system's db_homes; a terminated
-db_home's databases; a terminated database's backups/Data Guard associations; a
-terminated autonomous database's backups/Data Guard associations; a terminated ipsec
-connection's tunnels) are excluded alongside it via exclude_lifecycle_cascade, so a
-resource whose parent is gone doesn't surface as an unresolved relationship (parent not
-found) instead of correctly reflecting that its whole lineage is gone.
+"""Excludes TERMINATED/TERMINATING resources from evidence; always report the excluded
+count via a Message in resources.warnings, never drop it silently. Exclusion cascades to
+correlated children (exclude_lifecycle_cascade) so an excluded parent's children go too.
 """
 
 from __future__ import annotations
@@ -50,12 +42,9 @@ def exclude_referencing(
 def exclude_lifecycle_cascade(
     items: list[T], *, parent_excluded_ids: set[str], parent_id_field: str | None
 ) -> tuple[list[T], list[T]]:
-    """split_by_lifecycle() plus cascading exclusion: an item whose parent_id_field
-    references an id in parent_excluded_ids is excluded too, even if its own
-    lifecycle_state isn't terminal -- a child of an excluded parent must go with it, or
-    it surfaces as an unresolved relationship (parent not found) rather than correctly
-    reflecting that its whole lineage is gone. Pass parent_id_field=None for a root
-    resource type with no parent to cascade from (equivalent to split_by_lifecycle)."""
+    """split_by_lifecycle() plus cascading exclusion: an item is also excluded if
+    parent_id_field references an excluded parent id, even when its own lifecycle_state
+    isn't terminal. parent_id_field=None skips the cascade (same as split_by_lifecycle)."""
 
     kept, excluded = split_by_lifecycle(items)
     if parent_id_field is None or not parent_excluded_ids:

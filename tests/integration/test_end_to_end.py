@@ -113,8 +113,7 @@ def _exposed_windows_compute() -> ComputeCollectionResult:
         id="ocid1.instance.oc1..vm1", compartment_id=COMPARTMENT_OCID, display_name="win-vm-1",
         lifecycle_state="RUNNING", image_id="ocid1.image.oc1..img1",
     ))
-    # a terminated instance (with its own attachment) must be excluded from evidence,
-    # and must not surface as an unresolved relationship via its own now-dropped attachment.
+    # Terminated instance must be excluded without its dropped attachment surfacing as an unresolved relationship.
     terminated_instance = _stamp(oci.core.models.Instance(
         id="ocid1.instance.oc1..vmold", compartment_id=COMPARTMENT_OCID, display_name="old-vm",
         lifecycle_state="TERMINATED", image_id="ocid1.image.oc1..img1",
@@ -170,8 +169,7 @@ def _storage() -> StorageCollectionResult:
         id="ocid1.bootvolumeattachment.oc1..bva1", compartment_id=COMPARTMENT_OCID,
         instance_id="ocid1.instance.oc1..vm1", boot_volume_id=boot_volume.id
     ))
-    # An attachment to the terminated instance (see _exposed_windows_compute) must not
-    # leak into resources.bootVolumeAttachments.
+    # Attachment to the terminated instance must not leak into bootVolumeAttachments.
     old_attachment = _stamp(oci.core.models.BootVolumeAttachment(
         id="ocid1.bootvolumeattachment.oc1..bvaold", compartment_id=COMPARTMENT_OCID,
         instance_id="ocid1.instance.oc1..vmold", boot_volume_id=boot_volume.id
@@ -206,8 +204,7 @@ def _database_base_populated() -> DatabaseBaseCollectionResult:
         id="ocid1.dgassociation.oc1..dg1", database_id="ocid1.database.oc1..db1",
         role="PRIMARY", peer_role="STANDBY", protection_mode="MAXIMUM_AVAILABILITY", transport_type="SYNC",
     ))
-    # P1: a terminated db_system with a live-looking db_home child -- the db_home must be
-    # cascade-excluded (its parent is gone), not surface as an unresolved relationship.
+    # db_home of a terminated db_system must be cascade-excluded, without tripping an unresolved relationship.
     terminated_db_system = _stamp(oci.database.models.DbSystemSummary(
         id="ocid1.dbsystem.oc1..sysold", compartment_id=COMPARTMENT_OCID, lifecycle_state="TERMINATED",
     ))
@@ -223,8 +220,7 @@ def _database_base_populated() -> DatabaseBaseCollectionResult:
 
 
 def _autonomous_database() -> AutonomousDatabaseCollectionResult:
-    # public_endpoint is a hostname string on the real SDK model, never a bool -- must not
-    # be stored into a boolean schema field.
+    # public_endpoint is a hostname string on the SDK model, never a bool -- don't store it into a boolean schema field.
     adb = _stamp(oci.database.models.AutonomousDatabaseSummary(
         id="ocid1.autonomousdatabase.oc1..adb1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
         public_endpoint="adb1.adb.us-ashburn-1.oraclecloudapps.com", is_dedicated=False,
@@ -253,8 +249,7 @@ def _vpn_non_redundant() -> VpnCollectionResult:
         cpe_id="ocid1.cpe.oc1..cpe1", drg_id="ocid1.drg.oc1..drg1",
     ))
     tunnel = _stamp(oci.core.models.IPSecConnectionTunnel(id="ocid1.tunnel.oc1..t1", compartment_id=COMPARTMENT_OCID, status="UP"))
-    # P1: a terminated connection's own tunnel must be excluded with it, not surfaced
-    # as a tunnel for a connection that no longer exists in the output.
+    # Terminated connection's tunnel must be excluded with it, not left pointing at a connection that no longer exists.
     terminated_connection = _stamp(oci.core.models.IPSecConnection(
         id="ocid1.ipsecconnection.oc1..cold", compartment_id=COMPARTMENT_OCID,
         cpe_id="ocid1.cpe.oc1..cpe1", drg_id="ocid1.drg.oc1..drg1", lifecycle_state="TERMINATED",
@@ -310,7 +305,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert decision.should_upload is True
 
     instances = result.record["resources"]["instances"]
-    assert len(instances) == 1  # terminated instance excluded, not just filtered from this count
+    assert len(instances) == 1  # terminated instance excluded entirely
     assert instances[0]["osClassification"] == "windows"
     assert instances[0]["effectiveIngressExposure"] == "exposed"
     assert instances[0]["exposedAdministrativePorts"] == [3389]
@@ -334,8 +329,7 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert result.record["resources"]["ipsecConnections"][0]["redundancyStatus"] == "not_redundant"
     assert result.record["metrics"]["nonRedundantIpsecConnectionCount"] == 1
 
-    # P1: terminated connection + its own tunnel excluded together, cascade, not just
-    # resources terminated in their own right.
+    # Terminated connection and its own tunnel are excluded together via cascade.
     connection_ids = {c["id"] for c in result.record["resources"]["ipsecConnections"]}
     assert connection_ids == {"ocid1.ipsecconnection.oc1..c1"}
     tunnel_ids = {t["id"] for t in result.record["resources"]["ipsecTunnels"]}
@@ -372,18 +366,15 @@ def test_complete_collection_produces_one_schema_valid_record() -> None:
     assert data_guard["dataGuardRole"] == "PRIMARY"
     assert data_guard["dataGuardProtectionMode"] == "MAXIMUM_AVAILABILITY"
 
-    # P1: terminated db_system + its orphaned (but not itself terminated) db_home
-    # excluded together via cascade -- and critically, this does NOT trip an unresolved
-    # relationship (the db_home's own db_system_id pointing at a "missing" db_system),
-    # since decision.snapshot_status == "complete" is already asserted above.
+    # db_home orphaned by a terminated db_system is cascade-excluded without tripping an
+    # unresolved relationship (snapshot_status == "complete" above confirms this).
     db_system_ids = {s["id"] for s in result.record["resources"]["dbSystems"]}
     assert db_system_ids == {"ocid1.dbsystem.oc1..sys1"}
     assert result.record["resources"]["dbHomes"] == []
     lifecycle_labels = {
         w["message"].split()[1] for w in result.record["warnings"] if w["code"] == "LIFECYCLE_EXCLUDED"
     }
-    # The orphaned tunnel's exclusion isn't tracked separately -- it goes with its whole
-    # connection, already covered by the ipsec_connection warning below.
+    # Orphaned tunnel's exclusion isn't tracked separately -- covered by the ipsec_connection warning below.
     assert {"db_system(s)", "db_home(s)", "ipsec_connection(s)"} <= lifecycle_labels
 
     adb = result.record["resources"]["autonomousDatabases"][0]

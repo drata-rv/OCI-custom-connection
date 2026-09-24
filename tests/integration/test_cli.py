@@ -68,8 +68,7 @@ def test_complete_run_uploads(patched_collectors: MagicMock) -> None:
     assert result.exit_code == cli.EXIT_OK
 
 
-# -- _access_summary: turning a wall of per-operation failures into "where does this
-# API user's access and the tenancy's real data actually overlap" --
+# -- _access_summary: distinguishes real access gaps from compartments with no data --
 
 
 def _op(compartment_id, status="success", error_code=None, item_count=0):
@@ -94,8 +93,8 @@ def test_access_summary_groups_by_compartment() -> None:
 
 
 def test_access_summary_excludes_test_mode_deadline_from_auth_gap() -> None:
-    """A --test cutoff is not a permission problem -- conflating the two would make
-    the summary lie about where the real access gap is."""
+    """A --test deadline isn't an access gap; conflating them would misreport where
+    the real access gap is."""
 
     operations = [_op("c1", status="failed", error_code="TestModeDeadlineExceeded")]
     summary = cli._access_summary(operations)
@@ -225,12 +224,9 @@ def test_main_returns_config_error_exit_code(tmp_path: Path) -> None:
 def test_run_test_mode_sets_a_deadline_every_collector_shares(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every OCI call goes through paginate()/call_once() (pagination.py), both keyed
-    off the one retry_policy threaded through discover() and every collector -- setting
-    its deadline here, once, bounds the whole run without touching a single collector
-    file. Asserted on what discover() actually receives, not just cli.py's own local
-    variable, so a future refactor that stops threading this same policy through can't
-    silently break the time budget."""
+    """Deadline flows through one retry_policy shared by discover() and every collector
+    via paginate()/call_once(). Asserted on what discover() receives, not cli.py's local
+    variable, so a refactor can't silently drop the threading."""
 
     seen_policies: list[RetryPolicy] = []
 
@@ -263,11 +259,9 @@ def test_run_test_mode_sets_a_deadline_every_collector_shares(
 def test_main_test_mode_skips_nested_upload_even_if_config_says_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
 ) -> None:
-    """A time-bounded partial scan is never a complete picture of the tenancy -- the
-    nested/original path must never be able to reach a real Drata upload under --test,
-    no matter what runtime.dryRun says. (The flat-record path is unaffected -- covered
-    by test_flat_records_uploads_to_configured_resource_id-style tests -- since each
-    flat record is standalone evidence, honest regardless of how much was collected.)"""
+    """Nested-path upload must stay blocked under --test regardless of runtime.dryRun --
+    a partial scan is never a complete tenancy picture. Flat-record path is unaffected:
+    each record is standalone evidence."""
 
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.yaml"
@@ -398,10 +392,9 @@ def test_domain_all_skipped_true_only_when_every_op_is_the_skip_marker() -> None
 def test_flat_records_report_distinguishes_disabled_from_empty_domains(
     patched_collectors: MagicMock,
 ) -> None:
-    """The exact ambiguity a real run hit: domainComplete=true tells you nothing failed,
-    not whether the service ran at all. identity/objectStorage/etc are off by default
-    (see _app_config_with_flat_resource -> _app_config), so they must show up as
-    skipped; compute is on and (per patched_collectors) actually ran, so it must not."""
+    """domainComplete=true only means nothing failed, not that the service ran at all.
+    identity/objectStorage/etc are off by default (_app_config_with_flat_resource ->
+    _app_config), so they must show skipped; compute is on and ran, so it must not."""
 
     result = cli.run(_app_config_with_flat_resource(), dry_run=True)
     domain_skipped = result.report["flatRecords"]["domainSkipped"]
@@ -414,9 +407,9 @@ def test_flat_records_report_distinguishes_disabled_from_empty_domains(
 def test_flat_records_blocked_when_unresolved_relationships_exist(
     monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
 ) -> None:
-    """A dangling vnic_attachment (references an instance not in the collected set)
-    used to be silently discarded on the flat path -- unlike build_snapshot's nested
-    path, which hard-blocks upload on exactly this signal via decide_completeness()."""
+    """A dangling vnic_attachment (references an instance outside the collected set)
+    must block upload on the flat path, same as decide_completeness() enforces for
+    the nested path."""
 
     from oci_drata.collection.compute import ComputeCollectionResult
 
@@ -467,11 +460,8 @@ def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.Mo
 
 # -- Full integration: every opt-in evidenceType enabled at once --
 #
-# Every test above exercises one collector/evidenceType in isolation (or the base
-# two that are always on). This runs the whole flat-record pipeline with all 7
-# opt-in domains enabled simultaneously: no id collisions across evidenceTypes,
-# every record schema-valid, nothing crashes when every opt-in toggle is
-# flipped on at the same time.
+# Exercises all 7 opt-in domains simultaneously: no id collisions across
+# evidenceTypes, every record schema-valid, nothing crashes.
 
 
 def _app_config_with_everything_enabled():
@@ -485,10 +475,9 @@ def _app_config_with_everything_enabled():
 
 
 def _stamp(raw, region="us-ashburn-1"):
-    """Every real collector calls pagination.stamp_region() before returning an
-    object -- mock fixtures that skip this don't represent real collector output
-    (aggregate.py's flatteners degrade a missing .region to null rather than
-    crashing, but a test fixture should still look like production data)."""
+    """Mimics pagination.stamp_region(), which every real collector calls -- fixtures
+    should look like real collector output even though aggregate.py's flatteners
+    tolerate a missing region as null."""
 
     raw.region = region
     return raw
@@ -615,9 +604,8 @@ def test_all_evidence_types_together_no_id_collisions(
     assert result.report["flatRecords"]["uploadDecision"] == "skipped_dry_run"
     assert result.report["flatRecords"]["schemaValid"] is True
 
-    # Every record from a raw-SDK-object evidenceType should carry a real region
-    # (not null) when its collector correctly region-stamps -- confirms the test
-    # fixtures represent realistic collector output, not just schema-valid nulls.
+    # Confirms these fixtures look like real collector output (real region), not
+    # just schema-valid nulls.
     stamped_types = {
         "bucket", "monitoring_alarm", "load_balancer", "load_balancer_backend_set", "waf", "kms_key",
     }

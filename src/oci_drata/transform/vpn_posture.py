@@ -1,7 +1,7 @@
 """Site-to-Site VPN redundancy derivation (spec 5.8, 15).
 
-Connection missing from tunnels_by_connection_id -> unknown.
-Connection present with zero tunnels -> not_redundant (provable zero, not unknown).
+Missing from tunnels_by_connection_id -> unknown; present with zero tunnels ->
+not_redundant (a provable zero, not unknown).
 """
 
 from __future__ import annotations

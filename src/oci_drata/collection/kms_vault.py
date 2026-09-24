@@ -1,13 +1,10 @@
-"""KMS vault collection: list_vaults (region/compartment, via KmsVaultClient,
-a plain regional client) -> per-vault KmsManagementClient bound to that vault's
-own ``management_endpoint`` field (a genuinely different construction than every
-other collector's plain regional client -- KmsManagementClient takes
-``service_endpoint`` as a required positional arg; see
-``oci_auth.py::endpoint_client``) -> list_keys (per vault, no ``vault_id`` param
-exists -- scoping is entirely by which endpoint the client was built against) ->
-get_key per key, concurrently fanned out (rotation timing lives under
-``Key.auto_key_rotation_details``, only present on the full model -- ``KeySummary``
-only has the flat ``is_auto_rotation_enabled`` bool).
+"""KMS vault collection: list_vaults (regional client) -> per-vault
+KmsManagementClient bound to that vault's ``management_endpoint``
+(``service_endpoint`` is a required positional arg; see
+``oci_auth.py::endpoint_client``) -> list_keys (no ``vault_id`` param;
+scoping is by which endpoint the client was built against) -> get_key per
+key, concurrent fan-out (``auto_key_rotation_details`` exists only on the
+full ``Key`` model, not on ``KeySummary``).
 """
 
 from __future__ import annotations
@@ -30,8 +27,8 @@ from oci_drata.pagination import (
     stamp_region,
 )
 
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently) -- same value used elsewhere in this project.
+# Fan-out concurrency for get_key calls, independent of runtime.maxConcurrency
+# (see pagination.run_concurrently).
 _PER_KEY_CONCURRENCY = 8
 
 
@@ -97,17 +94,15 @@ def collect_kms_vault(
             region_vaults.extend(stamp_region(op.items, region))
         vaults.extend(region_vaults)
 
-        # (management_client, key_summary) pairs across every vault in this region
-        # -- each vault needs its own KmsManagementClient built from its own
-        # management_endpoint before list_keys can even be called.
+        # (management_client, key_summary) pairs -- each vault has its own
+        # management_client, needed for get_key below.
         key_summary_pairs: list[tuple[Any, Any]] = []
         for vault in region_vaults:
             management_endpoint = getattr(vault, "management_endpoint", None)
             if not management_endpoint:
-                # No endpoint means list_keys/get_key can't be scoped to this vault
-                # at all -- not recorded as its own failed operation since nothing
-                # was actually attempted, same convention as identity.py/
-                # cloud_guard.py's own "nothing to scope this to" degradation.
+                # No endpoint means list_keys/get_key can't be scoped to this vault --
+                # skip silently, same "nothing to scope to" convention as
+                # identity.py/cloud_guard.py.
                 continue
             management_client = endpoint_client(
                 oci.key_management.KmsManagementClient,

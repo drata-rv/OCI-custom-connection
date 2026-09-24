@@ -15,10 +15,8 @@ def _compartment(id_: str, parent_id: str, *, lifecycle_state: str = "ACTIVE") -
 
 
 def test_discovery_region_uses_signer_config_region_not_allow_list_first_entry() -> None:
-    """bootstrapping from oci.regions.allow[0] fails before producing a
-    useful diagnostic when that entry is misspelled/unsubscribed. The OCI SDK config
-    file's own region is already validated (required + pattern-checked) before a
-    TenancySigner exists, independent of the allow-list this call is meant to validate."""
+    """allow[0] may be misspelled/unsubscribed with no diagnostic; the signer's
+    config region is already validated (required + pattern-checked), so use that instead."""
 
     signer = TenancySigner(base_config={"region": "us-ashburn-1", "tenancy": "t1", "user": "u1"})
     assert _discovery_region(signer) == "us-ashburn-1"
@@ -50,9 +48,8 @@ def test_resolve_regions_splits_ready_and_unready() -> None:
 
 
 def test_expand_to_subtrees_excludes_descendants_not_just_the_configured_id() -> None:
-    """excluding a parent compartment must exclude its whole subtree -- a child
-    compartment not itself listed in exclude_ocids must still be excluded when its
-    parent is."""
+    """Excluding a parent must exclude its whole subtree, even children not
+    themselves listed in exclude_ocids."""
 
     tenancy = "ocid1.tenancy.oc1..t1"
     compartments = [
@@ -77,8 +74,8 @@ def test_expand_to_subtrees_excluded_leaf_has_no_descendants() -> None:
 
 
 def test_resolve_regions_api_failure_treats_all_configured_as_unready() -> None:
-    """A failed list_region_subscriptions call is an API failure, not a subscription fact --
-    every configured region must be treated as unproven, never silently approved."""
+    """A failed list_region_subscriptions call must leave every configured region
+    unproven -- none get silently approved."""
 
     app_config = _app_config_with_allow("us-ashburn-1", "eu-frankfurt-1")
     op = OperationResult(
@@ -146,9 +143,8 @@ def test_discover_calls_list_compartments_exactly_once_against_the_tenancy_root(
 def test_discover_non_tenancy_root_scopes_to_its_own_subtree_only(
     monkeypatch: pytest.MonkeyPatch, identity_client: MagicMock
 ) -> None:
-    """A non-tenancy root must only ever see its own descendants -- an unrelated sibling
-    subtree returned by the (necessarily tenancy-wide) list_compartments call must not
-    leak into approved_compartment_ids just because it came back in the same response."""
+    """A non-tenancy root must only see its own descendants; siblings returned by
+    the necessarily tenancy-wide list_compartments call must not leak into approved_compartment_ids."""
 
     monkeypatch.setattr(
         "oci_drata.collection.discovery.regional_client",

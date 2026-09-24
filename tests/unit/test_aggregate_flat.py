@@ -130,8 +130,8 @@ def _kms_vault(vaults=(), keys=()):
 
 
 def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
-    """No status/compliance verdict anywhere -- the compliance policy (which ports
-    count as administrative) belongs in the Drata Custom Test, not the collector."""
+    """No status/compliance verdict anywhere -- policy (e.g. which ports count as
+    administrative) belongs in the Drata Custom Test."""
 
     instance = _stamp(
         oci.core.models.Instance(
@@ -192,9 +192,8 @@ def test_exposed_instance_reports_raw_named_port_no_verdict() -> None:
 
 
 def test_wide_open_rule_is_not_enumerated_but_flagged() -> None:
-    """A rule with no port restriction can't be represented as discrete port
-    numbers without enumerating up to 65536 entries -- it must show up as
-    hasRangedPublicIngress=True instead of being silently dropped."""
+    """A rule with no port restriction can't enumerate all 65536 ports, so it
+    surfaces as hasRangedPublicIngress=True instead of being dropped."""
 
     instance = _stamp(
         oci.core.models.Instance(
@@ -319,8 +318,7 @@ def test_domain_complete_and_discovery_complete_pass_through() -> None:
 
 def test_autonomous_database_reports_raw_kms_and_endpoint_facts() -> None:
     """No verdict here either -- kmsKeyId/publicEndpointHostname are raw facts a
-    Custom Test evaluates (e.g. kmsKeyId exist equal false), not a precomputed
-    'encrypted'/'compliant' boolean."""
+    Custom Test evaluates (e.g. kmsKeyId exist equal false)."""
 
     adb = _stamp(
         oci.database.models.AutonomousDatabaseSummary(
@@ -456,9 +454,8 @@ def test_deleted_users_and_their_api_keys_are_excluded() -> None:
 
 
 def test_excluded_counts_all_zero_when_nothing_is_excluded() -> None:
-    """recordCount:0 with every excluded_counts entry at 0 rules out lifecycle
-    exclusion as the explanation -- the incident this whole field was added to
-    diagnose (see cli.py's domainSkipped/excludedByLifecycle report fields)."""
+    """recordCount:0 with excluded_counts all zero rules out lifecycle exclusion
+    as the cause (see cli.py's domainSkipped/excludedByLifecycle fields)."""
 
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
@@ -475,11 +472,9 @@ def test_excluded_counts_all_zero_when_nothing_is_excluded() -> None:
 
 
 def test_unresolved_relationship_count_is_reported_not_discarded() -> None:
-    """A vnic_attachment referencing an instance that isn't in the collected instance
-    list (deleted mid-collection, or a genuine data inconsistency) used to be computed
-    by resolve_instance_network_and_storage and then thrown away here -- unlike
-    build_snapshot's nested path, which hard-blocks upload on exactly this signal via
-    decide_completeness()."""
+    """A dangling vnic_attachment (instance not in the collected list) is reported
+    via unresolved_relationship_count, not discarded -- build_snapshot's nested
+    path instead hard-blocks upload on this signal via decide_completeness()."""
 
     instance = _stamp(
         oci.core.models.Instance(id="i1", compartment_id="c1", lifecycle_state="RUNNING")
@@ -512,8 +507,8 @@ def test_api_key_reports_raw_creation_timestamp_for_rotation_age_checks() -> Non
     )
 
     key_record = next(r for r in result.records if r["evidenceType"] == "api_key")
-    assert key_record["id"] == "u1/aa:bb:cc:dd"  # user_id/fingerprint, not the much
-    # longer key_id (tenancy/user/fingerprint) -- see _flatten_api_key's docstring
+    assert key_record["id"] == "u1/aa:bb:cc:dd"  # user_id/fingerprint; key_id is
+    # tenancy/user/fingerprint -- see _flatten_api_key's docstring
     assert key_record["userId"] == "u1"
     assert key_record["keyCreatedAt"] == "2020-06-01T00:00:00Z"
     assert "status" not in key_record  # no precomputed "rotation overdue" verdict
@@ -538,9 +533,8 @@ def test_iam_policy_reports_raw_statements() -> None:
 
 
 def test_identity_disabled_by_default_yields_no_identity_records() -> None:
-    """collect_identity()'s own _skip_result() is exercised in test_identity_collector.py --
-    this confirms build_flat_records produces nothing extra when identity is empty,
-    the shape it's in when oci.services.identity is off."""
+    """collect_identity()'s _skip_result() is covered in test_identity_collector.py;
+    this confirms build_flat_records handles the resulting empty identity cleanly."""
 
     result = build_flat_records(
         decisions=DECISIONS, discovery=_discovery(), compute=_compute([]),
@@ -579,11 +573,9 @@ def test_bucket_reports_raw_public_access_and_kms_facts() -> None:
 
 
 def test_bucket_missing_region_stamp_degrades_to_null_not_a_crash() -> None:
-    """Every real collector calls pagination.stamp_region() before returning an
-    object, but nothing in the type system enforces that -- an object that never
-    got stamped (a future collector bug, or a test fixture that forgot) must
-    degrade region to null (the schema already allows it), not raise
-    AttributeError and take down the whole flat-record build."""
+    """Real collectors call pagination.stamp_region() before returning an object,
+    but nothing enforces it -- an unstamped object must degrade region to null,
+    not raise AttributeError."""
 
     bucket = oci.object_storage.models.Bucket(
         id="ocid1.bucket.oc1..unstamped", compartment_id="c1", name="unstamped-bucket", namespace="ns1",

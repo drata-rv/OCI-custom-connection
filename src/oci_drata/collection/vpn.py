@@ -26,8 +26,7 @@ from oci_drata.pagination import (
 
 _SERVICE = "virtual_network"
 
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently).
+# Per-item concurrency; independent of runtime.maxConcurrency (pagination.run_concurrently).
 _PER_ITEM_CONCURRENCY = 8
 
 # Missing any of these on a tunnel triggers a per-tunnel get_ip_sec_connection_tunnel call.
@@ -105,9 +104,8 @@ def collect_vpn(
             region_connections = stamp_region(ipsc_op.items, region)
             ip_sec_connections.extend(region_connections)
 
-            # Each connection's work is independent; the per-tunnel enrichment sub-loop
-            # stays sequential within one connection's worker -- typically 1-2 tunnels,
-            # the real gain is across connections.
+            # Connections run concurrently; per-tunnel enrichment stays sequential within
+            # a worker -- typically 1-2 tunnels, real gain is across connections.
             def _process_connection(
                 connection: Any, *, _client: Any = client, _region: str = region,
                 _compartment_id: str = compartment_id,
@@ -193,8 +191,7 @@ def collect_vpn(
                 if attachment.drg_id and _is_ipsec_tunnel_attachment(attachment)
             }
 
-            # Each DRG's work is independent; the per-route-table rule listing stays
-            # sequential within one DRG's worker.
+            # DRGs run concurrently; per-route-table rule listing stays sequential within a worker.
             def _process_drg(
                 drg_id: str, *, _client: Any = client, _region: str = region
             ) -> tuple[list[OperationResult], str, list[Any], dict[str, list[Any]]]:

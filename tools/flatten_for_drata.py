@@ -1,27 +1,20 @@
 """Flattens src/oci_drata/schemas/oci-snapshot-1.0.0.json into the shape Drata's Custom
-Connection "JSON Schema" importer actually accepts.
-
-Confirmed dialect (two independent sources):
-  1. Drata's own documented example: type/properties/items/additionalProperties (bool)
-     only -- no $ref, no definitions, no minLength/maxLength/pattern/enum/format, no
-     type arrays for nullable fields.
-  2. Empirically: Drata's own "Sample JSON Data" auto-generator, run against
-     tests/fixtures/sample-record.json on a live customer call, never emitted "required"
-     or "title", and rendered every integer value as "number" (no "integer" type).
-Both independently omit "required" and "title" and use "number" for all numerics --
-so this converter drops "required"/"title" and maps integer -> number rather than
-guess they're supported.
+Connection "JSON Schema" importer accepts: type/properties/items/additionalProperties
+(bool) only -- no $ref, no definitions, no minLength/maxLength/pattern/enum/format/
+required/title, and every integer rendered as "number".
 
 This does NOT replace src/oci_drata/schemas/oci-snapshot-1.0.0.json -- that file stays
-the full Draft-07 schema used by validation/schema.py (jsonschema library, full spec
-support). This is a Drata-import-only derivative.
+the full Draft-07 schema used by validation/schema.py. This is a Drata-import-only
+derivative.
 """
 
 import json
 import sys
+from pathlib import Path
 
-SRC = "/Users/rodv/Desktop/OCI/src/oci_drata/schemas/oci-snapshot-1.0.0.json"
-OUT = "/Users/rodv/Desktop/OCI/schemas/oci-snapshot-drata-import.json"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC = REPO_ROOT / "src" / "oci_drata" / "schemas" / "oci-snapshot-1.0.0.json"
+OUT = REPO_ROOT / "schemas" / "oci-snapshot-drata-import.json"
 
 ALLOWED_KEYS = {"type", "properties", "items", "additionalProperties"}
 TYPE_MAP = {"integer": "number"}
@@ -60,20 +53,13 @@ def resolve(node, definitions, seen):
     if "additionalProperties" in node:
         ap = node["additionalProperties"]
         if isinstance(ap, bool):
-            # Every one of Drata's documented examples, and its own sample-data
-            # generator, use additionalProperties only as a plain boolean. Nested
-            # boolean is the same construct one level deeper -- low risk.
             out["additionalProperties"] = ap
-        # else: ap is a schema object -- the OCI "tags" free-form key/value map shape
-        # (definedTags/freeformTags). Drata has zero documented support for
-        # additionalProperties-as-schema (a dynamic-key map); every example and the
-        # sample-data generator use boolean only. Rather than guess, drop the
-        # constraint and leave a bare object so the field still imports -- Drata just
-        # won't validate its nested keys.
+        # else: a schema object (OCI's free-form tags map) -- Drata's importer has no
+        # documented support for additionalProperties-as-schema, so it's dropped and
+        # the field imports as an unvalidated bare object.
 
-    # "required" (unsupported -- Drata's own generator never emits it, no documented
-    # example shows it) and anything else (minLength/maxLength/pattern/enum/format/
-    # description/$id/$schema/...) is deliberately dropped.
+    # Everything not in ALLOWED_KEYS (required, minLength/maxLength/pattern/enum/
+    # format/description/$id/$schema/...) is deliberately dropped.
 
     return out
 

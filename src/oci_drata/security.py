@@ -1,17 +1,13 @@
 """Allow/deny lists enforcing read-only, least-privilege OCI access, enforced twice:
 
 - ``tests/unit/test_operation_allowlist.py`` ast-scans ``src/oci_drata/collection`` at
-  build time and fails on any call not in :data:`ALLOWED_OCI_OPERATIONS` or matching
-  :data:`FORBIDDEN_OPERATION_PREFIXES`/:data:`FORBIDDEN_OPERATIONS`.
+  build time against :data:`ALLOWED_OCI_OPERATIONS`, :data:`FORBIDDEN_OPERATION_PREFIXES`,
+  and :data:`FORBIDDEN_OPERATIONS`.
 - :class:`GuardedOciClient` (returned by ``oci_auth.regional_client``) checks every
-  *callable* attribute access against the same allow/deny lists at the moment of the
-  call, not just at CI time -- catches a dynamically resolved or aliased method name
-  the static AST scan can't see (``getattr(client, name)()``, a rebound method). Every
-  real OCI SDK client method is either ``list_*``/``get_*`` (read) or some mutation
-  verb (``create_*``, ``upload_part``, ``batch_delete_objects``, ...) -- there is no
-  third, unnamed category of benign operation to carve out a passthrough for, so any
-  callable not in :data:`ALLOWED_OCI_OPERATIONS` is refused, not just ones shaped like
-  ``list_*``/``get_*``.
+  callable attribute access against the same lists at call time, catching a name
+  resolved dynamically or via alias that the static scan can't see. Every real OCI SDK
+  client method is read-shaped (``list_*``/``get_*``) or a mutation verb -- there's no
+  third category, so any callable outside the allowlist is refused.
 """
 
 from __future__ import annotations
@@ -67,8 +63,7 @@ FORBIDDEN_OPERATIONS: frozenset[str] = frozenset(
     }
 )
 
-# Allowed list_*/get_* operations, grouped by collector module. Keep in sync with
-# the collectors that call these names.
+# Allowed list_*/get_* operations, grouped by collector module; keep in sync with callers.
 ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
     {
         # Discovery (collection/discovery.py)
@@ -134,10 +129,9 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_drg_attachments",
         "list_drg_route_rules",
         "list_drg_route_tables",
-        # Identity, opt-in only (collection/identity.py) -- reads user MFA status,
-        # API key ages, and raw IAM policy statement text. Never credentials/secrets:
-        # list_api_keys returns each key's public fingerprint/value, not private
-        # material, and no auth-token/credential-retrieval call is allowlisted here.
+        # Identity, opt-in only (collection/identity.py) -- reads user MFA status, API key
+        # ages, and raw IAM policy text. list_api_keys returns only each key's public
+        # fingerprint/value; no auth-token/credential-retrieval call is allowlisted here.
         "list_users",
         "list_api_keys",
         "list_policies",
@@ -178,17 +172,11 @@ class OciOperationNotAllowedError(Exception):
 
 
 class GuardedOciClient:
-    """Wraps a raw OCI SDK client object; every *callable* attribute access is checked
-    against the allow/deny lists above at the moment of access, fail-closed on anything
-    not explicitly allowed -- not just names shaped like ``list_*``/``get_*``. A
-    non-callable attribute (internal client state, e.g. ``base_client``) passes through
-    untouched; this only narrows the operation surface, it never changes behavior for
-    an allowed call.
-
-    Defense in depth alongside test_operation_allowlist.py's static AST scan: this
-    catches a name the scan can't see because it's resolved dynamically
-    (``getattr(client, name)()``) or through an alias, not just a literal
-    ``client.list_x(...)`` call site.
+    """Wraps a raw OCI SDK client; every callable attribute access is checked against the
+    allow/deny lists above at call time, fail-closed on anything not explicitly allowed.
+    Non-callable attributes (e.g. ``base_client``) pass through untouched. Catches names
+    resolved dynamically or via alias that the static scan (test_operation_allowlist.py)
+    can't see.
     """
 
     def __init__(self, client: Any) -> None:
@@ -199,17 +187,15 @@ class GuardedOciClient:
         attr = getattr(client, name)
         if not callable(attr):
             return attr
-        # Checked regardless of name shape -- a mutation-shaped call (create_*,
-        # terminate_*, ...) resolved dynamically (getattr(client, name)()) must be
-        # blocked here too, not only when it matches the allowlist check below.
+        # Checked regardless of name shape -- a dynamically resolved mutation call
+        # must be blocked here too, not just literal create_*/terminate_* call sites.
         if is_forbidden_operation(name):
             raise OciOperationNotAllowedError(
                 f"OCI operation {name!r} is forbidden (mutation/lifecycle/credential-"
                 f"retrieval-shaped) -- refusing to call it"
             )
-        # Every callable, not just list_*/get_*-shaped ones -- there is no third
-        # category of OCI SDK client method that's neither read-shaped nor
-        # mutation-shaped, so anything not explicitly allowlisted is refused.
+        # Every callable, not just list_*/get_* shaped -- no third category of OCI SDK
+        # client method exists, so anything not explicitly allowlisted is refused.
         if not is_allowed_operation(name):
             raise OciOperationNotAllowedError(
                 f"OCI operation {name!r} is not in the read-only allowlist "

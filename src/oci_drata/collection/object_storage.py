@@ -1,10 +1,7 @@
-"""Object Storage bucket collection: get_namespace (once per region -- the
-namespace string itself is tenancy-wide, but the client that fetches it is
-regional) -> list_buckets (per compartment, summary only) -> get_bucket (per
-bucket, concurrent fan-out, full fidelity). BucketSummary lacks
-public_access_type/kms_key_id/versioning -- same "summary vs full" split as
-Autonomous Database's own list-then-drill-down siblings elsewhere in this
-project, except Object Storage's list_* genuinely only returns the lighter type.
+"""Object Storage collection: get_namespace (per region; namespace is
+tenancy-wide but the client is regional) -> list_buckets (per compartment,
+summary only) -> get_bucket (concurrent fan-out, full fidelity). BucketSummary
+omits public_access_type/kms_key_id/versioning, hence the get_bucket step.
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ from oci_drata.pagination import (
 )
 
 # Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently) -- same value used elsewhere in this project.
+# pagination.run_concurrently).
 _PER_BUCKET_CONCURRENCY = 8
 
 
@@ -85,8 +82,8 @@ def collect_object_storage(
         )
         operations.append(namespace_op)
         if not namespace_op.ok or not namespace_op.items:
-            # No namespace, no way to scope list_buckets/get_bucket in this region --
-            # already recorded as a failed operation above, so completeness reflects it.
+            # No namespace means list_buckets/get_bucket can't be scoped for this
+            # region; namespace_op above already records the failure.
             continue
         namespace_name = namespace_op.items[0]
 

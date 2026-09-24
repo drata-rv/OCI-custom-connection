@@ -1,7 +1,6 @@
 """Normalizes raw OCI SDK objects into allowlisted source-fact models.
 Cross-resource joins (Windows classification, network exposure, ID-list
-relationships, VPN redundancy) happen in relationships/exposure/vpn_posture,
-which run after this module and consume its output."""
+relationships, VPN redundancy) run afterward in relationships/exposure/vpn_posture."""
 
 from __future__ import annotations
 
@@ -28,9 +27,8 @@ from oci_drata.models import (
 
 
 def normalize_timestamp(value: datetime.datetime | str | None) -> str | None:
-    """Normalizes to UTC RFC3339, second precision, Z-suffixed. Accepts a
-    bare string defensively and re-normalizes it rather than trusting it
-    verbatim."""
+    """Normalizes to UTC RFC3339, second precision, Z-suffixed. Re-normalizes
+    string input rather than trusting it verbatim."""
 
     if value is None:
         return None
@@ -70,7 +68,7 @@ def _common_fields(raw: Any, *, source_type: str) -> dict[str, Any]:
         "source_type": source_type,
         "region": _region(raw),
         # compartment_id may be absent entirely (e.g. DataGuardAssociation);
-        # getattr avoids AttributeError. Callers override via compartment_id param.
+        # callers override via compartment_id param.
         "compartment_id": getattr(raw, "compartment_id", None),
         "display_name": getattr(raw, "display_name", None),
         "lifecycle_state": getattr(raw, "lifecycle_state", None),
@@ -81,11 +79,10 @@ def _common_fields(raw: Any, *, source_type: str) -> dict[str, Any]:
 
 
 def normalize_common(raw: Any, *, source_type: str, compartment_id: str | None = None) -> CommonResource:
-    """Normalizes resource kinds needing no fields beyond CommonResource
-    (compartments, images, IPs, VCNs, subnets, route tables, gateways,
-    security lists, NSGs, attachments, CPEs, DRGs). compartment_id overrides
-    raw.compartment_id when the object doesn't carry its own (e.g.
-    DataGuardAssociation)."""
+    """Normalizes resource kinds needing only CommonResource fields (compartments,
+    images, IPs, VCNs, subnets, route tables, gateways, security lists, NSGs,
+    attachments, CPEs, DRGs). compartment_id overrides raw.compartment_id when
+    absent (e.g. DataGuardAssociation)."""
 
     fields = _common_fields(raw, source_type=source_type)
     if compartment_id is not None:
@@ -105,8 +102,7 @@ def normalize_instance(raw: Any) -> Instance:
 
 def normalize_vnic(raw: Any) -> Vnic:
     """subnet_id required, raises if absent. private/public addresses filled
-    in later by transform.relationships (VNIC's own fields carry only the
-    primary address)."""
+    in later by transform.relationships (VNIC carries only primary address)."""
 
     subnet_id = getattr(raw, "subnet_id", None)
     if not subnet_id:
@@ -190,11 +186,9 @@ def normalize_internet_gateway(raw: Any) -> InternetGateway:
 
 
 def normalize_volume(raw: Any, *, source_type: str) -> Volume:
-    """list_volumes/list_boot_volumes return the full Volume/BootVolume type (there is no
-    separate lighter-weight VolumeSummary in the OCI SDK) -- kms_key_id is returned
-    authoritatively, so null means "no customer-managed key", a known fact, not an
-    unresolvable unknown. customer_managed_key_present is therefore always a definite
-    bool, never None."""
+    """kms_key_id is returned authoritatively here, so null means no customer-managed
+    key, not an unresolvable unknown. customer_managed_key_present is therefore
+    always a definite bool, never None."""
 
     kms_key_id = getattr(raw, "kms_key_id", None)
     return Volume(
@@ -251,16 +245,10 @@ def normalize_db_backup_status(raw_database: Any) -> str:
 
 
 def normalize_autonomous_database_posture(raw_adb: Any) -> dict[str, Any]:
-    """Autonomous Database has no auto_backup_enabled-style boolean (unlike Base DB's
-    DbBackupConfig) and public_endpoint is a hostname string, not a boolean -- deriving a
-    single compressed enabled/disabled or public/private verdict from either would guess.
-    Retains raw fields and derives only presence facts (public/private endpoint present,
-    access control configured, long-term schedule configured) rather than a status.
-
-    AutonomousDatabaseSummary always declares these attributes; None means Oracle returned
-    no value for an existing resource (e.g. no public endpoint), not that the field is
-    unreachable -- so the presence facts below resolve to a definite bool, never unknown.
-    Raw non-presence fields (mtls_required, backup retention) pass through None as-is."""
+    """Derives presence facts (endpoint present, access control configured, schedule
+    configured) rather than a compressed status, since ADB's raw fields (e.g.
+    public_endpoint as a hostname string) aren't clean booleans. None means confirmed
+    absence, so these presence facts are always a definite bool, never unknown."""
 
     public_endpoint_hostname = getattr(raw_adb, "public_endpoint", None) or None
     private_endpoint = getattr(raw_adb, "private_endpoint", None)
@@ -282,8 +270,8 @@ def normalize_autonomous_database_posture(raw_adb: Any) -> dict[str, Any]:
 
 
 def normalize_db_system_detail(raw_db_system: Any) -> dict[str, Any]:
-    """Raw base_db_system fields the review calls out as lost by generic normalization:
-    shape, version, OS patch level, node count, redundancy, subnet, NSGs."""
+    """Raw base_db_system fields lost by generic normalization: shape, version, OS
+    patch level, node count, redundancy, subnet, NSGs."""
 
     return {
         "shape": getattr(raw_db_system, "shape", None),
@@ -297,9 +285,9 @@ def normalize_db_system_detail(raw_db_system: Any) -> dict[str, Any]:
 
 
 def normalize_database_detail(raw_database: Any) -> dict[str, Any]:
-    """Raw base_database fields the review calls out as lost: backup config detail beyond
-    the compressed enabled/disabled status, last/failed backup timestamps, patch version,
-    management config."""
+    """Raw base_database fields lost by generic normalization: backup config detail
+    beyond the compressed enabled/disabled status, last/failed backup timestamps,
+    patch version, management config."""
 
     backup_config = getattr(raw_database, "db_backup_config", None)
     management_config = getattr(raw_database, "database_management_config", None)

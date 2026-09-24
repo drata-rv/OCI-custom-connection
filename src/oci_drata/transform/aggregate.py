@@ -1,8 +1,7 @@
 """Builds one aggregate record: normalize -> relationships -> exposure/vpn_posture ->
-findings, then metrics and serialization. Resource/finding/warning arrays sort by
-id/assertionId for deterministic output.
-
-Does not decide upload eligibility; see :mod:`oci_drata.validation.completeness`.
+findings -> metrics/serialization. Resource/finding/warning arrays sort by
+id/assertionId for deterministic output. Does not decide upload eligibility; see
+:mod:`oci_drata.validation.completeness`.
 """
 
 from __future__ import annotations
@@ -202,11 +201,9 @@ def build_snapshot(
     )
 
     # -- Base + Autonomous Database ----------------------------------------
-    # Cascading lifecycle exclusion: a terminated parent's children are excluded with
-    # it (db_system -> db_home -> database -> backup/data_guard), not just resources
-    # terminated in their own right -- otherwise a child of an excluded parent would
-    # surface as an unresolved relationship (parent not found) instead of correctly
-    # reflecting that its whole lineage is gone. See transform/lifecycle.py.
+    # Lifecycle exclusion cascades db_system -> db_home -> database -> backup/data_guard:
+    # an excluded parent excludes its children too, else a child shows up as an
+    # unresolved relationship instead of gone lineage. See transform/lifecycle.py.
     excluded_lifecycle_ids: dict[str, list[str]] = {}
 
     def _track_excluded(label: str, excluded_raw: list[Any]) -> None:
@@ -355,8 +352,8 @@ def build_snapshot(
     all_excluded_tunnels_raw: list[Any] = []
     for connection_id, raw_tunnels in vpn.tunnels_by_connection_id.items():
         if connection_id in excluded_connection_ids:
-            # Whole connection excluded -- its tunnels go with it, not tracked
-            # individually (already covered by the ipsec_connection exclusion above).
+            # Excluded connection's tunnels are already covered by the
+            # ipsec_connection exclusion above; skip without tracking separately.
             continue
         kept_tunnels_raw, excluded_tunnels_raw = split_by_lifecycle(raw_tunnels)
         all_excluded_tunnels_raw.extend(excluded_tunnels_raw)
@@ -615,16 +612,14 @@ def build_snapshot(
 
 
 # -- Flat-record architecture ------------------------------------------------
+# One record per collected resource, POSTed as {"data": [...]} to a single flat
+# schema/resourceId; replaces the nested resources.*/findings[] design above.
+# Extend by adding evidenceTypes here, not by restructuring the section.
 #
-# One small record per collected resource, POSTed as {"data": [...]} to a single
-# flat schema/resourceId -- replaces the nested resources.*/findings[] design
-# above. New evidenceTypes are added by extending this section, not by
-# restructuring it.
-#
-# Records carry raw/lightly-transformed OCI facts only -- no precomputed
-# compliance verdict (no `status`, no admin-ports-policy-filtered port list).
-# The Drata Custom Test evaluates compliance against these raw facts (e.g.
-# `publicIngressPorts intersectsAny [22, 3389]`).
+# Records carry raw OCI facts only, no precomputed compliance verdict (no `status`,
+# no port list pre-filtered by admin-ports policy) -- the Drata Custom Test
+# evaluates compliance against these facts (e.g. `publicIngressPorts intersectsAny
+# [22, 3389]`).
 
 
 @dataclasses.dataclass(frozen=True)
@@ -632,27 +627,22 @@ class FlatRecordsResult:
     records: list[dict[str, Any]]
     domain_complete: dict[str, bool]
     discovery_complete: bool
-    # Per-evidenceType count of resources dropped by lifecycle exclusion (deleted/
-    # terminated). build_snapshot's nested path surfaces this via warnings[]; this
-    # path has no equivalent, so a recordCount of 0 is otherwise indistinguishable
-    # from "every real instance is terminated" versus "nothing was ever collected".
+    # Per-evidenceType count of lifecycle-excluded (deleted/terminated) resources.
+    # No warnings[] equivalent on this path, so this is what distinguishes "all
+    # terminated" from "nothing collected" when recordCount is 0.
     excluded_counts: dict[str, int]
-    # instance<->vnic/storage joins that couldn't resolve (relationships.py). Computed
-    # but previously discarded here -- unlike build_snapshot, which hard-blocks upload
-    # on any unresolved relationship via decide_completeness().
+    # Unresolved instance<->vnic/storage joins (relationships.py); tracked but not
+    # enforced -- this path has no completeness gate on unresolved relationships.
     unresolved_relationship_count: int
 
 
-# Every evidenceType shares one flat schema/resource in Drata, and Drata's schema
-# importer auto-adds every top-level property to that schema's own `required` list,
-# even when the submitted schema declares none. `additionalProperties:
-# true` on the schema doesn't help with *missing* required ones. Every _flatten_*
-# function below must therefore emit every field, not just the ones relevant to its
-# own evidenceType -- an omitted field fails per-record validation even though the
-# batch endpoint's HTTP status still reports 200 (see delivery/drata.py). The two
-# array-typed fields default to `[]`, not `None`: the schema declares them as plain
-# `"type": "array"`, with no `"null"` alternative, so a null would itself fail
-# validation.
+# All evidenceTypes share one flat Drata schema. Drata's importer marks every
+# top-level property required regardless of what's submitted, and
+# `additionalProperties: true` doesn't cover missing required fields -- so every
+# _flatten_* must emit every field, even irrelevant ones, or the record fails
+# validation despite the batch endpoint still reporting HTTP 200 (see
+# delivery/drata.py). Array fields default to `[]`, not `None`: the schema
+# declares plain `"type": "array"` with no `"null"` option.
 _FLAT_RECORD_FIELD_DEFAULTS: dict[str, Any] = {
     "id": None, "evidenceType": None, "name": None, "timestamp": None,
     "region": None, "compartmentId": None, "osClassification": None,
@@ -711,13 +701,10 @@ def _flatten_iam_user(user: Any, *, timestamp: str | None) -> dict[str, Any]:
 
 
 def _flatten_api_key(api_key: Any, *, timestamp: str | None) -> dict[str, Any]:
-    # api_key.key_id is OCI's own unique identifier for this resource, but its
-    # documented format ("TENANCY_OCID/USER_OCID/FINGERPRINT") can exceed an
-    # undocumented length limit Drata enforces on the id field platform-side, not
-    # visible in the registered schema itself. The tenancy segment is redundant
-    # here anyway -- this whole resource already scopes to one tenancy -- so
-    # user_id/fingerprint keeps the same uniqueness guarantee at roughly half the
-    # length.
+    # api_key.key_id ("TENANCY_OCID/USER_OCID/FINGERPRINT") can exceed an undocumented
+    # length limit Drata enforces on id platform-side (not visible in the schema).
+    # The tenancy segment is redundant here (one tenancy per resource), so
+    # user_id/fingerprint keeps the same uniqueness at roughly half the length.
     return {
         **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": f"{api_key.user_id}/{api_key.fingerprint}",
@@ -759,9 +746,8 @@ def _flatten_iam_policy(policy: Any, *, timestamp: str | None) -> dict[str, Any]
 def _flatten_cloud_guard_configuration(
     configuration: Any, *, tenancy_id: str | None, timestamp: str | None
 ) -> dict[str, Any]:
-    # Cloud Guard's Configuration has no id/compartmentId of its own -- it's a
-    # tenancy-wide singleton, not a resource with an OCID. The tenancy OCID is the
-    # only stable, unique identifier available for upsert-by-id.
+    # Cloud Guard Configuration is a tenancy-wide singleton with no id/compartmentId
+    # of its own; tenancy OCID is the only stable unique id for upsert-by-id.
     return {
         **_FLAT_RECORD_FIELD_DEFAULTS,
         "id": tenancy_id or "cloud-guard-configuration",
@@ -866,20 +852,9 @@ def build_flat_records(
     kms_vault: KmsVaultCollectionResult,
     completed_at: datetime.datetime,
 ) -> FlatRecordsResult:
-    """Flat-record counterpart to build_snapshot: instances (raw ingress facts),
-    autonomous databases (raw kmsKeyId/publicEndpointHostname), identity
-    (iam_user/api_key/iam_policy, raw MFA/key-age/policy-statement facts), and
-    object storage buckets (raw kmsKeyId/publicAccessType/versioning) so far.
-    Same normalize join build_snapshot uses for resources.instances/
-    autonomousDatabases, but stops short of build_snapshot's exposure derivation
-    for instances: that applies decisions.administrativePorts as a policy filter,
-    which doesn't belong in the collector for this path (see module docstring
-    above). Autonomous databases and identity need no equivalent filtering step --
-    their raw fields are already presence/fact-shaped, not a verdict, so they're
-    reused as-is. Takes DecisionsConfig rather than the full AppConfig -- this
-    path has no use for record_id/deployment name (each record carries its own
-    id), and only decisions.publicSourceCidrs (what counts as an internet-facing
-    source, not which ports matter) is relevant here."""
+    """Flat-record counterpart to build_snapshot: raw per-resource facts (instances,
+    autonomous databases, identity, object storage), no policy verdict --
+    build_snapshot's administrativePorts exposure filter doesn't apply on this path."""
 
     kept_instances_raw, excluded_instances_raw = split_by_lifecycle(compute.instances)
     excluded_instance_ids = {i.id for i in excluded_instances_raw}
@@ -927,10 +902,9 @@ def build_flat_records(
         for a in kept_adb_raw
     ]
 
-    # Identity resources use OCI's DELETED/DELETING vocabulary, not the
-    # TERMINATED/TERMINATING split_by_lifecycle defaults to -- override explicitly
-    # rather than silently keeping deleted users/policies (absence of a matching
-    # state would otherwise fall through split_by_lifecycle's "keep if unknown" rule).
+    # Identity uses OCI's DELETED/DELETING vocabulary, not split_by_lifecycle's
+    # TERMINATED/TERMINATING default -- override explicitly, or its "keep if
+    # unknown" rule silently keeps deleted users/policies.
     _IDENTITY_DELETED_STATES = frozenset({"DELETED", "DELETING"})
     kept_users, excluded_users = split_by_lifecycle(
         identity.users, exclude_states=_IDENTITY_DELETED_STATES
@@ -945,33 +919,30 @@ def build_flat_records(
         if getattr(key, "lifecycle_state", None) not in _IDENTITY_DELETED_STATES
     ]
 
-    # Monitoring alarms: OCI's general DELETED/DELETING convention, same caveat as
-    # identity above -- not directly confirmed against Monitoring's own lifecycle
-    # enum (no LIFECYCLE_STATE_* constants are exposed on AlarmSummary to check
-    # against), but consistent with every other non-legacy OCI resource this
-    # project has seen so far.
+    # Monitoring alarms: same DELETED/DELETING convention as identity above;
+    # AlarmSummary exposes no LIFECYCLE_STATE_* constants to check the assumption
+    # against.
     kept_alarms, excluded_alarms = split_by_lifecycle(
         monitoring.alarms, exclude_states=_IDENTITY_DELETED_STATES
     )
 
-    # LoadBalancer's real lifecycle enum is DELETED/DELETING/ACTIVE/CREATING/FAILED
-    # (confirmed via oci.load_balancer.models.LoadBalancer's own LIFECYCLE_STATE_*
-    # constants) -- same DELETED/DELETING exclusion convention as identity/alarms.
+    # LoadBalancer's lifecycle enum (DELETED/DELETING/ACTIVE/CREATING/FAILED, per
+    # oci.load_balancer.models.LoadBalancer's own LIFECYCLE_STATE_* constants) uses
+    # the same DELETED/DELETING exclusion convention as identity/alarms.
     kept_load_balancers, excluded_load_balancers = split_by_lifecycle(
         load_balancer.load_balancers, exclude_states=_IDENTITY_DELETED_STATES
     )
 
-    # Same DELETED/DELETING convention as above; not directly confirmed against
-    # WebAppFirewallLoadBalancerSummary's own lifecycle enum (no LIFECYCLE_STATE_*
-    # constants exposed to check against), same caveat as monitoring alarms.
+    # Same DELETED/DELETING convention as above; WebAppFirewallLoadBalancerSummary
+    # exposes no LIFECYCLE_STATE_* constants to check it against (same caveat as
+    # monitoring alarms).
     kept_wafs, excluded_wafs = split_by_lifecycle(
         waf.web_app_firewalls, exclude_states=_IDENTITY_DELETED_STATES
     )
 
-    # Key's real lifecycle enum (confirmed via oci.key_management.models.Key's own
-    # LIFECYCLE_STATE_* constants) includes DELETED/DELETING alongside ENABLED/
-    # DISABLED/etc -- DISABLED keys are still real, reportable evidence, only
-    # DELETED/DELETING are excluded here.
+    # Key's lifecycle enum (per oci.key_management.models.Key's own LIFECYCLE_STATE_*
+    # constants) includes ENABLED/DISABLED/DELETED/DELETING -- DISABLED keys are
+    # still reportable evidence; only DELETED/DELETING are excluded.
     kept_keys, excluded_keys = split_by_lifecycle(
         kms_vault.keys, exclude_states=_IDENTITY_DELETED_STATES
     )

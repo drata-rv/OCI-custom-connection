@@ -1,8 +1,5 @@
-"""Cloud Guard collection: get_configuration, once. Cloud Guard has a single
-configuration per tenancy, not one per compartment or region -- mirrors
-collection/identity.py's own single-call-from-the-discovery-region pattern
-rather than looping per region/compartment like the resource-inventory
-collectors elsewhere in this project.
+"""Collects Cloud Guard's single per-tenancy configuration via one
+get_configuration call, mirroring collection/identity.py's discovery-region pattern.
 """
 
 from __future__ import annotations
@@ -58,18 +55,15 @@ def collect_cloud_guard(
 
     tenancy_ocid = discovery.tenancy.id if discovery.tenancy is not None else None
     if tenancy_ocid is None:
-        # Mirrors collection/identity.py's own degradation: nothing to scope this
-        # call to without a tenancy OCID, and get_tenancy's failure is already
-        # reflected in discovery_complete -- no operation recorded here.
+        # No tenancy OCID to scope this call to; get_tenancy's failure already
+        # shows in discovery_complete, so no operation is recorded here.
         return CloudGuardCollectionResult(configuration=None, operations=[])
 
     region = discovery.discovery_region
     client = regional_client(oci.cloud_guard.CloudGuardClient, signer, region=region)
 
-    # call_once's own compartment_id parameter is metadata-only, never forwarded to
-    # `call` (see its docstring) -- get_configuration's real compartment_id argument
-    # is bound here via closure instead, and compartment_id= below is passed purely
-    # for the operation manifest.
+    # call_once's compartment_id is metadata-only (not forwarded to `call`); the
+    # real argument is bound via closure, this one just feeds the operation manifest.
     op = call_once(
         service="cloud_guard",
         operation="get_configuration",

@@ -1,7 +1,6 @@
-"""Exadata detection: existence check on Exadata db_system shape, dedicated ADB, or any
-Exadata-family infrastructure resource, to mark the database domain incomplete. Consumes
-already-collected ``db_systems``/``autonomous_databases``; makes no
-``list_db_systems``/``list_autonomous_databases`` calls of its own.
+"""Flags the database domain incomplete on any Exadata signal: shaped db_system, dedicated
+ADB, or Exadata infrastructure resources. Consumes already-collected
+``db_systems``/``autonomous_databases``; makes no list calls of its own.
 """
 
 from __future__ import annotations

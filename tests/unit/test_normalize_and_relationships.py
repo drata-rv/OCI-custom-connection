@@ -45,13 +45,8 @@ def test_normalize_instance_requires_region_stamp() -> None:
 
 
 def test_normalize_common_does_not_crash_on_unrecognized_lifecycle_state() -> None:
-    """The OCI SDK's own enum-typed property setters silently coerce any value outside
-    their known set to the literal sentinel "UNKNOWN_ENUM_VALUE" -- a genuinely new OCI
-    lifecycle state (added after this SDK version was pinned) never reaches our code as its
-    real name; the SDK has already discarded it one layer down. This codebase's fields are
-    typed plain str (not a closed Python Enum) specifically so it never crashes or drops a
-    resource over an unrecognized value -- but "preserve unknown enum values" only means
-    "pass through whatever the SDK gives us", not "recover the SDK's own already-lost data"."""
+    """OCI SDK coerces any enum value outside its known set to "UNKNOWN_ENUM_VALUE" before
+    our code sees it. Plain str fields preserve that sentinel, not the original state."""
 
     raw = _stamp(
         oci.core.models.Vcn(id="vcn1", compartment_id="c1", lifecycle_state="SOME_FUTURE_STATE_V2")
@@ -84,9 +79,8 @@ def test_normalize_vnic_requires_subnet_id() -> None:
 
 
 def test_normalize_volume_customer_managed_key_present() -> None:
-    """list_volumes/list_boot_volumes return the full Volume/BootVolume type, not a
-    lighter-weight summary -- kms_key_id is authoritative, so absent must resolve to a
-    definite False (no CMK), never None/unknown."""
+    """list_volumes/list_boot_volumes return the full type, so kms_key_id is authoritative --
+    absent means a definite False (no CMK), never None/unknown."""
 
     with_key = _stamp(
         oci.core.models.Volume(
@@ -141,9 +135,8 @@ def test_normalize_autonomous_database_posture_full_fields() -> None:
 
 
 def test_normalize_autonomous_database_posture_no_endpoint_data_resolves_definite_false() -> None:
-    """Oracle always returns these fields for an existing ADB; None means "no public endpoint" etc,
-    a fact we know, not an unresolvable unknown -- unlike raw retention/mTLS fields, which pass
-    None through as-is since those genuinely can be absent on legacy records."""
+    """Oracle always returns these fields for an existing ADB, so None means a definite False.
+    Retention/mTLS fields pass None through as-is since those can be absent on legacy records."""
 
     raw = oci.database.models.AutonomousDatabaseSummary(id="a2")
     posture = normalize.normalize_autonomous_database_posture(raw)

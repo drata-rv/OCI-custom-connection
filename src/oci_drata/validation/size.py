@@ -18,11 +18,9 @@ def serialize_deterministic(record: dict[str, Any]) -> bytes:
 
 @dataclasses.dataclass(frozen=True)
 class PayloadSizeResult:
-    """One aggregate record per tenancy has a hard size ceiling (`max_bytes`).
-    near_budget warns early via the collection report/logs, not the record itself
-    (which would change its own measured size). If a tenancy outgrows the ceiling,
-    split into per-resource-type or per-domain records — either needs a distinct
-    recordId per split and updates to any Custom Test spanning types/domains."""
+    """Size-check result for one tenancy's aggregate record, which has a hard ceiling (`max_bytes`).
+    near_budget only warns externally (report/logs) — folding it into the record would change
+    the record's own measured size."""
 
     byte_size: int
     max_bytes: int

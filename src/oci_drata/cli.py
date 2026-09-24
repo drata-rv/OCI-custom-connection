@@ -50,37 +50,29 @@ from oci_drata.validation.size import check_payload_size, serialize_deterministi
 
 logger = logging.getLogger(__name__)
 
-# --test bounds wall-clock time instead of resource count -- see RetryPolicy.deadline
-# (pagination.py). Which compartments actually have data isn't knowable up front, so
-# a time budget lets collection cover as much real ground as it can within it, rather
-# than gambling on a fixed number of compartments that could all turn out empty.
+# --test bounds wall-clock time, not compartment count (RetryPolicy.deadline, pagination.py):
+# data distribution across compartments is unknowable up front, so a fixed cap could land
+# entirely on empty ones.
 TEST_MODE_TIME_BUDGET_SECONDS = 30
 
-# OCI SDK error codes meaning "this API user has no access here", as opposed to a
-# transient failure (429/5xx, already retried) or a --test deadline cutoff (a distinct,
-# non-auth error_code -- see pagination.py). A tenancy whose configured scope
-# (oci.compartments.roots/regions.allow) reaches further than this API user's OCI
-# policy grants produces a flood of these; grouping them by compartment turns that
-# flood into the one fact an operator actually needs.
+# OCI error codes meaning "no access here", distinct from a retried transient failure or
+# a --test deadline cutoff (pagination.py). Grouped by compartment to surface where
+# configured scope (oci.compartments.roots/regions.allow) exceeds this API user's policy.
 _AUTH_GAP_ERROR_CODES = frozenset({"NotAuthorizedOrNotFound", "NotAuthenticated"})
 
 
 def _domain_all_skipped(operations: list[OperationResult]) -> bool:
-    """True only when every operation this domain recorded is the synthetic
-    status="skipped" marker a disabled collector emits (see e.g. identity.py's
-    _skip_result()) -- i.e. this service was turned off by config, not attempted and
-    found empty. An empty operations list (no compartments were ever in scope) is
-    not the same claim, so it's not treated as skipped here."""
+    """True only when every recorded operation is the synthetic status="skipped" marker
+    a disabled collector emits (see identity.py's _skip_result()) -- config-disabled, not
+    merely empty. An empty operations list doesn't count as skipped."""
 
     return bool(operations) and all(op.status == "skipped" for op in operations)
 
 
 def _access_summary(operations: list[OperationResult]) -> dict[str, Any]:
-    """``operations`` is every OperationResult (pagination.py) from every collector
-    this run actually invoked -- not just the ones a particular delivery path
-    consumes. Groups them by compartment: which ones this API user's policy doesn't
-    cover, and which ones actually had real data -- the two things that matter after
-    a run this noisy, instead of scrolling thousands of per-operation log lines."""
+    """``operations`` must be every OperationResult (pagination.py) from every collector
+    this run invoked, not just what one delivery path consumes. Groups them by
+    compartment into auth gaps vs. real data."""
 
     auth_gap: set[str] = set()
     has_data: set[str] = set()
@@ -107,12 +99,9 @@ EXIT_UNEXPECTED = 3
 
 
 def _prepare_restricted_output_dir(out_dir: Path) -> None:
-    """Output holds OCI inventory -- OCIDs, topology, IP addressing, security rules,
-    findings. Not secret, but operationally sensitive; owner-only by default rather than
-    left at the process umask's default (typically group/world-readable).
-
-    Refuses a pre-existing symlink at this path rather than silently following it and
-    writing wherever it points."""
+    """Output holds OCI inventory (OCIDs, topology, IP/security rules) -- operationally
+    sensitive though not secret, so owner-only permissions rather than the process
+    umask's default. Refuses a pre-existing symlink here instead of following it."""
 
     if out_dir.is_symlink():
         raise RuntimeError(f"refusing to use {out_dir} as an output directory: it is a symlink")
@@ -252,12 +241,9 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     signer = build_signer(app_config)
     retry_policy = RetryPolicy()
     if test_mode:
-        # Bounding wall-clock time, not compartment count: which compartments actually
-        # have data isn't knowable up front, and a small fixed compartment cap can land
-        # entirely on empty ones in a large tenancy. Every OCI call goes through
-        # paginate()/call_once() (pagination.py), so one deadline on this shared policy
-        # bounds discovery and every collector uniformly -- each stops where it is,
-        # keeping whatever it already collected, instead of guessing scope up front.
+        # Every OCI call routes through paginate()/call_once() (pagination.py), so one
+        # deadline on this shared policy bounds wall-clock time uniformly across
+        # discovery and all collectors.
         retry_policy = dataclasses.replace(
             retry_policy, deadline=time.monotonic() + TEST_MODE_TIME_BUDGET_SECONDS
         )
@@ -298,12 +284,9 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     aggregate.record["snapshotStatus"] = decision.snapshot_status
 
     # aggregate.record["manifest"]["operations"] only covers the 7 collectors
-    # build_snapshot() consumes -- correct for the nested record's own manifest, but
-    # this report describes the whole run: every one of the 13 collectors
-    # _run_independent_collectors() actually invokes every time, whether or not
-    # build_snapshot() uses its output. Missing 7/13 here would make accessSummary
-    # (and every operationsFailed/totalItems counter below) silently blind to
-    # whichever opt-in services are enabled.
+    # build_snapshot() consumes; this report instead uses all 13 that
+    # _run_independent_collectors() invokes, or accessSummary/operationsFailed/totalItems
+    # below would silently miss opt-in services.
     all_operations: list[OperationResult] = [
         *discovery.operations,
         *compute_result.operations, *storage_result.operations, *networking_result.operations,
@@ -366,11 +349,10 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         report["uploadDecision"] = "skipped_dry_run"
         logger.info("dry run: skipping Drata upload", extra={"snapshotStatus": decision.snapshot_status})
     elif test_mode:
-        # decision.should_upload has no idea only a handful of compartments were ever
-        # in scope -- it would happily call this "complete" from what it saw. Uploading
-        # that here would claim tenancy-wide coverage on a sample. The flat-record path
-        # below is unaffected: each record is standalone evidence, honest regardless of
-        # sample size, so --test still uploads real flat records for real testing.
+        # decision.should_upload can't tell a sampled run from a complete one, so
+        # uploading the nested snapshot here would falsely claim tenancy-wide coverage.
+        # Flat records are standalone per-resource evidence, honest at any sample size,
+        # so they still upload.
         report["uploadDecision"] = "skipped_test_mode"
         logger.info(
             "test mode: skipping the nested-path upload (sampled compartments, not "
@@ -447,9 +429,8 @@ def _run_flat_records(
     report: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Builds and (outside dry-run) uploads flat records to drata.flatResourceId,
-    additive alongside the nested-schema path above. Mutates ``report`` in place
-    with a "flatRecords" key; never affects the nested path's own
-    uploadDecision/exit_code."""
+    additive to the nested path above. Mutates ``report`` with a "flatRecords" key;
+    never affects the nested path's own uploadDecision/exit_code."""
 
     flat_result = build_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute,
@@ -466,11 +447,9 @@ def _run_flat_records(
         and flat_result.unresolved_relationship_count == 0
     )
 
-    # A domain reporting domainComplete=true tells you nothing failed -- it looks
-    # identical whether the service is disabled by config (services.identity: false)
-    # or ran and genuinely found zero resources. domainSkipped answers the first
-    # question directly, so recordCount:0 doesn't read as a mystery: check this before
-    # suspecting a collector bug (see the incident this was added from, README §7).
+    # domainComplete=true doesn't distinguish a config-disabled service
+    # (services.identity: false) from one that ran and found zero resources.
+    # domainSkipped answers that, so recordCount:0 isn't a mystery (README §7).
     domain_skipped = {
         "compute": _domain_all_skipped(compute.operations),
         "networking": _domain_all_skipped(networking.operations),

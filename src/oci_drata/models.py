@@ -1,7 +1,6 @@
-"""Source-fact and derived-fact models mirroring src/oci_drata/schemas/oci-snapshot-1.0.0.json.
+"""Source-fact and derived-fact models mirroring the oci-snapshot-1.0.0.json schema.
 
-to_dict() emits every schema-declared key (schema sets additionalProperties: false).
-Derivation logic lives in oci_drata.transform, not here.
+to_dict() emits every schema key (additionalProperties: false); derivation logic lives in oci_drata.transform.
 """
 
 from __future__ import annotations
@@ -136,9 +135,8 @@ class RouteRule:
 
 @dataclasses.dataclass(frozen=True)
 class SecurityRule:
-    """Shared shape for security-list ingress/egress rules and NSG security rules --
-    a security-list rule's direction is assigned by the normalizer (the raw
-    Ingress/EgressSecurityRule types don't carry their own direction field)."""
+    """Shared shape for security-list and NSG security rules. Direction is assigned by
+    the normalizer, since raw Ingress/EgressSecurityRule types carry no direction field."""
 
     direction: str = "unknown"  # ingress | egress
     protocol: str | None = None
@@ -219,8 +217,8 @@ class DatabaseResource(CommonResource):
     backup_status: str = "unknown"  # enabled | disabled | unknown | not_applicable
     kms_key_id: str | None = None
     related_resource_ids: tuple[str, ...] = ()
-    # Autonomous Database posture -- raw/derived facts kept separate rather than
-    # compressed into one guessed status. None on non-ADB rows (field not applicable).
+    # Autonomous Database posture: separate raw/derived fields, no single guessed status.
+    # None on non-ADB rows.
     public_endpoint_hostname: str | None = None
     private_endpoint_configured: bool | None = None
     public_endpoint_present: bool | None = None

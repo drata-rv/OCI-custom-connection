@@ -1,13 +1,9 @@
 """Drata Custom Connection upsert client.
 
 POSTs to ``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
-200/201 both mean success (upsert by each record's own ``id`` field). Failures never
-raise -- returned as ``DeliveryResult`` with ``error_class``: auth/validation are
-non-retryable, 429/5xx get bounded retry.
-
-``upsert_record`` POSTs a single ``{"data": record}`` (the original nested-schema
-path). ``upsert_records`` POSTs ``{"data": [...]}`` in batches of 500 (the
-flat-record architecture), sharing the same retry/classification logic.
+200/201 both mean success (upsert by each record's own ``id``). Failures never raise --
+returned as ``DeliveryResult``, with auth/validation non-retryable and 429/5xx retried
+with backoff.
 """
 
 from __future__ import annotations
@@ -57,10 +53,9 @@ def _request_id(response: requests.Response) -> str | None:
 
 
 def _retry_after_seconds(response: requests.Response, *, max_delay_seconds: float) -> float | None:
-    """Retry-After is either an integer seconds count or an HTTP-date (RFC 9110 §10.2.3).
-    Returns None if absent or unparseable as either -- caller falls back to jitter. Capped
-    at max_delay_seconds regardless of what the server asked for, so a misbehaving or
-    compromised server can't stall this indefinitely."""
+    """Retry-After is seconds or an HTTP-date (RFC 9110 §10.2.3); None if unparseable, so
+    caller falls back to jitter. Capped at max_delay_seconds regardless of the server's
+    ask, so a misbehaving or compromised server can't stall retries indefinitely."""
 
     raw = response.headers.get("Retry-After")
     if not raw:
@@ -120,10 +115,9 @@ def upsert_records(
     timeout_seconds: float = 30.0,
     session: requests.Session | None = None,
 ) -> list[DeliveryResult]:
-    """Upsert ``records`` in batches of ``_BATCH_SIZE``, POSTing ``{"data": [...]}`` per
+    """Upserts ``records`` in batches of ``_BATCH_SIZE``, POSTing ``{"data": [...]}`` per
     batch. Returns one DeliveryResult per batch, in order; a failed batch doesn't stop
-    the rest, so a caller can see exactly which batches landed. Same upsert-by-id,
-    additive semantics as ``upsert_record``."""
+    the rest."""
 
     if not records:
         return []
@@ -186,11 +180,9 @@ def _upsert_with_retry(
             continue
 
         if response.status_code in (200, 201):
-            # Confirmed live: Drata's batch endpoint can return 200 for the HTTP call
-            # while every individual record inside failed its own schema validation --
-            # the per-record result carries its own "error" field, invisible if only
-            # the HTTP status is checked. A 200/201 here is proof the request was
-            # accepted, not proof anything was actually stored.
+            # Drata's batch endpoint can return 200 even when individual records fail
+            # their own schema validation (per-record "error" field) -- 200/201 here
+            # proves the request was accepted, not that anything was stored.
             per_record_error = _first_per_record_error(response)
             if per_record_error is not None:
                 logger.warning(
@@ -277,14 +269,10 @@ def _upsert_with_retry(
 
 
 def _first_per_record_error(response: requests.Response) -> str | None:
-    """A 200/201 batch response body is a list of per-record results, each optionally
-    carrying its own {"error": {"message", "code"}}. A single-record response may be
-    one such object directly rather than a list of them; both shapes are checked.
-    Returns a bounded summary of every failed
-    record's own id + message (not just the first) so a caller can act on exactly
-    which ones didn't land, or None if every item in the response is error-free.
-    Returns None (not a failure) if the body isn't JSON or isn't shaped like either
-    case -- this is a best-effort check layered on top of the HTTP status, not a
+    """Body is a list of per-record results, or a single such object for a single-record
+    call; each optionally carries {"error": {"message", "code"}}. Returns a bounded
+    summary of every failed record's id + message, or None if none failed or the body
+    isn't JSON/shaped as expected -- best-effort on top of the HTTP status, not a
     replacement for it."""
 
     try:

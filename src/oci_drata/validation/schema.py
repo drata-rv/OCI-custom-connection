@@ -1,14 +1,8 @@
-"""Validates aggregate record against oci_drata/schemas/oci-snapshot-1.0.0.json via jsonschema Draft-07.
+"""Validates a record against oci_drata/schemas/oci-snapshot-1.0.0.json (jsonschema Draft-07).
 
-Every resource definition is a single flat object (no allOf/$ref composition):
-additionalProperties: false only reliably rejects unexpected fields within one schema's own
-local properties, not across allOf branches -- composing over commonResource via allOf let
-type-specific branches silently accept fields outside their own declared set, and
-commonResource itself had to stay additionalProperties: true for that composition to
-validate at all, so every resource type was permissive to arbitrary extra fields. Flattening
-(duplicating commonResource's fields directly into each concrete definition) avoids the
-allOf/additionalProperties interaction entirely rather than depending on validator-specific
-allOf semantics (AJV and Draft-07 differ here) or a newer draft's unevaluatedProperties.
+Resource definitions are flattened, not allOf-composed: additionalProperties: false does not
+restrict fields across allOf branches, so composing over commonResource left every resource
+type accepting arbitrary extra fields.
 """
 
 from __future__ import annotations

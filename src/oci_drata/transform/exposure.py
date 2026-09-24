@@ -1,12 +1,10 @@
 """Network exposure derivation for compute instances (spec 5.4).
 
-effectiveIngressExposure reflects administrative-port reachability only, not general port exposure.
-Missing route/rule/membership evidence yields unknown; only no public address short-circuits to not_exposed.
-Source is evaluated by real CIDR containment/overlap (ipaddress), not string equality: a rule's source
-counts as public when it is globally routable (excludes RFC1918/loopback/link-local/CGNAT/reserved, per
-ipaddress.is_global) AND overlaps a configured publicSourceCidrs reference network. A source that fails to
-parse, or an NSG-typed source (membership not resolved -- no NSG-to-NSG chain resolution in this MVP),
-marks evidence incomplete for that VNIC rather than silently excluding the rule.
+effectiveIngressExposure reflects administrative-port reachability, not general port exposure. Missing
+route/rule/membership evidence yields unknown; only no public address short-circuits to not_exposed.
+A source counts as public via real CIDR overlap (ipaddress.is_global) against publicSourceCidrs, never
+string equality; a source that fails to parse, or an NSG-typed source (membership unresolved), marks
+evidence incomplete rather than excluding the rule.
 """
 
 from __future__ import annotations
@@ -74,10 +72,9 @@ def _permissive_admin_ports(
     public_reference_networks: tuple[_IpNetwork, ...],
     is_ingress: Callable[[Any], bool] | None = None,
 ) -> tuple[set[int], bool]:
-    """Returns (exposed administrative ports, evidence_complete). evidence_complete is False when a rule's
-    source can't be resolved to a definite public/private verdict (unparseable CIDR, or NSG-typed source
-    whose membership this MVP doesn't resolve) -- such a rule can't be proven safe, so it must not be
-    silently dropped from consideration."""
+    """Returns (exposed administrative ports, evidence_complete); evidence_complete is False when a
+    source can't be resolved to public/private (unparseable CIDR, or unresolved NSG membership) --
+    such rules can't be proven safe and must not be silently dropped."""
 
     exposed: set[int] = set()
     evidence_complete = True
@@ -119,13 +116,10 @@ def _public_ingress_from_rules(
     public_reference_networks: tuple[_IpNetwork, ...],
     is_ingress: Callable[[Any], bool] | None = None,
 ) -> tuple[set[int], bool, bool]:
-    """Raw counterpart to _permissive_admin_ports -- reports every specific port a
-    public-source rule names, with no administrative-ports allowlist applied (that
-    policy decision belongs in the Drata Custom Test, not the collector). A rule
-    with no port restriction, or a genuine multi-port range, can't
-    be represented as discrete port numbers without enumerating up to 65536
-    entries, so it's folded into the has_ranged flag instead of silently dropped or
-    truncated. Returns (named ports, has_ranged, evidence_complete)."""
+    """Raw counterpart to _permissive_admin_ports: reports every port a public-source rule names, with
+    no administrative-ports allowlist applied (that policy belongs in the Drata Custom Test, not here).
+    An unrestricted or multi-port rule can't be enumerated as discrete ports, so it's folded into
+    has_ranged instead of dropped or truncated. Returns (named ports, has_ranged, evidence_complete)."""
 
     named_ports: set[int] = set()
     has_ranged = False
@@ -184,11 +178,9 @@ def derive_public_ingress_facts(
     internet_gateway_ids: set[str],
     public_source_cidrs: tuple[str, ...],
 ) -> dict[str, PublicIngressFacts]:
-    """Raw-fact counterpart to derive_instance_exposure, for the flat-record path --
-    reports what's actually reachable from the public internet with no
-    administrative-ports policy applied. Keyed by instance id rather than
-    returning replaced Instance objects, since these facts don't belong on the
-    Instance model the old nested-schema path still uses."""
+    """Raw-fact counterpart to derive_instance_exposure for the flat-record path: reports public-internet
+    reachability with no administrative-ports policy applied. Returns a dict keyed by instance id, since
+    these facts don't belong on the Instance model the nested-schema path uses."""
 
     public_reference_networks = tuple(
         n for n in (_parse_network(c) for c in public_source_cidrs) if n is not None
