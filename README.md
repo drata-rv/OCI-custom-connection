@@ -586,19 +586,25 @@ flat-record path (§1.1) has its own, currently more significant, gaps:
 ## 10. Example Custom Tests
 
 `custom-tests/` holds Advanced Editor JSON for the flat-record path
-(§1.1), two files per test — each file is the bare JSON for exactly one
-Advanced Editor field, ready to paste as-is:
+(§1.1), two files per test — each file is the bare `{"all": [...]}`
+condition for exactly one Advanced Editor box, ready to paste as-is.
+Neither file has a `mode`/`evaluator` wrapper — the UI rejects that shape
+outright (`Property mode is not allowed`, `Property evaluator is not
+allowed`, `Missing property "all"`); both boxes want the same flat
+`{"all": [{fact, operator, value}, ...]}` shape.
 
-- `<name>.evaluator.json` → the main condition field (the pass/fail rule).
-- `<name>.filtering-criteria.json` → the "Add Filtering Criteria" field.
+- `<name>.evaluator.json` → the Condition Group's own Advanced editor box.
+- `<name>.filtering-criteria.json` → the separate "Filtering criteria"
+  section's Advanced editor box, **after** clicking its "Exclusion"
+  button (Exclusion/Inclusion is a UI toggle in that section, not a JSON
+  field — there is nothing to set for it in the pasted JSON).
 
 Filtering is required because every evidenceType shares one resource: an
 unscoped evaluator would also run against every other record type, where
 its fact is `null`. Each filtering-criteria file excludes every record
-whose `evidenceType` doesn't match the test's target type — Drata's
-Advanced Editor only offers an exclusion mode, so "test only `instance`
-records" is expressed as "drop every record where `evidenceType` is not
-`instance`," not a positive inclusion filter.
+whose `evidenceType` doesn't match the test's target type — with
+Exclusion selected, "test only `instance` records" is expressed as "drop
+every record where `evidenceType` is not `instance`."
 
 Evaluation threshold for every test below: "All results must pass"
 (`assertion: "nofail"`).

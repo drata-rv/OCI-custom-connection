@@ -1,12 +1,9 @@
 {
-  "mode": "exclusion",
-  "evaluator": {
-    "all": [
-      {
-        "fact": "evidenceType",
-        "operator": "notEqual",
-        "value": "autonomous_database"
-      }
-    ]
-  }
+  "all": [
+    {
+      "fact": "evidenceType",
+      "operator": "notEqual",
+      "value": "autonomous_database"
+    }
+  ]
 }

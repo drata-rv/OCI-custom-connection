@@ -1,12 +1,9 @@
 {
-  "mode": "exclusion",
-  "evaluator": {
-    "all": [
-      {
-        "fact": "evidenceType",
-        "operator": "notEqual",
-        "value": "load_balancer_backend_set"
-      }
-    ]
-  }
+  "all": [
+    {
+      "fact": "evidenceType",
+      "operator": "notEqual",
+      "value": "load_balancer_backend_set"
+    }
+  ]
 }
