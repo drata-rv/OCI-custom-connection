@@ -1,0 +1,11 @@
+{
+  "description": "Fails a KMS key with auto-rotation disabled. Mirrors AWS 'CMK Rotation' / Azure 'Key Vault Key Expiration'. NOT YET LIVE-TESTED -- no KMS vault exists in the tenancy this schema was validated against.",
+  "evidenceType": "kms_key",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "kms_key" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "autoRotationEnabled", "operator": "equal", "value": true } ]
+  }
+}

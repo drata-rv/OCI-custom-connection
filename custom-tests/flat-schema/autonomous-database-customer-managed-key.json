@@ -1,0 +1,11 @@
+{
+  "description": "Fails an autonomous database with no customer-managed KMS key. Only meaningful when decisions.requireCustomerManagedDatabaseKeys is enabled for this deployment -- Oracle-managed encryption at rest is the default and is itself compliant otherwise. Mirrors AWS/Azure 'Database Customer-Managed Key'. NOT YET LIVE-TESTED -- no autonomous database exists in the tenancy this was validated against.",
+  "evidenceType": "autonomous_database",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "autonomous_database" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "kmsKeyId", "operator": "notEqual", "value": null } ]
+  }
+}

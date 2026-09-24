@@ -1,17 +1,22 @@
 # Custom Tests
 
-**STALE — do not paste these in as-is.** Built for the nested-schema
-path's shape (`resources.instances[]`, `snapshotStatus`, etc. — main
-README §1.2), and validated against Drata's engine *source code*, not a
-live build in this connection's own Advanced Editor. Real production use
-found what source-level validation missed: several files here use an
+**For the current architecture (flat-record schema, main README §1.1),
+see [`flat-schema/`](flat-schema/README.md).** That's where new tests
+land; several are already confirmed live against real records in a real
+tenancy (2026-09-24).
+
+The files directly in this directory are **STALE — do not paste these in
+as-is.** Built for the nested-schema path's shape
+(`resources.instances[]`, `snapshotStatus`, etc. — main README §1.2), and
+validated against Drata's engine *source code*, not a live build in this
+connection's own Advanced Editor. Real production use found what
+source-level validation missed: several files here use an
 array-quantifier (`operator: all` over a `path` into an array) that
 **Drata's Advanced Editor rejected live**, for this connection's actual
 registered schema — see "Operator and format notes" below for the
 source-level reasoning that turned out to be insufficient, and the main
 README §10 for a test shape that **is** confirmed live. Kept here as a
-historical record, not a working example, until rewritten (tracked in
-`PLAN.md`).
+historical record, not a working example.
 
 Example Drata Advanced Test Builder JSON for this OCI Custom Connection.
 Paste into Monitoring > Create test > Advanced editor, after selecting

@@ -1,0 +1,11 @@
+{
+  "description": "Fails a bucket whose versioning isn't Enabled (OCI's own enum: Enabled | Disabled | Suspended). Mirrors AWS/Azure 'Storage Data Versioned or Retained'. Confirmed live 2026-09-24: real bucket hs-bucket-20250721-1421 read back with versioning: Enabled.",
+  "evidenceType": "bucket",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "bucket" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "versioning", "operator": "equal", "value": "Enabled" } ]
+  }
+}

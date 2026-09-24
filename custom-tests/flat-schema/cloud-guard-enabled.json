@@ -1,0 +1,11 @@
+{
+  "description": "Fails if the tenancy's Cloud Guard configuration status isn't ENABLED. Mirrors AWS GuardDuty 'threat detection in place'. cloud_guard_configuration is a tenancy-wide singleton -- one record per tenancy, id is the tenancy OCID. NOT YET LIVE-TESTED -- Cloud Guard isn't configured/available on the free-tier tenancy this schema was validated against (get_configuration returned NotAuthorizedOrNotFound there, confirmed 2026-09-24). Confirm against a tenancy with Cloud Guard actually enabled.",
+  "evidenceType": "cloud_guard_configuration",
+  "filteringCriteria": {
+    "mode": "exclusion",
+    "evaluator": { "all": [ { "fact": "evidenceType", "operator": "notEqual", "value": "cloud_guard_configuration" } ] }
+  },
+  "evaluator": {
+    "all": [ { "fact": "cloudGuardStatus", "operator": "equal", "value": "ENABLED" } ]
+  }
+}
