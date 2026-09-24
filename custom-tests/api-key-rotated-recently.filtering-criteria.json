@@ -1,12 +1,9 @@
 {
-  "mode": "exclusion",
-  "evaluator": {
-    "all": [
-      {
-        "fact": "evidenceType",
-        "operator": "notEqual",
-        "value": "api_key"
-      }
-    ]
-  }
+  "all": [
+    {
+      "fact": "evidenceType",
+      "operator": "notEqual",
+      "value": "api_key"
+    }
+  ]
 }
