@@ -1,0 +1,14 @@
+{
+  "all": [
+    {
+      "fact": "publicIngressPorts",
+      "operator": "doesNotContain",
+      "value": 22
+    },
+    {
+      "fact": "publicIngressPorts",
+      "operator": "doesNotContain",
+      "value": 3389
+    }
+  ]
+}

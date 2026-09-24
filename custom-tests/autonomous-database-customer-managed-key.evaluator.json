@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "kmsKeyId",
+      "operator": "notEqual",
+      "value": null
+    }
+  ]
+}

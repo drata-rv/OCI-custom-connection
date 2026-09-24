@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "publicAccessType",
+      "operator": "equal",
+      "value": "NoPublicAccess"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "publicEndpointHostname",
+      "operator": "equal",
+      "value": null
+    }
+  ]
+}

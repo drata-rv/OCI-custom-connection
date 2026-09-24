@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "mfaActivated",
+      "operator": "equal",
+      "value": true
+    }
+  ]
+}

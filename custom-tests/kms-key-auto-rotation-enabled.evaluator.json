@@ -1,0 +1,9 @@
+{
+  "all": [
+    {
+      "fact": "autoRotationEnabled",
+      "operator": "equal",
+      "value": true
+    }
+  ]
+}
