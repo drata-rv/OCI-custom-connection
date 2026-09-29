@@ -15,6 +15,7 @@ from typing import Any
 from oci_drata.collection.cloud_guard import CloudGuardCollectionResult
 from oci_drata.collection.compute import ComputeCollectionResult
 from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
+from oci_drata.collection.database_base import DatabaseBaseCollectionResult
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.collection.identity import IdentityCollectionResult
 from oci_drata.collection.kms_vault import KmsVaultCollectionResult
@@ -22,6 +23,8 @@ from oci_drata.collection.load_balancer import LoadBalancerCollectionResult
 from oci_drata.collection.monitoring import MonitoringCollectionResult
 from oci_drata.collection.networking import NetworkingCollectionResult
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult
+from oci_drata.collection.storage import StorageCollectionResult
+from oci_drata.collection.vpn import VpnCollectionResult
 from oci_drata.collection.waf import WafCollectionResult
 from oci_drata.config import DecisionsConfig
 from oci_drata.models import DatabaseResource, Instance
@@ -38,7 +41,12 @@ from oci_drata.transform.lifecycle import (
 # depends on both compute (its own collection) and networking (feeds derive_public_ingress_facts).
 EVIDENCE_TYPE_REQUIRED_DOMAINS: dict[str, tuple[str, ...]] = {
     "instance": ("compute", "networking"),
+    "boot_volume": ("blockStorage",),
+    "block_volume": ("blockStorage",),
+    "db_system": ("baseDatabase",),
+    "database": ("baseDatabase",),
     "autonomous_database": ("autonomousDatabase",),
+    "ipsec_connection": ("vpn",),
     "iam_user": ("identity",),
     "api_key": ("identity",),
     "iam_policy": ("identity",),
@@ -91,6 +99,10 @@ _FLAT_RECORD_FIELD_DEFAULTS: dict[str, Any] = {
     "alarmEnabled": None, "alarmNamespace": None, "alarmQuery": None,
     "isPrivate": None, "loadBalancerId": None, "backendSetHealthStatus": None,
     "vaultId": None, "autoRotationEnabled": None, "lastRotationAt": None,
+    "attachedInstanceIds": [], "shape": None, "version": None,
+    "diskRedundancy": None, "nodeCount": None, "backupStatus": None,
+    "patchVersion": None, "recoveryWindowDays": None, "dataGuardRole": None,
+    "tunnelCount": None, "upTunnelCount": None,
 }
 
 
@@ -123,6 +135,92 @@ def _flatten_autonomous_database(resource: DatabaseResource, *, timestamp: str |
         "compartmentId": resource.compartment_id,
         "kmsKeyId": resource.kms_key_id,
         "publicEndpointHostname": resource.public_endpoint_hostname,
+    }
+
+
+def _flatten_boot_volume(
+    volume: Any, *, attached_instance_ids: tuple[str, ...], timestamp: str | None
+) -> dict[str, Any]:
+    return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
+        "id": volume.id,
+        "evidenceType": "boot_volume",
+        "name": getattr(volume, "display_name", None),
+        "timestamp": timestamp,
+        "region": getattr(volume, "region", None),
+        "compartmentId": volume.compartment_id,
+        "kmsKeyId": getattr(volume, "kms_key_id", None),
+        "attachedInstanceIds": list(attached_instance_ids),
+    }
+
+
+def _flatten_block_volume(
+    volume: Any, *, attached_instance_ids: tuple[str, ...], timestamp: str | None
+) -> dict[str, Any]:
+    return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
+        "id": volume.id,
+        "evidenceType": "block_volume",
+        "name": getattr(volume, "display_name", None),
+        "timestamp": timestamp,
+        "region": getattr(volume, "region", None),
+        "compartmentId": volume.compartment_id,
+        "kmsKeyId": getattr(volume, "kms_key_id", None),
+        "attachedInstanceIds": list(attached_instance_ids),
+    }
+
+
+def _flatten_db_system(db_system: Any, *, timestamp: str | None) -> dict[str, Any]:
+    return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
+        "id": db_system.id,
+        "evidenceType": "db_system",
+        "name": getattr(db_system, "display_name", None),
+        "timestamp": timestamp,
+        "region": getattr(db_system, "region", None),
+        "compartmentId": db_system.compartment_id,
+        "shape": getattr(db_system, "shape", None),
+        "version": getattr(db_system, "version", None),
+        "diskRedundancy": getattr(db_system, "disk_redundancy", None),
+        "nodeCount": getattr(db_system, "node_count", None),
+    }
+
+
+def _flatten_database(
+    database: Any, *, data_guard_role: str | None, timestamp: str | None
+) -> dict[str, Any]:
+    backup_config = getattr(database, "db_backup_config", None)
+    return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
+        "id": database.id,
+        "evidenceType": "database",
+        "name": getattr(database, "db_name", None),
+        "timestamp": timestamp,
+        "region": getattr(database, "region", None),
+        "compartmentId": database.compartment_id,
+        "kmsKeyId": getattr(database, "kms_key_id", None),
+        "backupStatus": normalize.normalize_db_backup_status(database),
+        "patchVersion": getattr(database, "patch_version", None),
+        "recoveryWindowDays": (
+            getattr(backup_config, "recovery_window_in_days", None) if backup_config else None
+        ),
+        "dataGuardRole": data_guard_role,
+    }
+
+
+def _flatten_ipsec_connection(
+    connection: Any, *, tunnel_count: int, up_tunnel_count: int, timestamp: str | None
+) -> dict[str, Any]:
+    return {
+        **_FLAT_RECORD_FIELD_DEFAULTS,
+        "id": connection.id,
+        "evidenceType": "ipsec_connection",
+        "name": getattr(connection, "display_name", None),
+        "timestamp": timestamp,
+        "region": getattr(connection, "region", None),
+        "compartmentId": connection.compartment_id,
+        "tunnelCount": tunnel_count,
+        "upTunnelCount": up_tunnel_count,
     }
 
 
@@ -279,8 +377,11 @@ def build_flat_records(
     decisions: DecisionsConfig,
     discovery: DiscoveryResult,
     compute: ComputeCollectionResult,
+    storage: StorageCollectionResult,
     networking: NetworkingCollectionResult,
+    database_base: DatabaseBaseCollectionResult,
     autonomous_database: AutonomousDatabaseCollectionResult,
+    vpn: VpnCollectionResult,
     identity: IdentityCollectionResult,
     object_storage: ObjectStorageCollectionResult,
     cloud_guard: CloudGuardCollectionResult,
@@ -339,6 +440,52 @@ def build_flat_records(
         )
         for a in kept_adb_raw
     ]
+
+    # -- Block storage: boot/block volumes, joined to their attached instance(s) --
+    kept_boot_volumes_raw, excluded_boot_volumes_raw = split_by_lifecycle(storage.boot_volumes)
+    kept_block_volumes_raw, excluded_block_volumes_raw = split_by_lifecycle(storage.block_volumes)
+    instance_ids_by_boot_volume_id: dict[str, list[str]] = {}
+    for attachment in storage.boot_volume_attachments:
+        volume_id = getattr(attachment, "boot_volume_id", None)
+        instance_id = getattr(attachment, "instance_id", None)
+        if volume_id and instance_id:
+            instance_ids_by_boot_volume_id.setdefault(volume_id, []).append(instance_id)
+    instance_ids_by_block_volume_id: dict[str, list[str]] = {}
+    for attachment in storage.volume_attachments:
+        volume_id = getattr(attachment, "volume_id", None)
+        instance_id = getattr(attachment, "instance_id", None)
+        if volume_id and instance_id:
+            instance_ids_by_block_volume_id.setdefault(volume_id, []).append(instance_id)
+
+    # -- Base Database Service: lifecycle exclusion cascades db_system -> db_home ->
+    # database, so a database under a terminated db_system is excluded too, not left
+    # orphaned. Data Guard role is a direct per-database join (leaf, no cascade needed).
+    kept_db_systems_raw, excluded_db_systems_raw = exclude_lifecycle_cascade(
+        database_base.db_systems, parent_excluded_ids=set(), parent_id_field=None
+    )
+    excluded_db_system_ids = {s.id for s in excluded_db_systems_raw}
+    kept_db_homes_raw, excluded_db_homes_raw = exclude_lifecycle_cascade(
+        database_base.db_homes, parent_excluded_ids=excluded_db_system_ids, parent_id_field="db_system_id"
+    )
+    excluded_db_home_ids = {h.id for h in excluded_db_homes_raw}
+    kept_databases_raw, excluded_databases_raw = exclude_lifecycle_cascade(
+        database_base.databases, parent_excluded_ids=excluded_db_home_ids, parent_id_field="db_home_id"
+    )
+    kept_data_guard_raw, _ = split_by_lifecycle(database_base.data_guard_associations)
+    data_guard_role_by_database_id = {
+        dg.database_id: getattr(dg, "role", None)
+        for dg in kept_data_guard_raw
+        if getattr(dg, "database_id", None)
+    }
+
+    # -- Site-to-Site VPN: tunnel counts are raw facts (no redundancy verdict --
+    # decisions.minimum(Up)?VpnTunnelCount is a policy threshold for the Custom Test) --
+    kept_connections_raw, excluded_connections_raw = split_by_lifecycle(vpn.ip_sec_connections)
+
+    def _tunnel_counts(connection_id: str) -> tuple[int, int]:
+        kept_tunnels, _ = split_by_lifecycle(vpn.tunnels_by_connection_id.get(connection_id, []))
+        up_count = sum(1 for t in kept_tunnels if getattr(t, "status", None) == "UP")
+        return len(kept_tunnels), up_count
 
     # Identity uses OCI's DELETED/DELETING vocabulary, not split_by_lifecycle's
     # TERMINATED/TERMINATING default -- override explicitly, or its "keep if
@@ -413,8 +560,36 @@ def build_flat_records(
             for i in instances
         ]
         + [
+            _flatten_boot_volume(
+                v, attached_instance_ids=tuple(sorted(set(instance_ids_by_boot_volume_id.get(v.id, [])))),
+                timestamp=timestamp,
+            )
+            for v in kept_boot_volumes_raw
+        ]
+        + [
+            _flatten_block_volume(
+                v, attached_instance_ids=tuple(sorted(set(instance_ids_by_block_volume_id.get(v.id, [])))),
+                timestamp=timestamp,
+            )
+            for v in kept_block_volumes_raw
+        ]
+        + [_flatten_db_system(s, timestamp=timestamp) for s in kept_db_systems_raw]
+        + [
+            _flatten_database(
+                d, data_guard_role=data_guard_role_by_database_id.get(d.id), timestamp=timestamp
+            )
+            for d in kept_databases_raw
+        ]
+        + [
             _flatten_autonomous_database(a, timestamp=timestamp)
             for a in autonomous_databases
+        ]
+        + [
+            _flatten_ipsec_connection(
+                c, tunnel_count=(counts := _tunnel_counts(c.id))[0], up_tunnel_count=counts[1],
+                timestamp=timestamp,
+            )
+            for c in kept_connections_raw
         ]
         + [_flatten_iam_user(u, timestamp=timestamp) for u in kept_users]
         + [_flatten_api_key(k, timestamp=timestamp) for k in kept_api_keys]
@@ -441,8 +616,11 @@ def build_flat_records(
         records=records,
         domain_complete={
             "compute": compute.complete,
+            "blockStorage": storage.complete,
             "networking": networking.complete,
+            "baseDatabase": database_base.complete,
             "autonomousDatabase": autonomous_database.complete,
+            "vpn": vpn.complete,
             "identity": identity.complete,
             "objectStorage": object_storage.complete,
             "cloudGuard": cloud_guard.complete,
@@ -454,7 +632,12 @@ def build_flat_records(
         discovery_complete=discovery.complete,
         excluded_counts={
             "instance": len(excluded_instances_raw),
+            "bootVolume": len(excluded_boot_volumes_raw),
+            "blockVolume": len(excluded_block_volumes_raw),
+            "dbSystem": len(excluded_db_systems_raw),
+            "database": len(excluded_databases_raw),
             "autonomousDatabase": len(excluded_adb_raw),
+            "ipsecConnection": len(excluded_connections_raw),
             "iamUser": len(excluded_users),
             "iamPolicy": len(excluded_policies),
             "monitoringAlarm": len(excluded_alarms),
@@ -464,7 +647,12 @@ def build_flat_records(
         },
         excluded_ids={
             "instance": [i.id for i in excluded_instances_raw],
+            "boot_volume": [v.id for v in excluded_boot_volumes_raw],
+            "block_volume": [v.id for v in excluded_block_volumes_raw],
+            "db_system": [s.id for s in excluded_db_systems_raw],
+            "database": [d.id for d in excluded_databases_raw],
             "autonomous_database": [a.id for a in excluded_adb_raw],
+            "ipsec_connection": [c.id for c in excluded_connections_raw],
             "iam_user": [u.id for u in excluded_users],
             "api_key": [f"{k.user_id}/{k.fingerprint}" for k in excluded_api_keys],
             "iam_policy": [p.id for p in excluded_policies],

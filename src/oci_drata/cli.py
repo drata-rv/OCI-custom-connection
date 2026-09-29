@@ -25,6 +25,7 @@ from oci_drata.collection.database_autonomous import (
     AutonomousDatabaseCollectionResult,
     collect_autonomous_database,
 )
+from oci_drata.collection.database_base import DatabaseBaseCollectionResult, collect_database_base
 from oci_drata.collection.discovery import DiscoveryResult, discover
 from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
 from oci_drata.collection.kms_vault import KmsVaultCollectionResult, collect_kms_vault
@@ -32,6 +33,8 @@ from oci_drata.collection.load_balancer import LoadBalancerCollectionResult, col
 from oci_drata.collection.monitoring import MonitoringCollectionResult, collect_monitoring
 from oci_drata.collection.networking import NetworkingCollectionResult, collect_networking
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult, collect_object_storage
+from oci_drata.collection.storage import StorageCollectionResult, collect_storage
+from oci_drata.collection.vpn import VpnCollectionResult, collect_vpn
 from oci_drata.collection.waf import WafCollectionResult, collect_waf
 from oci_drata.config import AppConfig, ConfigError, load_config, redact_config_for_display
 from oci_drata.delivery.drata import delete_records, upsert_records
@@ -178,8 +181,11 @@ def _run_independent_collectors(
     signer: TenancySigner, discovery: DiscoveryResult, app_config: AppConfig, retry_policy: RetryPolicy
 ) -> tuple[
     ComputeCollectionResult,
+    StorageCollectionResult,
     NetworkingCollectionResult,
+    DatabaseBaseCollectionResult,
     AutonomousDatabaseCollectionResult,
+    VpnCollectionResult,
     IdentityCollectionResult,
     ObjectStorageCollectionResult,
     CloudGuardCollectionResult,
@@ -191,10 +197,13 @@ def _run_independent_collectors(
     services = app_config.oci.services
     jobs: dict[str, Callable[[], Any]] = {
         "compute": lambda: collect_compute(signer, discovery, services, retry_policy=retry_policy),
+        "storage": lambda: collect_storage(signer, discovery, services, retry_policy=retry_policy),
         "networking": lambda: collect_networking(signer, discovery, services, retry_policy=retry_policy),
+        "database_base": lambda: collect_database_base(signer, discovery, services, retry_policy=retry_policy),
         "autonomous_database": lambda: collect_autonomous_database(
             signer, discovery, services, retry_policy=retry_policy
         ),
+        "vpn": lambda: collect_vpn(signer, discovery, services, retry_policy=retry_policy),
         "identity": lambda: collect_identity(signer, discovery, services, retry_policy=retry_policy),
         "object_storage": lambda: collect_object_storage(
             signer, discovery, services, retry_policy=retry_policy
@@ -212,8 +221,11 @@ def _run_independent_collectors(
 
     return (
         results["compute"],
+        results["storage"],
         results["networking"],
+        results["database_base"],
         results["autonomous_database"],
+        results["vpn"],
         results["identity"],
         results["object_storage"],
         results["cloud_guard"],
@@ -255,7 +267,8 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
 
     discovery = discover(signer, app_config, retry_policy=retry_policy)
     (
-        compute_result, networking_result, autonomous_result, identity_result,
+        compute_result, storage_result, networking_result, database_base_result,
+        autonomous_result, vpn_result, identity_result,
         object_storage_result, cloud_guard_result, monitoring_result,
         load_balancer_result, waf_result, kms_vault_result,
     ) = _run_independent_collectors(signer, discovery, app_config, retry_policy)
@@ -263,7 +276,8 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     completed_at = datetime.datetime.now(tz=datetime.UTC)
     flat_result = build_flat_records(
         decisions=app_config.decisions, discovery=discovery, compute=compute_result,
-        networking=networking_result, autonomous_database=autonomous_result,
+        storage=storage_result, networking=networking_result, database_base=database_base_result,
+        autonomous_database=autonomous_result, vpn=vpn_result,
         identity=identity_result, object_storage=object_storage_result,
         cloud_guard=cloud_guard_result, monitoring=monitoring_result,
         load_balancer=load_balancer_result, waf=waf_result, kms_vault=kms_vault_result,
@@ -272,7 +286,8 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
 
     all_operations: list[OperationResult] = [
         *discovery.operations,
-        *compute_result.operations, *networking_result.operations, *autonomous_result.operations,
+        *compute_result.operations, *storage_result.operations, *networking_result.operations,
+        *database_base_result.operations, *autonomous_result.operations, *vpn_result.operations,
         *identity_result.operations, *object_storage_result.operations,
         *cloud_guard_result.operations, *monitoring_result.operations,
         *load_balancer_result.operations, *waf_result.operations, *kms_vault_result.operations,
@@ -297,8 +312,11 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     # domainSkipped answers that, so recordCount:0 isn't a mystery (README §7).
     domain_skipped = {
         "compute": _domain_all_skipped(compute_result.operations),
+        "blockStorage": _domain_all_skipped(storage_result.operations),
         "networking": _domain_all_skipped(networking_result.operations),
+        "baseDatabase": _domain_all_skipped(database_base_result.operations),
         "autonomousDatabase": _domain_all_skipped(autonomous_result.operations),
+        "vpn": _domain_all_skipped(vpn_result.operations),
         "identity": _domain_all_skipped(identity_result.operations),
         "objectStorage": _domain_all_skipped(object_storage_result.operations),
         "cloudGuard": _domain_all_skipped(cloud_guard_result.operations),

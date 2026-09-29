@@ -256,7 +256,10 @@ class OciCompartmentsConfig:
 class OciServicesConfig:
     compute: bool
     network_exposure: bool
+    block_storage: bool
+    base_database: bool
     autonomous_database: bool
+    site_to_site_vpn: bool
     # Broader trust footprint than the other domains: reads user MFA status, API key
     # ages, and raw IAM policy statement text. Opt-in, off unless explicitly enabled --
     # see README Section 4 for the additional least-privilege policy grant it needs.
@@ -451,7 +454,8 @@ _OCI_REGIONS_KEYS = frozenset({"allow"})
 _OCI_COMPARTMENTS_KEYS = frozenset({"roots", "excludeOcids"})
 _OCI_SERVICES_KEYS = frozenset(
     {
-        "compute", "networkExposure", "autonomousDatabase", "identity",
+        "compute", "networkExposure", "blockStorage", "baseDatabase",
+        "autonomousDatabase", "siteToSiteVpn", "identity",
         "objectStorage", "cloudGuard", "monitoring", "loadBalancer", "waf", "kmsVault",
     }
 )
@@ -515,9 +519,12 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
     services = OciServicesConfig(
         compute=_require_bool(services_raw, "compute", context="oci.services"),
         network_exposure=_require_bool(services_raw, "networkExposure", context="oci.services"),
+        block_storage=_require_bool(services_raw, "blockStorage", context="oci.services"),
+        base_database=_require_bool(services_raw, "baseDatabase", context="oci.services"),
         autonomous_database=_require_bool(
             services_raw, "autonomousDatabase", context="oci.services"
         ),
+        site_to_site_vpn=_require_bool(services_raw, "siteToSiteVpn", context="oci.services"),
         identity=_optional_bool(services_raw, "identity", context="oci.services", default=False),
         object_storage=_optional_bool(
             services_raw, "objectStorage", context="oci.services", default=False

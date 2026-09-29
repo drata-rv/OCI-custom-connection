@@ -36,6 +36,20 @@
     "backendSetHealthStatus": { "type": ["string", "null"] },
     "vaultId": { "type": ["string", "null"] },
     "autoRotationEnabled": { "type": ["boolean", "null"] },
-    "lastRotationAt": { "type": ["string", "null"] }
+    "lastRotationAt": { "type": ["string", "null"] },
+    "attachedInstanceIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "shape": { "type": ["string", "null"] },
+    "version": { "type": ["string", "null"] },
+    "diskRedundancy": { "type": ["string", "null"] },
+    "nodeCount": { "type": ["number", "null"] },
+    "backupStatus": { "type": ["string", "null"] },
+    "patchVersion": { "type": ["string", "null"] },
+    "recoveryWindowDays": { "type": ["number", "null"] },
+    "dataGuardRole": { "type": ["string", "null"] },
+    "tunnelCount": { "type": ["number", "null"] },
+    "upTunnelCount": { "type": ["number", "null"] }
   }
 }

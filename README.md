@@ -57,7 +57,10 @@ against these facts.
 | `evidenceType` | `oci.services` toggle | Default |
 |---|---|---|
 | `instance` | `compute` + `networkExposure` | on |
+| `boot_volume`, `block_volume` | `blockStorage` | on |
+| `db_system`, `database` | `baseDatabase` | on |
 | `autonomous_database` | `autonomousDatabase` | on |
+| `ipsec_connection` | `siteToSiteVpn` | on |
 | `iam_user`, `api_key`, `iam_policy` | `identity` | off |
 | `bucket` | `objectStorage` | off |
 | `cloud_guard_configuration` | `cloudGuard` | off |
@@ -111,9 +114,16 @@ Allow group oci-drata-collector to read instance-family in tenancy
 Allow group oci-drata-collector to inspect virtual-network-family in tenancy
 Allow group oci-drata-collector to read virtual-network-family in tenancy
 Allow group oci-drata-collector to use network-security-groups in tenancy
+Allow group oci-drata-collector to inspect volume-family in tenancy
+Allow group oci-drata-collector to read volume-family in tenancy
+Allow group oci-drata-collector to inspect database-family in tenancy
+Allow group oci-drata-collector to read database-family in tenancy
 Allow group oci-drata-collector to inspect autonomous-database-family in tenancy
 Allow group oci-drata-collector to read autonomous-database-family in tenancy
 ```
+
+`virtual-network-family` above (already required for `networkExposure`) also covers CPEs, DRGs, and
+IPSec connections/tunnels -- Site-to-Site VPN (`siteToSiteVpn`) needs no separate grant.
 
 Never grant `manage`, `all-resources`, any secret-family/Vault secret-content permission, or any IPSec shared-secret permission.
 

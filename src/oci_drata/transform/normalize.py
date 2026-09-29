@@ -1,6 +1,6 @@
 """Normalizes raw OCI SDK objects into allowlisted source-fact models.
 Cross-resource joins (Windows classification, network exposure, ID-list
-relationships, VPN redundancy) run afterward in relationships/exposure/vpn_posture."""
+relationships) run afterward in relationships/exposure."""
 
 from __future__ import annotations
 
@@ -86,6 +86,19 @@ def normalize_vnic(raw: Any) -> Vnic:
         subnet_id=subnet_id,
         nsg_ids=tuple(getattr(raw, "nsg_ids", None) or ()),
     )
+
+
+def normalize_db_backup_status(raw_database: Any) -> str:
+    """Returns enabled/disabled from DbBackupConfig.auto_backup_enabled;
+    unknown only if config absent."""
+
+    backup_config = getattr(raw_database, "db_backup_config", None)
+    if backup_config is None:
+        return "unknown"
+    enabled = getattr(backup_config, "auto_backup_enabled", None)
+    if enabled is None:
+        return "unknown"
+    return "enabled" if enabled else "disabled"
 
 
 def normalize_autonomous_database_posture(raw_adb: Any) -> dict[str, Any]:
