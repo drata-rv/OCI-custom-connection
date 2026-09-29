@@ -44,9 +44,9 @@ def test_default_schema_loads_from_installed_wheel_outside_repo_checkout(tmp_pat
         [
             str(venv_python),
             "-c",
-            "from oci_drata.validation.schema import load_schema; "
-            "s = load_schema(); "
-            "assert s['title'] == 'OCI evidence snapshot', s",
+            "from oci_drata.validation.schema import load_flat_schema; "
+            "s = load_flat_schema(); "
+            "assert 'evidenceType' in s['properties'], s",
         ],
         capture_output=True,
         text=True,

@@ -47,12 +47,10 @@ Required before first run:
 - `drata.connectionId` / `drata.resourceId` — the Drata Custom Connection's IDs.
 - `drata.apiTokenSecretRef` — see §3.
 
-Two upload paths run from the same config:
-
-| Path | Schema | Enabled by |
-|---|---|---|
-| Nested (`build_snapshot`) | `schemas/oci-snapshot-1.0.0.json` | Always on |
-| Flat records (`build_flat_records`) | `schemas/flat-record.schema.json` | `drata.flatResourceId` set to a Custom Connection resource ID registered with that schema |
+One record per collected resource, upserted to the Custom Connection resource registered
+with `schemas/flat-record.schema.json` (`drata.resourceId`). Records carry raw OCI facts
+only, no precomputed compliance verdict -- the Drata Custom Test evaluates compliance
+against these facts.
 
 `oci.services.*` toggles control which evidence gets collected:
 
@@ -67,6 +65,11 @@ Two upload paths run from the same config:
 | `load_balancer`, `load_balancer_backend_set` | `loadBalancer` | off |
 | `waf` | `waf` | off |
 | `kms_key` | `kmsVault` | off |
+
+A domain that fails to collect completely in a given run withholds only the evidenceTypes
+that depend on it (`instance` needs both `compute` and `networking`; everything else needs
+just its own domain) -- see `collection-report.json`'s `domainsWithheld`. It never blocks
+delivery for domains that succeeded.
 
 **Before the first real run:** run with `--test` (§5), then check `collection-report.json`'s `accessSummary.compartmentsWithAuthGap`. Set `compartments.roots` to match what the OCI policy in §4 actually grants.
 
@@ -108,10 +111,8 @@ Allow group oci-drata-collector to read instance-family in tenancy
 Allow group oci-drata-collector to inspect virtual-network-family in tenancy
 Allow group oci-drata-collector to read virtual-network-family in tenancy
 Allow group oci-drata-collector to use network-security-groups in tenancy
-Allow group oci-drata-collector to inspect volume-family in tenancy
-Allow group oci-drata-collector to read volume-family in tenancy
-Allow group oci-drata-collector to inspect database-family in tenancy
-Allow group oci-drata-collector to read database-family in tenancy
+Allow group oci-drata-collector to inspect autonomous-database-family in tenancy
+Allow group oci-drata-collector to read autonomous-database-family in tenancy
 ```
 
 Never grant `manage`, `all-resources`, any secret-family/Vault secret-content permission, or any IPSec shared-secret permission.
@@ -167,13 +168,15 @@ Allow group oci-drata-collector to read keys in tenancy
 ## 5. Run
 
 ```bash
-# Dry run: writes out/snapshot.json + out/collection-report.json, never contacts Drata.
+# Dry run: writes out/flat-records.json + out/collection-report.json, never contacts Drata.
 oci-drata --config config.yaml --dry-run
 
 # Live run.
 oci-drata --config config.yaml
 
-# Sample mode: stops after 30s instead of scanning the whole tenancy.
+# Sample mode: stops after 30s instead of scanning the whole tenancy. Records still
+# upload (each is standalone evidence, honest at any sample size); stale-record cleanup
+# is skipped, since a sampled run's absences aren't confirmed deletions.
 oci-drata --config config.yaml --test
 ```
 
@@ -183,8 +186,8 @@ Exit codes:
 
 | Code | Meaning |
 |---|---|
-| `0` | Success — uploaded, or a dry run with no schema failure |
-| `1` | Blocked — nothing uploaded. Check `collection-report.json`: incomplete scope, or `deliveryErrorClass`/`error_class` for a failed Drata call |
+| `0` | Success — uploaded (in full or in part; see `domainsWithheld`), or a dry run |
+| `1` | Blocked — nothing uploaded. Check `collection-report.json`: `blockedReasons`, or `deliveryErrorClasses` for a failed Drata call |
 | `2` | Configuration/auth error |
 | `3` | Unexpected failure |
 
@@ -193,10 +196,12 @@ Exit codes:
 ```bash
 python3 -c "
 import json
-from oci_drata.validation.schema import load_schema, validate_record
-record = json.load(open('out/snapshot.json'))
-result = validate_record(record, load_schema())
-print('valid' if result.valid else result.errors)
+from oci_drata.validation.schema import load_flat_schema, validate_record
+records = json.load(open('out/flat-records.json'))
+for record in records:
+    result = validate_record(record, load_flat_schema())
+    if not result.valid:
+        print(record['id'], result.errors)
 "
 ```
 
@@ -212,14 +217,14 @@ print('valid' if result.valid else result.errors)
 | `configuration error: $: unrecognized field(s) ...` | Check spelling against `config.example.yaml`. |
 | `AuthError: OCI private key file must not be group/world accessible` | `chmod 600` the key file. |
 | `AuthError: OCI SDK config tenancy does not match configured oci.expectedTenancyOcid` | Point `~/.oci/config`'s profile at the tenancy `config.yaml` expects, or fix `expectedTenancyOcid`. |
-| `snapshotStatus: incomplete`, reasons mention `not subscribed/READY` | Remove the unsubscribed region from `oci.regions.allow`. |
-| `snapshotStatus: incomplete`, reasons mention a collector by name | Check `collection-report.json`'s operations for `status: failed` and `errorCode`. Usually a missing policy grant (§4). |
+| `domainsWithheld` includes a domain, reasons mention `not subscribed/READY` | Remove the unsubscribed region from `oci.regions.allow`. |
+| `domainsWithheld` includes a domain | Check `collection-report.json`'s operations for `status: failed` and `errorCode` in that domain. Usually a missing policy grant (§4). |
 | Large `operationsFailed` count, mostly `NotAuthorizedOrNotFound` | Check `accessSummary` in `collection-report.json`. Narrow `compartments.roots` to `compartmentsWithRealData`. |
-| `snapshotStatus: incomplete`, reason mentions Exadata | Expected if the tenancy has Exadata infrastructure. This tool does not report complete database coverage in that case. |
-| `snapshotStatus: failed`, reason mentions schema | Check `collection-report.json`'s `schemaErrors`. |
+| `uploadDecision: blocked` | Check `blockedReasons` in `collection-report.json` -- usually discovery incomplete, or every enabled domain withheld. |
+| `schemaValid: false` | Check `collection-report.json`'s `schemaInvalidCount`; validate `out/flat-records.json` per §6 to see which records and why. |
 | Drata upload returns `error_class: auth` | Check the bearer token and `connectionId`/`resourceId`. |
-| Drata upload returns `error_class: validation` | Check the connection's registered schema matches `src/oci_drata/schemas/oci-snapshot-1.0.0.json`. |
-| `payloadNearBudget: true` in `collection-report.json` | Payload is at/above 80% of `runtime.maxPayloadBytes`. Raise the budget or reduce scope before it fails outright. |
+| Drata upload returns `error_class: validation` | Check the connection's registered schema matches `src/oci_drata/schemas/flat-record.schema.json`. |
+| `staleRecordDeleteFailures > 0` in `collection-report.json` | Best-effort cleanup of terminated/deleted resources' old records; a failure here doesn't block the run and is retried next run. |
 
 ## 8. Deployment checklist
 
@@ -228,12 +233,11 @@ print('valid' if result.valid else result.errors)
 - [ ] Approved compartments fully enumerated (`scope.compartmentIds` matches the OCI Console).
 - [ ] Enabled services show zero `failed` operations in `collection-report.json`.
 - [ ] Resource counts reconcile against the OCI Console for a sample of compartments.
-- [ ] `out/snapshot.json` validates against the Drata connection's actual schema.
-- [ ] Serialized snapshot stays below 4.5 MB.
-- [ ] First upload creates a record (`201`); second run updates the same record (`200`), same `id`.
-- [ ] No secret-bearing field appears in `out/snapshot.json`, `collection-report.json`, or logs.
+- [ ] `out/flat-records.json` validates against the Drata connection's actual schema.
+- [ ] First upload creates each record (`201`); second run updates the same records (`200`), same `id`.
+- [ ] No secret-bearing field appears in `out/flat-records.json`, `collection-report.json`, or logs.
 - [ ] `out/` and its contents are owner-only (`0700`/`0600`).
-- [ ] Deployment technical and compliance owners have reviewed `out/snapshot.json` before any Custom Test is published against it.
+- [ ] Deployment technical and compliance owners have reviewed `out/flat-records.json` before any Custom Test is published against it.
 
 ## 9. Custom Tests
 

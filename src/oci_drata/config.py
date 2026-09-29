@@ -256,11 +256,7 @@ class OciCompartmentsConfig:
 class OciServicesConfig:
     compute: bool
     network_exposure: bool
-    block_storage: bool
-    base_database: bool
     autonomous_database: bool
-    exadata_detection: bool
-    site_to_site_vpn: bool
     # Broader trust footprint than the other domains: reads user MFA status, API key
     # ages, and raw IAM policy statement text. Opt-in, off unless explicitly enabled --
     # see README Section 4 for the additional least-privilege policy grant it needs.
@@ -297,14 +293,10 @@ class DecisionsConfig:
 class DrataConfig:
     base_url: str
     connection_id: int
+    # Custom Connection resource registered with schemas/flat-record.schema.json.
     resource_id: int
-    record_id: str
     api_token_secret_ref: SecretRef
     allow_alternate_host: bool = False
-    # Resource ID of a second Custom Connection resource registered with
-    # schemas/flat-record.schema.json. None/absent leaves the flat-record
-    # publish path disabled entirely.
-    flat_resource_id: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -375,19 +367,6 @@ def _optional_bool(mapping: Mapping[str, Any], key: str, *, context: str, defaul
             f"{context}.{key}: expected true or false (unquoted), got {value!r} "
             f"({type(value).__name__}) -- a quoted string is not a boolean"
         )
-    return value
-
-
-def _optional_int(
-    mapping: Mapping[str, Any], key: str, *, context: str, minimum: int | None = None
-) -> int | None:
-    if key not in mapping or mapping[key] is None:
-        return None
-    value = mapping[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigError(f"{context}.{key}: expected an integer or null, got {value!r}")
-    if minimum is not None and value < minimum:
-        raise ConfigError(f"{context}.{key}: must be >= {minimum}, got {value}")
     return value
 
 
@@ -472,8 +451,7 @@ _OCI_REGIONS_KEYS = frozenset({"allow"})
 _OCI_COMPARTMENTS_KEYS = frozenset({"roots", "excludeOcids"})
 _OCI_SERVICES_KEYS = frozenset(
     {
-        "compute", "networkExposure", "blockStorage", "baseDatabase",
-        "autonomousDatabase", "exadataDetection", "siteToSiteVpn", "identity",
+        "compute", "networkExposure", "autonomousDatabase", "identity",
         "objectStorage", "cloudGuard", "monitoring", "loadBalancer", "waf", "kmsVault",
     }
 )
@@ -485,10 +463,7 @@ _DECISIONS_KEYS = frozenset(
     }
 )
 _DRATA_KEYS = frozenset(
-    {
-        "baseUrl", "connectionId", "resourceId", "recordId", "apiTokenSecretRef",
-        "allowAlternateHost", "flatResourceId",
-    }
+    {"baseUrl", "connectionId", "resourceId", "apiTokenSecretRef", "allowAlternateHost"}
 )
 _RUNTIME_KEYS = frozenset({"maxPayloadBytes", "maxConcurrency", "logLevel", "dryRun"})
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -540,15 +515,9 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
     services = OciServicesConfig(
         compute=_require_bool(services_raw, "compute", context="oci.services"),
         network_exposure=_require_bool(services_raw, "networkExposure", context="oci.services"),
-        block_storage=_require_bool(services_raw, "blockStorage", context="oci.services"),
-        base_database=_require_bool(services_raw, "baseDatabase", context="oci.services"),
         autonomous_database=_require_bool(
             services_raw, "autonomousDatabase", context="oci.services"
         ),
-        exadata_detection=_require_bool(
-            services_raw, "exadataDetection", context="oci.services"
-        ),
-        site_to_site_vpn=_require_bool(services_raw, "siteToSiteVpn", context="oci.services"),
         identity=_optional_bool(services_raw, "identity", context="oci.services", default=False),
         object_storage=_optional_bool(
             services_raw, "objectStorage", context="oci.services", default=False
@@ -611,10 +580,8 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         base_url=base_url,
         connection_id=_require_int(drata_raw, "connectionId", context="drata", minimum=1),
         resource_id=_require_int(drata_raw, "resourceId", context="drata", minimum=1),
-        record_id=_require(drata_raw, "recordId", context="drata"),
         api_token_secret_ref=api_token_secret_ref,
         allow_alternate_host=allow_alternate_host,
-        flat_resource_id=_optional_int(drata_raw, "flatResourceId", context="drata", minimum=1),
     )
 
     runtime_raw = _require(raw, "runtime", context="$")

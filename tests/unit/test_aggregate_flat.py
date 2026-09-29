@@ -472,9 +472,9 @@ def test_excluded_counts_all_zero_when_nothing_is_excluded() -> None:
 
 
 def test_unresolved_relationship_count_is_reported_not_discarded() -> None:
-    """A dangling vnic_attachment (instance not in the collected list) is reported
-    via unresolved_relationship_count, not discarded -- build_snapshot's nested
-    path instead hard-blocks upload on this signal via decide_completeness()."""
+    """A dangling vnic_attachment (instance not in the collected list) is reported via
+    unresolved_relationship_count, not discarded -- cli.py folds this into compute's
+    own domain-completeness gate rather than discarding it silently."""
 
     instance = _stamp(
         oci.core.models.Instance(id="i1", compartment_id="c1", lifecycle_state="RUNNING")

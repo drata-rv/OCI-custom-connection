@@ -44,14 +44,14 @@ def test_normalize_instance_requires_region_stamp() -> None:
         normalize.normalize_instance(raw)
 
 
-def test_normalize_common_does_not_crash_on_unrecognized_lifecycle_state() -> None:
+def test_normalize_instance_preserves_unrecognized_lifecycle_state() -> None:
     """OCI SDK coerces any enum value outside its known set to "UNKNOWN_ENUM_VALUE" before
     our code sees it. Plain str fields preserve that sentinel, not the original state."""
 
     raw = _stamp(
-        oci.core.models.Vcn(id="vcn1", compartment_id="c1", lifecycle_state="SOME_FUTURE_STATE_V2")
+        oci.core.models.Instance(id="i1", compartment_id="c1", lifecycle_state="SOME_FUTURE_STATE_V2")
     )
-    normalized = normalize.normalize_common(raw, source_type="vcn")
+    normalized = normalize.normalize_instance(raw)
     assert normalized.lifecycle_state == "UNKNOWN_ENUM_VALUE"
 
 
@@ -76,35 +76,6 @@ def test_normalize_vnic_requires_subnet_id() -> None:
     raw = _stamp(oci.core.models.Vnic(id="v1", compartment_id="c1"))
     with pytest.raises(ValueError, match="subnet_id"):
         normalize.normalize_vnic(raw)
-
-
-def test_normalize_volume_customer_managed_key_present() -> None:
-    """list_volumes/list_boot_volumes return the full type, so kms_key_id is authoritative --
-    absent means a definite False (no CMK), never None/unknown."""
-
-    with_key = _stamp(
-        oci.core.models.Volume(
-            id="vol1", compartment_id="c1", lifecycle_state="AVAILABLE", kms_key_id="key1"
-        )
-    )
-    without_key = _stamp(
-        oci.core.models.Volume(id="vol2", compartment_id="c1", lifecycle_state="AVAILABLE")
-    )
-    assert normalize.normalize_volume(with_key, source_type="block_volume").customer_managed_key_present is True
-    assert normalize.normalize_volume(without_key, source_type="block_volume").customer_managed_key_present is False
-
-
-def test_normalize_db_backup_status_variants() -> None:
-    enabled = oci.database.models.DatabaseSummary(
-        id="db1", db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True)
-    )
-    disabled = oci.database.models.DatabaseSummary(
-        id="db2", db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=False)
-    )
-    unknown = oci.database.models.DatabaseSummary(id="db3")
-    assert normalize.normalize_db_backup_status(enabled) == "enabled"
-    assert normalize.normalize_db_backup_status(disabled) == "disabled"
-    assert normalize.normalize_db_backup_status(unknown) == "unknown"
 
 
 def test_normalize_autonomous_database_posture_full_fields() -> None:
@@ -158,137 +129,6 @@ def test_normalize_autonomous_database_posture_public_endpoint_string_not_coerce
     assert posture["public_endpoint_hostname"] == "host.example.com"
     assert posture["public_endpoint_present"] is True
     assert isinstance(posture["public_endpoint_present"], bool)
-
-
-def test_normalize_db_system_detail_preserves_shape_version_redundancy() -> None:
-    raw = oci.database.models.DbSystemSummary(
-        id="sys1", shape="VM.Standard2.4", version="19.0.0.0", os_version="7.9",
-        node_count=2, disk_redundancy="HIGH", subnet_id="sub1", nsg_ids=["nsg1", "nsg2"],
-    )
-    detail = normalize.normalize_db_system_detail(raw)
-    assert detail == {
-        "shape": "VM.Standard2.4",
-        "version": "19.0.0.0",
-        "os_version": "7.9",
-        "node_count": 2,
-        "disk_redundancy": "HIGH",
-        "subnet_id": "sub1",
-        "network_security_group_ids": ("nsg1", "nsg2"),
-    }
-
-
-def test_normalize_database_detail_preserves_backup_and_patch_fields() -> None:
-    now = datetime.datetime(2026, 9, 8, 20, 0, 0, tzinfo=datetime.UTC)
-    raw = oci.database.models.DatabaseSummary(
-        id="db1", last_backup_timestamp=now, patch_version="OCT2025",
-        db_backup_config=oci.database.models.DbBackupConfig(auto_backup_enabled=True, recovery_window_in_days=14),
-        database_management_config=oci.database.models.DatabaseManagementConfig(
-            database_management_status="ENABLED"
-        ),
-    )
-    detail = normalize.normalize_database_detail(raw)
-    assert detail["last_backup_timestamp"] == "2026-09-08T20:00:00Z"
-    assert detail["last_failed_backup_timestamp"] is None
-    assert detail["patch_version"] == "OCT2025"
-    assert detail["recovery_window_days"] == 14
-    assert detail["database_management_status"] == "ENABLED"
-
-
-def test_normalize_database_detail_no_backup_config_is_null_not_error() -> None:
-    raw = oci.database.models.DatabaseSummary(id="db2")
-    detail = normalize.normalize_database_detail(raw)
-    assert detail["recovery_window_days"] is None
-    assert detail["database_management_status"] is None
-
-
-def test_normalize_data_guard_detail_preserves_role_and_protection_mode() -> None:
-    raw = oci.database.models.DataGuardAssociation(
-        id="dg1", database_id="db1", role="PRIMARY", peer_role="STANDBY",
-        protection_mode="MAXIMUM_AVAILABILITY", transport_type="SYNC",
-    )
-    detail = normalize.normalize_data_guard_detail(raw)
-    assert detail == {
-        "data_guard_role": "PRIMARY",
-        "data_guard_peer_role": "STANDBY",
-        "data_guard_protection_mode": "MAXIMUM_AVAILABILITY",
-        "data_guard_transport_type": "SYNC",
-    }
-
-
-def test_normalize_route_table_preserves_route_rules() -> None:
-    raw = _stamp(
-        oci.core.models.RouteTable(
-            id="rt1", compartment_id="c1",
-            route_rules=[
-                oci.core.models.RouteRule(
-                    destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
-                    network_entity_id="ocid1.internetgateway.oc1..igw1", description="default route",
-                )
-            ],
-        )
-    )
-    normalized = normalize.normalize_route_table(raw)
-    assert len(normalized.route_rules) == 1
-    rule = normalized.route_rules[0]
-    assert rule.destination == "0.0.0.0/0"
-    assert rule.network_entity_id == "ocid1.internetgateway.oc1..igw1"
-    assert rule.description == "default route"
-
-
-def test_normalize_security_list_preserves_ingress_and_egress_rules() -> None:
-    raw = _stamp(
-        oci.core.models.SecurityList(
-            id="sl1", compartment_id="c1",
-            ingress_security_rules=[
-                oci.core.models.IngressSecurityRule(
-                    protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK", is_stateless=False,
-                    tcp_options=oci.core.models.TcpOptions(
-                        destination_port_range=oci.core.models.PortRange(min=22, max=22)
-                    ),
-                )
-            ],
-            egress_security_rules=[
-                oci.core.models.EgressSecurityRule(
-                    protocol="all", destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
-                )
-            ],
-        )
-    )
-    normalized = normalize.normalize_security_list(raw)
-    assert len(normalized.ingress_rules) == 1
-    assert normalized.ingress_rules[0].direction == "ingress"
-    assert normalized.ingress_rules[0].source == "0.0.0.0/0"
-    assert normalized.ingress_rules[0].tcp_port_range == normalize.PortRange(min=22, max=22)
-    assert len(normalized.egress_rules) == 1
-    assert normalized.egress_rules[0].direction == "egress"
-    assert normalized.egress_rules[0].destination == "0.0.0.0/0"
-
-
-def test_normalize_network_security_group_preserves_joined_security_rules() -> None:
-    raw = _stamp(oci.core.models.NetworkSecurityGroup(id="nsg1", compartment_id="c1"))
-    rules = [
-        oci.core.models.SecurityRule(
-            direction="INGRESS", protocol="6", source="203.0.113.0/24", source_type="CIDR_BLOCK",
-            tcp_options=oci.core.models.TcpOptions(
-                destination_port_range=oci.core.models.PortRange(min=3389, max=3389)
-            ),
-        )
-    ]
-    normalized = normalize.normalize_network_security_group(raw, security_rules=rules)
-    assert len(normalized.security_rules) == 1
-    rule = normalized.security_rules[0]
-    assert rule.direction == "ingress"  # normalized to lowercase
-    assert rule.source == "203.0.113.0/24"
-    assert rule.tcp_port_range == normalize.PortRange(min=3389, max=3389)
-
-
-def test_normalize_internet_gateway_preserves_enabled_and_vcn() -> None:
-    raw = _stamp(
-        oci.core.models.InternetGateway(id="igw1", compartment_id="c1", is_enabled=True, vcn_id="vcn1")
-    )
-    normalized = normalize.normalize_internet_gateway(raw)
-    assert normalized.is_enabled is True
-    assert normalized.vcn_id == "vcn1"
 
 
 class TestClassifyWindows:
@@ -367,77 +207,3 @@ def test_resolve_vnic_addresses_aggregates_private_and_public() -> None:
     assert unresolved == []
 
 
-def test_resolve_base_database_relationship_chain() -> None:
-    raw_system = oci.database.models.DbSystemSummary(id="sys1", compartment_id="c1", shape="VM.Standard2.1")
-    raw_home = oci.database.models.DbHomeSummary(id="home1", compartment_id="c1", db_system_id="sys1")
-    raw_db = oci.database.models.DatabaseSummary(id="db1", compartment_id="c1", db_home_id="home1")
-    raw_backup = oci.database.models.BackupSummary(id="bkp1", compartment_id="c1", database_id="db1")
-    raw_dg = oci.database.models.DataGuardAssociation(id="dg1", database_id="db1")
-
-    for r in (raw_system, raw_home, raw_db, raw_backup):
-        _stamp(r)
-    _stamp(raw_dg)
-
-    db_system = normalize.normalize_database_resource(raw_system, database_type="base_db_system", source_type="db_system")
-    db_home = normalize.normalize_database_resource(raw_home, database_type="db_home", source_type="db_home")
-    database = normalize.normalize_database_resource(raw_db, database_type="base_database", source_type="database")
-    backup = normalize.normalize_database_resource(raw_backup, database_type="backup", source_type="backup")
-    dg = normalize.normalize_database_resource(
-        raw_dg, database_type="data_guard", source_type="data_guard_association", compartment_id="unknown-until-resolved"
-    )
-
-    (
-        db_systems, db_homes, databases, backups, dgs, unresolved
-    ) = relationships.resolve_base_database_relationships(
-        raw_db_systems=[raw_system], db_systems=[db_system],
-        raw_db_homes=[raw_home], db_homes=[db_home],
-        raw_databases=[raw_db], databases=[database],
-        raw_backups=[raw_backup], backups=[backup],
-        raw_data_guard_associations=[raw_dg], data_guard_associations=[dg],
-    )
-
-    assert unresolved == []
-    # db_home link is bidirectional: parent db_system and child database.
-    assert set(db_homes[0].related_resource_ids) == {"sys1", "db1"}
-    assert set(db_systems[0].related_resource_ids) == {"home1"}
-    assert set(databases[0].related_resource_ids) == {"home1", "bkp1", "dg1"}
-    assert backups[0].related_resource_ids == ("db1",)
-    # compartment_id backfilled from parent database.
-    assert dgs[0].compartment_id == "c1"
-    assert dgs[0].related_resource_ids == ("db1",)
-
-
-def test_resolve_base_database_relationship_records_unresolved_when_parent_missing() -> None:
-    raw_backup = oci.database.models.BackupSummary(id="bkp1", compartment_id="c1", database_id="ghost-db")
-    _stamp(raw_backup)
-    backup = normalize.normalize_database_resource(raw_backup, database_type="backup", source_type="backup")
-
-    _, _, _, backups, _, unresolved = relationships.resolve_base_database_relationships(
-        raw_db_systems=[], db_systems=[],
-        raw_db_homes=[], db_homes=[],
-        raw_databases=[], databases=[],
-        raw_backups=[raw_backup], backups=[backup],
-        raw_data_guard_associations=[], data_guard_associations=[],
-    )
-    assert len(unresolved) == 1
-    assert unresolved[0].target_id == "ghost-db"
-    # Raw OCID reference is preserved even when unresolved.
-    assert backups[0].related_resource_ids == ("ghost-db",)
-
-
-def test_resolve_autonomous_database_relationships_folds_peers() -> None:
-    raw_adb = _stamp(oci.database.models.AutonomousDatabaseSummary(id="adb1", compartment_id="c1"))
-    adb = normalize.normalize_database_resource(raw_adb, database_type="autonomous_database", source_type="autonomous_database")
-
-    peer = oci.database.models.AutonomousDatabasePeerSummary(id="adb2", region="us-phoenix-1")
-
-    adbs, backups, dgs, unresolved = relationships.resolve_autonomous_database_relationships(
-        autonomous_databases=[adb],
-        raw_autonomous_database_backups=[],
-        autonomous_database_backups=[],
-        raw_autonomous_database_dataguard_associations=[],
-        autonomous_database_dataguard_associations=[],
-        autonomous_database_peers_by_adb_id={"adb1": [peer]},
-    )
-    assert unresolved == []
-    assert adbs[0].related_resource_ids == ("adb2",)

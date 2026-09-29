@@ -1,9 +1,10 @@
-"""Drata Custom Connection upsert client.
+"""Drata Custom Connection upsert/delete client.
 
-POSTs to ``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
-200/201 both mean success (upsert by each record's own ``id``). Failures never raise --
-returned as ``DeliveryResult``, with auth/validation non-retryable and 429/5xx retried
-with backoff.
+Upsert POSTs to ``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
+200/201 both mean success (upsert by each record's own ``id``). Delete issues one
+``DELETE .../records/{recordId}`` per id (204 or 404 both mean success -- already gone is
+the goal). Failures never raise -- returned as ``DeliveryResult``, with auth/validation
+non-retryable and 429/5xx retried with backoff.
 """
 
 from __future__ import annotations
@@ -11,9 +12,11 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import email.utils
+import json
 import logging
 import random
 import time
+import urllib.parse
 from typing import Any
 
 import requests
@@ -113,11 +116,14 @@ def upsert_records(
     base_delay_seconds: float = 1.0,
     max_delay_seconds: float = 30.0,
     timeout_seconds: float = 30.0,
+    max_payload_bytes: int | None = None,
     session: requests.Session | None = None,
 ) -> list[DeliveryResult]:
-    """Upserts ``records`` in batches of ``_BATCH_SIZE``, POSTing ``{"data": [...]}`` per
-    batch. Returns one DeliveryResult per batch, in order; a failed batch doesn't stop
-    the rest."""
+    """Upserts ``records`` in batches of up to ``_BATCH_SIZE``, POSTing ``{"data": [...]}``
+    per batch. When ``max_payload_bytes`` is set, a batch whose serialized body would
+    exceed it is halved repeatedly until each piece fits (or is down to one record, which
+    is sent regardless -- a single oversized record isn't ours to truncate). Returns one
+    DeliveryResult per batch actually sent, in order; a failed batch doesn't stop the rest."""
 
     if not records:
         return []
@@ -128,7 +134,7 @@ def upsert_records(
         f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
     )
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    batches = [records[i : i + _BATCH_SIZE] for i in range(0, len(records), _BATCH_SIZE)]
+    batches = _split_batches_by_size(records, max_payload_bytes=max_payload_bytes)
     owns_session = session is None
     http = session if session is not None else requests.Session()
 
@@ -144,6 +150,130 @@ def upsert_records(
     finally:
         if owns_session:
             http.close()
+
+
+def _batch_body_size(batch: list[dict[str, Any]]) -> int:
+    return len(json.dumps({"data": batch}, separators=(",", ":")).encode("utf-8"))
+
+
+def _shrink_batch_to_fit(
+    batch: list[dict[str, Any]], *, max_payload_bytes: int
+) -> list[list[dict[str, Any]]]:
+    if len(batch) <= 1 or _batch_body_size(batch) <= max_payload_bytes:
+        return [batch]
+    mid = len(batch) // 2
+    return (
+        _shrink_batch_to_fit(batch[:mid], max_payload_bytes=max_payload_bytes)
+        + _shrink_batch_to_fit(batch[mid:], max_payload_bytes=max_payload_bytes)
+    )
+
+
+def _split_batches_by_size(
+    records: list[dict[str, Any]], *, max_payload_bytes: int | None
+) -> list[list[dict[str, Any]]]:
+    batches = [records[i : i + _BATCH_SIZE] for i in range(0, len(records), _BATCH_SIZE)]
+    if max_payload_bytes is None:
+        return batches
+    return [
+        piece
+        for batch in batches
+        for piece in _shrink_batch_to_fit(batch, max_payload_bytes=max_payload_bytes)
+    ]
+
+
+def delete_records(
+    drata_config: DrataConfig,
+    record_ids: list[str],
+    *,
+    max_attempts: int = 5,
+    base_delay_seconds: float = 1.0,
+    max_delay_seconds: float = 30.0,
+    timeout_seconds: float = 30.0,
+    session: requests.Session | None = None,
+) -> list[DeliveryResult]:
+    """Deletes each id in ``record_ids`` via one ``DELETE .../records/{recordId}`` call
+    per id -- best-effort cleanup of records whose underlying OCI resource is gone.
+    A failed delete doesn't stop the rest, and stale evidence lingering one more cycle
+    is far cheaper than a bad delete: callers should only pass ids they're certain are
+    gone (see transform.aggregate.FlatRecordsResult.excluded_ids)."""
+
+    if not record_ids:
+        return []
+
+    token = drata_config.api_token_secret_ref.resolve()
+    base_url = (
+        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
+        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    owns_session = session is None
+    http = session if session is not None else requests.Session()
+
+    try:
+        return [
+            _delete_with_retry(
+                http, f"{base_url}/{urllib.parse.quote(record_id, safe='')}", headers,
+                max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
+                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
+            )
+            for record_id in record_ids
+        ]
+    finally:
+        if owns_session:
+            http.close()
+
+
+def _delete_with_retry(
+    http: requests.Session,
+    url: str,
+    headers: dict[str, str],
+    *,
+    max_attempts: int,
+    base_delay_seconds: float,
+    max_delay_seconds: float,
+    timeout_seconds: float,
+) -> DeliveryResult:
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            response = http.delete(url, headers=headers, timeout=timeout_seconds)
+        except requests.RequestException as exc:
+            if attempt >= max_attempts:
+                return DeliveryResult(
+                    uploaded=False, created=None, status_code=None, attempts=attempt,
+                    error_class="transport", error_message=str(exc),
+                )
+            _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt)
+            continue
+
+        # 404 means the goal state (record absent) already holds -- e.g. a retry of a
+        # delete that landed but whose response was lost. Treat it as success, not error.
+        if response.status_code in (204, 404):
+            return DeliveryResult(
+                uploaded=True, created=None, status_code=response.status_code, attempts=attempt,
+                request_id=_request_id(response),
+            )
+
+        if response.status_code in _AUTH_STATUS:
+            return DeliveryResult(
+                uploaded=False, created=None, status_code=response.status_code, attempts=attempt,
+                error_class="auth", error_message=_safe_body(response), request_id=_request_id(response),
+            )
+
+        if response.status_code in _RETRYABLE_STATUS and attempt < max_attempts:
+            retry_after = _retry_after_seconds(response, max_delay_seconds=max_delay_seconds)
+            if retry_after is not None:
+                time.sleep(retry_after)
+            else:
+                _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt)
+            continue
+
+        return DeliveryResult(
+            uploaded=False, created=None, status_code=response.status_code, attempts=attempt,
+            error_class="unexpected" if response.status_code not in _VALIDATION_STATUS else "validation",
+            error_message=_safe_body(response), request_id=_request_id(response),
+        )
 
 
 def _upsert_with_retry(

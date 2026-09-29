@@ -16,8 +16,8 @@ def _response(data, headers=None):
 
 def _services(**overrides) -> OciServicesConfig:
     base = dict(
-        compute=False, network_exposure=False, block_storage=False, base_database=False,
-        autonomous_database=False, exadata_detection=False, site_to_site_vpn=False,
+        compute=False, network_exposure=False,  
+        autonomous_database=False,  
         identity=False, object_storage=False, cloud_guard=False, monitoring=False,
         load_balancer=False, waf=False, kms_vault=False,
     )

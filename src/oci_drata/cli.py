@@ -1,8 +1,7 @@
 """CLI entry point: ``oci-drata [--config PATH] [--dry-run]``.
 
-Never accepts secrets as CLI arguments. Independent collectors run
-concurrently (bounded by ``runtime.maxConcurrency``); Exadata detection
-runs after, since it consumes the database collectors' output.
+Never accepts secrets as CLI arguments. Independent collectors run concurrently
+(bounded by ``runtime.maxConcurrency``).
 """
 
 from __future__ import annotations
@@ -26,27 +25,23 @@ from oci_drata.collection.database_autonomous import (
     AutonomousDatabaseCollectionResult,
     collect_autonomous_database,
 )
-from oci_drata.collection.database_base import DatabaseBaseCollectionResult, collect_database_base
 from oci_drata.collection.discovery import DiscoveryResult, discover
-from oci_drata.collection.exadata_detection import detect_exadata
 from oci_drata.collection.identity import IdentityCollectionResult, collect_identity
 from oci_drata.collection.kms_vault import KmsVaultCollectionResult, collect_kms_vault
 from oci_drata.collection.load_balancer import LoadBalancerCollectionResult, collect_load_balancer
 from oci_drata.collection.monitoring import MonitoringCollectionResult, collect_monitoring
 from oci_drata.collection.networking import NetworkingCollectionResult, collect_networking
 from oci_drata.collection.object_storage import ObjectStorageCollectionResult, collect_object_storage
-from oci_drata.collection.storage import StorageCollectionResult, collect_storage
-from oci_drata.collection.vpn import VpnCollectionResult, collect_vpn
 from oci_drata.collection.waf import WafCollectionResult, collect_waf
 from oci_drata.config import AppConfig, ConfigError, load_config, redact_config_for_display
-from oci_drata.delivery.drata import upsert_record, upsert_records
+from oci_drata.delivery.drata import delete_records, upsert_records
 from oci_drata.logging import configure_logging
 from oci_drata.oci_auth import AuthError, TenancySigner, build_signer
 from oci_drata.pagination import OperationResult, RetryPolicy
-from oci_drata.transform.aggregate import build_flat_records, build_snapshot
-from oci_drata.validation.completeness import decide_completeness
-from oci_drata.validation.schema import load_flat_schema, load_schema, validate_record
-from oci_drata.validation.size import check_payload_size, serialize_deterministic
+from oci_drata.transform import normalize
+from oci_drata.transform.aggregate import EVIDENCE_TYPE_REQUIRED_DOMAINS, build_flat_records
+from oci_drata.validation.schema import load_flat_schema, validate_record
+from oci_drata.validation.size import serialize_deterministic
 
 logger = logging.getLogger(__name__)
 
@@ -170,11 +165,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--test",
         action="store_true",
         help=f"sample mode: stop collecting after {TEST_MODE_TIME_BUDGET_SECONDS}s instead of "
-        "scanning the whole tenancy, keeping whatever real data was gathered by then. Never "
-        "uploads the original/nested snapshot (a partial scan can't honestly claim "
-        "tenancy-wide completeness), but the flat-record path uploads normally if "
-        "runtime.dryRun is false -- real evidence, for building/testing a Custom Test "
-        "against live data.",
+        "scanning the whole tenancy, keeping whatever real data was gathered by then. Records "
+        "still upload normally if runtime.dryRun is false (each record is standalone evidence, "
+        "honest at any sample size) -- for building/testing a Custom Test against live data. "
+        "Stale-record cleanup is skipped in this mode, since a sampled run's absences aren't "
+        "confirmed deletions.",
     )
     return parser.parse_args(argv)
 
@@ -183,11 +178,8 @@ def _run_independent_collectors(
     signer: TenancySigner, discovery: DiscoveryResult, app_config: AppConfig, retry_policy: RetryPolicy
 ) -> tuple[
     ComputeCollectionResult,
-    StorageCollectionResult,
     NetworkingCollectionResult,
-    DatabaseBaseCollectionResult,
     AutonomousDatabaseCollectionResult,
-    VpnCollectionResult,
     IdentityCollectionResult,
     ObjectStorageCollectionResult,
     CloudGuardCollectionResult,
@@ -199,13 +191,10 @@ def _run_independent_collectors(
     services = app_config.oci.services
     jobs: dict[str, Callable[[], Any]] = {
         "compute": lambda: collect_compute(signer, discovery, services, retry_policy=retry_policy),
-        "storage": lambda: collect_storage(signer, discovery, services, retry_policy=retry_policy),
         "networking": lambda: collect_networking(signer, discovery, services, retry_policy=retry_policy),
-        "database_base": lambda: collect_database_base(signer, discovery, services, retry_policy=retry_policy),
         "autonomous_database": lambda: collect_autonomous_database(
             signer, discovery, services, retry_policy=retry_policy
         ),
-        "vpn": lambda: collect_vpn(signer, discovery, services, retry_policy=retry_policy),
         "identity": lambda: collect_identity(signer, discovery, services, retry_policy=retry_policy),
         "object_storage": lambda: collect_object_storage(
             signer, discovery, services, retry_policy=retry_policy
@@ -223,11 +212,8 @@ def _run_independent_collectors(
 
     return (
         results["compute"],
-        results["storage"],
         results["networking"],
-        results["database_base"],
         results["autonomous_database"],
-        results["vpn"],
         results["identity"],
         results["object_storage"],
         results["cloud_guard"],
@@ -241,12 +227,9 @@ def _run_independent_collectors(
 @dataclasses.dataclass(frozen=True)
 class RunResult:
     exit_code: int
-    record: dict[str, Any] | None
-    snapshot_status: str | None
     uploaded: bool
     report: dict[str, Any]
-    # Populated only when drata.flatResourceId is configured; None otherwise.
-    flat_records: list[dict[str, Any]] | None = None
+    records: list[dict[str, Any]]
 
 
 def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> RunResult:
@@ -272,48 +255,24 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
 
     discovery = discover(signer, app_config, retry_policy=retry_policy)
     (
-        compute_result, storage_result, networking_result, database_base_result,
-        autonomous_result, vpn_result, identity_result, object_storage_result,
-        cloud_guard_result, monitoring_result, load_balancer_result, waf_result,
-        kms_vault_result,
+        compute_result, networking_result, autonomous_result, identity_result,
+        object_storage_result, cloud_guard_result, monitoring_result,
+        load_balancer_result, waf_result, kms_vault_result,
     ) = _run_independent_collectors(signer, discovery, app_config, retry_policy)
-    exadata_result = detect_exadata(
-        signer, discovery, app_config.oci.services,
-        database_base_result.db_systems, autonomous_result.autonomous_databases,
-        retry_policy=retry_policy,
-    )
 
     completed_at = datetime.datetime.now(tz=datetime.UTC)
-    aggregate = build_snapshot(
-        app_config,
-        discovery=discovery, compute=compute_result, storage=storage_result,
-        networking=networking_result, database_base=database_base_result,
-        autonomous_database=autonomous_result, exadata=exadata_result, vpn=vpn_result,
-        started_at=started_at, completed_at=completed_at,
+    flat_result = build_flat_records(
+        decisions=app_config.decisions, discovery=discovery, compute=compute_result,
+        networking=networking_result, autonomous_database=autonomous_result,
+        identity=identity_result, object_storage=object_storage_result,
+        cloud_guard=cloud_guard_result, monitoring=monitoring_result,
+        load_balancer=load_balancer_result, waf=waf_result, kms_vault=kms_vault_result,
+        completed_at=completed_at,
     )
 
-    schema_result = validate_record(aggregate.record, load_schema())
-    size_result = check_payload_size(aggregate.record, app_config.runtime.max_payload_bytes)
-    decision = decide_completeness(
-        discovery_complete=aggregate.discovery_complete,
-        unready_regions=discovery.unready_regions,
-        domain_complete=aggregate.domain_complete,
-        exadata_detected=aggregate.exadata_detected,
-        unresolved_relationship_count=aggregate.unresolved_relationship_count,
-        schema_valid=schema_result.valid,
-        within_payload_budget=size_result.within_budget,
-    )
-    aggregate.record["snapshotStatus"] = decision.snapshot_status
-
-    # aggregate.record["manifest"]["operations"] only covers the 7 collectors
-    # build_snapshot() consumes; this report instead uses all 13 that
-    # _run_independent_collectors() invokes, or accessSummary/operationsFailed/totalItems
-    # below would silently miss opt-in services.
     all_operations: list[OperationResult] = [
         *discovery.operations,
-        *compute_result.operations, *storage_result.operations, *networking_result.operations,
-        *database_base_result.operations, *autonomous_result.operations, *vpn_result.operations,
-        *exadata_result.operations,
+        *compute_result.operations, *networking_result.operations, *autonomous_result.operations,
         *identity_result.operations, *object_storage_result.operations,
         *cloud_guard_result.operations, *monitoring_result.operations,
         *load_balancer_result.operations, *waf_result.operations, *kms_vault_result.operations,
@@ -332,209 +291,160 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
                 "compartmentsWithRealData": len(access_summary["compartmentsWithRealData"]),
             },
         )
-    report = {
+
+    # domainComplete=true doesn't distinguish a config-disabled service
+    # (services.identity: false) from one that ran and found zero resources.
+    # domainSkipped answers that, so recordCount:0 isn't a mystery (README §7).
+    domain_skipped = {
+        "compute": _domain_all_skipped(compute_result.operations),
+        "networking": _domain_all_skipped(networking_result.operations),
+        "autonomousDatabase": _domain_all_skipped(autonomous_result.operations),
+        "identity": _domain_all_skipped(identity_result.operations),
+        "objectStorage": _domain_all_skipped(object_storage_result.operations),
+        "cloudGuard": _domain_all_skipped(cloud_guard_result.operations),
+        "monitoring": _domain_all_skipped(monitoring_result.operations),
+        "loadBalancer": _domain_all_skipped(load_balancer_result.operations),
+        "waf": _domain_all_skipped(waf_result.operations),
+        "kmsVault": _domain_all_skipped(kms_vault_result.operations),
+    }
+
+    # Per-domain gate, not tenancy-wide all-or-nothing: a domain that failed to collect
+    # this run withholds only its own evidenceTypes (see EVIDENCE_TYPE_REQUIRED_DOMAINS),
+    # so one bad compartment/region doesn't zero out every other domain's delivery. A
+    # dangling vnic/storage join only affects instance evidence, so it's folded into
+    # compute's own completeness rather than a separate blanket gate. Discovery failing
+    # is more fundamental than any one domain -- nothing is trusted deliverable then.
+    effective_domain_complete = dict(flat_result.domain_complete)
+    if flat_result.unresolved_relationship_count:
+        effective_domain_complete["compute"] = False
+    deliverable_domains = (
+        {d for d, ok in effective_domain_complete.items() if ok} if flat_result.discovery_complete else set()
+    )
+    domains_withheld = sorted(set(effective_domain_complete) - deliverable_domains)
+
+    flat_schema = load_flat_schema()
+    deliverable_records: list[dict[str, Any]] = []
+    schema_invalid_count = 0
+    records_withheld_count = 0
+    for record in flat_result.records:
+        if not validate_record(record, flat_schema).valid:
+            schema_invalid_count += 1
+            continue
+        required_domains = EVIDENCE_TYPE_REQUIRED_DOMAINS[record["evidenceType"]]
+        if all(domain in deliverable_domains for domain in required_domains):
+            deliverable_records.append(record)
+        else:
+            records_withheld_count += 1
+    schema_valid = schema_invalid_count == 0
+
+    if not schema_valid:
+        logger.error("flat-record schema validation failed", extra={"invalidCount": schema_invalid_count})
+    if flat_result.records == [] and not all(domain_skipped.values()):
+        logger.warning(
+            "collected zero records from at least one enabled domain -- check "
+            "domainSkipped/excludedByLifecycle in the report before assuming a collector "
+            "bug: this can legitimately mean every resource in scope is "
+            "terminated/deleted, or the configured compartment scope genuinely has "
+            "nothing of these types (see accessSummary for where this API user's "
+            "policy actually has access).",
+            extra={"domainSkipped": domain_skipped, "excludedByLifecycle": flat_result.excluded_counts},
+        )
+
+    report: dict[str, Any] = {
         "deployment": app_config.deployment.name,
-        "startedAt": aggregate.record["manifest"]["startedAt"],
-        "completedAt": aggregate.record["manifest"]["completedAt"],
+        "startedAt": normalize.normalize_timestamp(started_at),
+        "completedAt": normalize.normalize_timestamp(completed_at),
         "operationsAttempted": len(all_operations),
         "operationsSucceeded": sum(1 for o in all_operations if o.status == "success"),
         "operationsFailed": sum(1 for o in all_operations if o.status == "failed"),
         "operationsSkipped": sum(1 for o in all_operations if o.status == "skipped"),
         "totalPages": sum(o.page_count for o in all_operations),
         "totalItems": sum(o.item_count for o in all_operations),
-        "unresolvedRelationships": aggregate.unresolved_relationship_count,
-        "exadataDetected": aggregate.exadata_detected,
-        "schemaValid": schema_result.valid,
-        "schemaErrors": [e.to_dict() for e in schema_result.errors],
-        "payloadBytes": size_result.byte_size,
-        "payloadBudgetBytes": size_result.max_bytes,
-        "withinPayloadBudget": size_result.within_budget,
-        "payloadNearBudget": size_result.near_budget,
         "accessSummary": access_summary,
-        "snapshotStatus": decision.snapshot_status,
-        "completenessReasons": list(decision.reasons),
         "dryRun": dry_run,
-    }
-
-    if not schema_result.valid:
-        logger.error("schema validation failed", extra={"errors": report["schemaErrors"]})
-
-    if size_result.near_budget:
-        # Early warning before the hard payload ceiling blocks upload outright -- see
-        # PayloadSizeResult's docstring for the migration path.
-        logger.warning(
-            "payload approaching size budget",
-            extra={"payloadBytes": size_result.byte_size, "payloadBudgetBytes": size_result.max_bytes},
-        )
-
-    uploaded = False
-    if dry_run:
-        report["uploadDecision"] = "skipped_dry_run"
-        logger.info("dry run: skipping Drata upload", extra={"snapshotStatus": decision.snapshot_status})
-    elif test_mode:
-        # decision.should_upload can't tell a sampled run from a complete one, so
-        # uploading the nested snapshot here would falsely claim tenancy-wide coverage.
-        # Flat records are standalone per-resource evidence, honest at any sample size,
-        # so they still upload.
-        report["uploadDecision"] = "skipped_test_mode"
-        logger.info(
-            "test mode: skipping the nested-path upload (sampled compartments, not "
-            "tenancy-complete) -- flat records are unaffected",
-            extra={"snapshotStatus": decision.snapshot_status},
-        )
-    elif not decision.should_upload:
-        report["uploadDecision"] = "blocked"
-        logger.warning(
-            "upload blocked: snapshot is not complete",
-            extra={"snapshotStatus": decision.snapshot_status, "reasons": decision.reasons},
-        )
-    else:
-        delivery_result = upsert_record(app_config.drata, aggregate.record)
-        uploaded = delivery_result.uploaded
-        report["uploadDecision"] = "uploaded" if uploaded else "delivery_failed"
-        report["deliveryErrorClass"] = delivery_result.error_class
-        if uploaded:
-            logger.info(
-                "drata upload succeeded",
-                # "created" is a reserved LogRecord attribute (record creation timestamp) --
-                # extra={"created": ...} raises KeyError in logging internals whenever this
-                # log call is actually enabled, so it's named recordCreated here instead.
-                extra={"recordCreated": delivery_result.created, "attempts": delivery_result.attempts},
-            )
-        else:
-            logger.error(
-                "drata upload failed; last known-good record left untouched",
-                extra={"errorClass": delivery_result.error_class, "attempts": delivery_result.attempts},
-            )
-
-    flat_records: list[dict[str, Any]] | None = None
-    if app_config.drata.flat_resource_id is not None:
-        flat_records = _run_flat_records(
-            app_config, flat_resource_id=app_config.drata.flat_resource_id,
-            discovery=discovery, compute=compute_result,
-            networking=networking_result, autonomous_database=autonomous_result,
-            identity=identity_result, object_storage=object_storage_result,
-            cloud_guard=cloud_guard_result, monitoring=monitoring_result,
-            load_balancer=load_balancer_result, waf=waf_result,
-            kms_vault=kms_vault_result,
-            completed_at=completed_at,
-            dry_run=dry_run, report=report,
-        )
-
-    exit_code = EXIT_OK if (dry_run and decision.snapshot_status != "failed") or uploaded else EXIT_BLOCKED
-    return RunResult(
-        exit_code=exit_code,
-        record=aggregate.record,
-        snapshot_status=decision.snapshot_status,
-        uploaded=uploaded,
-        report=report,
-        flat_records=flat_records,
-    )
-
-
-def _run_flat_records(
-    app_config: AppConfig,
-    *,
-    flat_resource_id: int,
-    discovery: DiscoveryResult,
-    compute: ComputeCollectionResult,
-    networking: NetworkingCollectionResult,
-    autonomous_database: AutonomousDatabaseCollectionResult,
-    identity: IdentityCollectionResult,
-    object_storage: ObjectStorageCollectionResult,
-    cloud_guard: CloudGuardCollectionResult,
-    monitoring: MonitoringCollectionResult,
-    load_balancer: LoadBalancerCollectionResult,
-    waf: WafCollectionResult,
-    kms_vault: KmsVaultCollectionResult,
-    completed_at: datetime.datetime,
-    dry_run: bool,
-    report: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Builds and (outside dry-run) uploads flat records to drata.flatResourceId,
-    additive to the nested path above. Mutates ``report`` with a "flatRecords" key;
-    never affects the nested path's own uploadDecision/exit_code."""
-
-    flat_result = build_flat_records(
-        decisions=app_config.decisions, discovery=discovery, compute=compute,
-        autonomous_database=autonomous_database, identity=identity,
-        object_storage=object_storage, cloud_guard=cloud_guard, monitoring=monitoring,
-        load_balancer=load_balancer, waf=waf, kms_vault=kms_vault,
-        networking=networking, completed_at=completed_at,
-    )
-    flat_schema = load_flat_schema()
-    flat_schema_valid = all(validate_record(r, flat_schema).valid for r in flat_result.records)
-    flat_complete = (
-        flat_result.discovery_complete
-        and all(flat_result.domain_complete.values())
-        and flat_result.unresolved_relationship_count == 0
-    )
-
-    # domainComplete=true doesn't distinguish a config-disabled service
-    # (services.identity: false) from one that ran and found zero resources.
-    # domainSkipped answers that, so recordCount:0 isn't a mystery (README §7).
-    domain_skipped = {
-        "compute": _domain_all_skipped(compute.operations),
-        "networking": _domain_all_skipped(networking.operations),
-        "autonomousDatabase": _domain_all_skipped(autonomous_database.operations),
-        "identity": _domain_all_skipped(identity.operations),
-        "objectStorage": _domain_all_skipped(object_storage.operations),
-        "cloudGuard": _domain_all_skipped(cloud_guard.operations),
-        "monitoring": _domain_all_skipped(monitoring.operations),
-        "loadBalancer": _domain_all_skipped(load_balancer.operations),
-        "waf": _domain_all_skipped(waf.operations),
-        "kmsVault": _domain_all_skipped(kms_vault.operations),
-    }
-
-    flat_report: dict[str, Any] = {
         "recordCount": len(flat_result.records),
-        "schemaValid": flat_schema_valid,
+        "recordCountDelivered": len(deliverable_records),
+        "recordCountWithheld": records_withheld_count,
+        "totalRecordBytes": sum(len(serialize_deterministic(r)) for r in flat_result.records),
+        "schemaValid": schema_valid,
+        "schemaInvalidCount": schema_invalid_count,
         "domainComplete": flat_result.domain_complete,
+        "domainsWithheld": domains_withheld,
         "domainSkipped": domain_skipped,
         "discoveryComplete": flat_result.discovery_complete,
         "excludedByLifecycle": flat_result.excluded_counts,
         "unresolvedRelationships": flat_result.unresolved_relationship_count,
     }
-    if not flat_schema_valid:
-        logger.error("flat-record schema validation failed")
-    if flat_result.records == [] and not all(domain_skipped.values()):
-        logger.warning(
-            "flat-record path collected zero records from at least one enabled "
-            "domain -- check domainSkipped/excludedByLifecycle in the report before "
-            "assuming a collector bug: this can legitimately mean every resource in "
-            "scope is terminated/deleted, or the configured compartment scope "
-            "genuinely has nothing of these types (see accessSummary for where this "
-            "API user's policy actually has access).",
-            extra={"domainSkipped": domain_skipped, "excludedByLifecycle": flat_result.excluded_counts},
-        )
 
+    uploaded = False
     if dry_run:
-        flat_report["uploadDecision"] = "skipped_dry_run"
-    elif not (flat_schema_valid and flat_complete):
+        report["uploadDecision"] = "skipped_dry_run"
+        logger.info("dry run: skipping Drata upload")
+    elif not deliverable_records:
+        report["uploadDecision"] = "blocked"
         reasons = []
-        if not flat_schema_valid:
+        if not schema_valid:
             reasons.append("schema validation failed")
-        if not (flat_result.discovery_complete and all(flat_result.domain_complete.values())):
-            reasons.append("compute/networking collection incomplete")
-        if flat_result.unresolved_relationship_count:
-            reasons.append("unresolved relationships")
-        flat_report["uploadDecision"] = "blocked"
-        flat_report["blockedReasons"] = reasons
-        logger.warning("flat-record upload blocked", extra={"reasons": reasons})
+        if not flat_result.discovery_complete:
+            reasons.append("discovery incomplete")
+        elif domains_withheld:
+            reasons.append(f"no domain ready to deliver this run: {domains_withheld}")
+        report["blockedReasons"] = reasons
+        logger.warning("upload blocked: nothing deliverable this run", extra={"reasons": reasons})
     else:
-        flat_drata_config = dataclasses.replace(app_config.drata, resource_id=flat_resource_id)
-        delivery_results = upsert_records(flat_drata_config, flat_result.records)
-        flat_uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
-        flat_report["uploadDecision"] = "uploaded" if flat_uploaded else "delivery_failed"
-        flat_report["batchesAttempted"] = len(delivery_results)
-        flat_report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
-        if flat_uploaded:
-            logger.info("flat-record upload succeeded", extra={"records": len(flat_result.records)})
+        delivery_results = upsert_records(
+            app_config.drata, deliverable_records, max_payload_bytes=app_config.runtime.max_payload_bytes
+        )
+        uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
+        report["batchesAttempted"] = len(delivery_results)
+        report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
+        error_classes = sorted({r.error_class for r in delivery_results if r.error_class})
+        if error_classes:
+            report["deliveryErrorClasses"] = error_classes
+        if not uploaded:
+            report["uploadDecision"] = "delivery_failed"
+            logger.error("upload failed", extra={"errorClasses": error_classes})
         else:
-            logger.error("flat-record upload failed", extra={"records": len(flat_result.records)})
+            report["uploadDecision"] = "uploaded_partial" if domains_withheld else "uploaded"
+            logger.info(
+                "upload succeeded",
+                extra={"records": len(deliverable_records), "domainsWithheld": domains_withheld},
+            )
+            if domains_withheld:
+                logger.warning(
+                    "some domains withheld this run -- their prior records were left "
+                    "untouched, not deleted or overwritten",
+                    extra={"domainsWithheld": domains_withheld},
+                )
 
-    report["flatRecords"] = flat_report
-    return flat_result.records
+            # Cleanup only runs for domains that actually delivered this run -- deleting
+            # a stale id from a withheld domain would be a guess, not a confirmed absence.
+            # Skipped in --test: a sampled run's absences aren't confirmed deletions.
+            if not test_mode:
+                delete_ids = [
+                    record_id
+                    for evidence_type, ids in flat_result.excluded_ids.items()
+                    for record_id in ids
+                    if all(d in deliverable_domains for d in EVIDENCE_TYPE_REQUIRED_DOMAINS[evidence_type])
+                ]
+                if delete_ids:
+                    delete_results = delete_records(app_config.drata, delete_ids)
+                    failed_deletes = [r for r in delete_results if not r.uploaded]
+                    report["staleRecordsDeleted"] = len(delete_results) - len(failed_deletes)
+                    report["staleRecordDeleteFailures"] = len(failed_deletes)
+                    if failed_deletes:
+                        logger.warning(
+                            "some stale-record deletes failed -- will retry next run",
+                            extra={"failures": len(failed_deletes)},
+                        )
+
+    exit_code = EXIT_OK if dry_run or uploaded else EXIT_BLOCKED
+    return RunResult(
+        exit_code=exit_code,
+        uploaded=uploaded,
+        report=report,
+        records=flat_result.records,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -567,12 +477,10 @@ def main(argv: list[str] | None = None) -> int:
         out_dir / "collection-report.json",
         json.dumps(result.report, indent=2, sort_keys=True).encode("utf-8"),
     )
-    if dry_run and result.record is not None:
-        _write_restricted(out_dir / "snapshot.json", serialize_deterministic(result.record))
-    if dry_run and result.flat_records is not None:
+    if dry_run:
         _write_restricted(
             out_dir / "flat-records.json",
-            json.dumps(result.flat_records, indent=2, sort_keys=True).encode("utf-8"),
+            json.dumps(result.records, indent=2, sort_keys=True).encode("utf-8"),
         )
 
     print(json.dumps(result.report, indent=2, sort_keys=True))

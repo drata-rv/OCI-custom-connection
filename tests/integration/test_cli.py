@@ -1,5 +1,5 @@
 """Tests cli.run() orchestration; collectors mocked at function boundary.
-OCI-client-mock level coverage lives in test_end_to_end.py.
+OCI-client-mock level coverage for individual transforms lives in their own unit tests.
 """
 
 from __future__ import annotations
@@ -15,21 +15,162 @@ import oci
 import pytest
 
 from oci_drata import cli
+from oci_drata.collection.compute import ComputeCollectionResult
+from oci_drata.collection.database_autonomous import AutonomousDatabaseCollectionResult
+from oci_drata.collection.discovery import DiscoveryResult
+from oci_drata.collection.networking import NetworkingCollectionResult
+from oci_drata.config import (
+    AppConfig,
+    DecisionsConfig,
+    DeploymentConfig,
+    DrataConfig,
+    OciAuthenticationConfig,
+    OciCompartmentsConfig,
+    OciConfig,
+    OciRegionsConfig,
+    OciServicesConfig,
+    RuntimeConfig,
+    SecretRef,
+)
 from oci_drata.delivery.drata import DeliveryResult
 from oci_drata.pagination import OperationResult, RetryPolicy
 from oci_drata.validation.schema import load_flat_schema, validate_record
 
-from .test_end_to_end import (
-    _app_config,
-    _autonomous_database,
-    _database_base_empty,
-    _discovery,
-    _exadata_not_detected,
-    _exposed_windows_compute,
-    _networking_allowing_rdp,
-    _storage,
-    _vpn_non_redundant,
-)
+TENANCY_OCID = "ocid1.tenancy.oc1..aaaaaaaatest"
+REGION = "us-ashburn-1"
+COMPARTMENT_OCID = "ocid1.compartment.oc1..aaaaaaaatest"
+
+
+def _stamp(obj, region=REGION):
+    obj.region = region
+    return obj
+
+
+def _app_config(**decision_overrides) -> AppConfig:
+    decisions = dict(
+        administrative_ports=(22, 3389),
+        public_source_cidrs=("0.0.0.0/0", "::/0"),
+        minimum_vpn_tunnel_count=2,
+        minimum_up_vpn_tunnel_count=1,
+        freshness_hours=26,
+        require_customer_managed_volume_keys=False,
+        require_customer_managed_database_keys=False,
+    )
+    decisions.update(decision_overrides)
+    return AppConfig(
+        deployment=DeploymentConfig(name="test-deployment", snapshot_display_name="Test snapshot"),
+        oci=OciConfig(
+            authentication=OciAuthenticationConfig(
+                type="api_signing_user", config_file="~/.oci/config", profile="DEFAULT",
+                private_key_passphrase_secret_ref=None,
+            ),
+            expected_tenancy_ocid=TENANCY_OCID,
+            regions=OciRegionsConfig(allow=(REGION,)),
+            compartments=OciCompartmentsConfig(roots=("tenancy",), exclude_ocids=()),
+            services=OciServicesConfig(compute=True, network_exposure=True, autonomous_database=True),
+        ),
+        decisions=DecisionsConfig(**decisions),
+        drata=DrataConfig(
+            base_url="https://public-api.drata.com/public/v2", connection_id=1, resource_id=2,
+            api_token_secret_ref=SecretRef(provider="env", name="DRATA_API_TOKEN"),
+        ),
+        runtime=RuntimeConfig(max_payload_bytes=4_500_000, max_concurrency=8, log_level="INFO", dry_run=True),
+    )
+
+
+def _discovery(*, complete: bool = True) -> DiscoveryResult:
+    tenancy = oci.identity.models.Tenancy(id=TENANCY_OCID, name="Test Tenancy", home_region_key="IAD")
+    return DiscoveryResult(
+        tenancy=tenancy,
+        region_subscriptions=[],
+        all_compartments=[
+            _stamp(oci.identity.models.Compartment(
+                id=COMPARTMENT_OCID, compartment_id=TENANCY_OCID, lifecycle_state="ACTIVE", is_accessible=True
+            ))
+        ],
+        discovery_region=REGION,
+        approved_regions=(REGION,),
+        unready_regions=(),
+        approved_compartment_ids=(COMPARTMENT_OCID,),
+        excluded_compartment_ids=(),
+        inaccessible_compartment_ids=(),
+        availability_domains_by_region={REGION: []},
+        operations=[
+            OperationResult(service="identity", operation="get_tenancy", region=REGION, compartment_id=None, status="success" if complete else "failed")
+        ],
+    )
+
+
+def _empty_ok(service: str) -> OperationResult:
+    return OperationResult(service=service, operation="list_x", region=REGION, compartment_id=COMPARTMENT_OCID, status="success")
+
+
+def _exposed_windows_compute() -> ComputeCollectionResult:
+    instance = _stamp(oci.core.models.Instance(
+        id="ocid1.instance.oc1..vm1", compartment_id=COMPARTMENT_OCID, display_name="win-vm-1",
+        lifecycle_state="RUNNING", image_id="ocid1.image.oc1..img1",
+    ))
+    # Terminated instance must be excluded without its dropped attachment surfacing as an unresolved relationship.
+    terminated_instance = _stamp(oci.core.models.Instance(
+        id="ocid1.instance.oc1..vmold", compartment_id=COMPARTMENT_OCID, display_name="old-vm",
+        lifecycle_state="TERMINATED", image_id="ocid1.image.oc1..img1",
+    ))
+    image = _stamp(oci.core.models.Image(id="ocid1.image.oc1..img1", compartment_id=COMPARTMENT_OCID, operating_system="Windows Server"))
+    attachment = oci.core.models.VnicAttachment(id="ocid1.vnicattachment.oc1..att1", instance_id=instance.id, vnic_id="ocid1.vnic.oc1..v1")
+    terminated_attachment = oci.core.models.VnicAttachment(
+        id="ocid1.vnicattachment.oc1..attold", instance_id=terminated_instance.id, vnic_id="ocid1.vnic.oc1..vold"
+    )
+    vnic = _stamp(oci.core.models.Vnic(id="ocid1.vnic.oc1..v1", compartment_id=COMPARTMENT_OCID, subnet_id="ocid1.subnet.oc1..sub1", nsg_ids=["ocid1.networksecuritygroup.oc1..nsg1"]))
+    private_ip = _stamp(oci.core.models.PrivateIp(id="ocid1.privateip.oc1..pip1", compartment_id=COMPARTMENT_OCID, vnic_id=vnic.id, ip_address="10.0.0.5"))
+    public_ip = _stamp(oci.core.models.PublicIp(id="ocid1.publicip.oc1..pub1", compartment_id=COMPARTMENT_OCID, ip_address="203.0.113.9"))
+    return ComputeCollectionResult(
+        instances=[instance, terminated_instance], images={image.id: image},
+        vnic_attachments=[attachment, terminated_attachment],
+        vnics={vnic.id: vnic}, private_ips=[private_ip],
+        public_ips_by_private_ip_id={private_ip.id: public_ip},
+        operations=[_empty_ok("compute")],
+    )
+
+
+def _networking_allowing_rdp() -> NetworkingCollectionResult:
+    subnet = _stamp(oci.core.models.Subnet(
+        id="ocid1.subnet.oc1..sub1", compartment_id=COMPARTMENT_OCID, route_table_id="ocid1.routetable.oc1..rt1",
+        security_list_ids=[],
+    ))
+    route_table = _stamp(oci.core.models.RouteTable(
+        id="ocid1.routetable.oc1..rt1", compartment_id=COMPARTMENT_OCID,
+        route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="ocid1.internetgateway.oc1..igw1")],
+    ))
+    igw = _stamp(oci.core.models.InternetGateway(id="ocid1.internetgateway.oc1..igw1", compartment_id=COMPARTMENT_OCID))
+    nsg = _stamp(oci.core.models.NetworkSecurityGroup(id="ocid1.networksecuritygroup.oc1..nsg1", compartment_id=COMPARTMENT_OCID))
+    nsg_rule = oci.core.models.SecurityRule(
+        direction="INGRESS", protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK",
+        tcp_options=oci.core.models.TcpOptions(destination_port_range=oci.core.models.PortRange(min=3389, max=3389)),
+    )
+    return NetworkingCollectionResult(
+        vcns=[_stamp(oci.core.models.Vcn(id="ocid1.vcn.oc1..vcn1", compartment_id=COMPARTMENT_OCID))],
+        subnets=[subnet], route_tables=[route_table], internet_gateways=[igw],
+        security_lists=[], network_security_groups=[nsg],
+        nsg_security_rules_by_nsg_id={nsg.id: [nsg_rule]},
+        nsg_vnics_by_nsg_id={nsg.id: []},
+        operations=[_empty_ok("virtual_network")],
+    )
+
+
+def _autonomous_database() -> AutonomousDatabaseCollectionResult:
+    # public_endpoint is a hostname string on the SDK model, never a bool -- don't store it into a boolean schema field.
+    adb = _stamp(oci.database.models.AutonomousDatabaseSummary(
+        id="ocid1.autonomousdatabase.oc1..adb1", compartment_id=COMPARTMENT_OCID, lifecycle_state="AVAILABLE",
+        public_endpoint="adb1.adb.us-ashburn-1.oraclecloudapps.com", is_dedicated=False,
+        backup_retention_period_in_days=7, is_backup_retention_locked=False,
+        whitelisted_ips=["203.0.113.0/24"], is_mtls_connection_required=True,
+        kms_key_id="ocid1.key.oc1..key2",
+    ))
+    return AutonomousDatabaseCollectionResult(
+        autonomous_databases=[adb], autonomous_database_backups=[],
+        autonomous_database_dataguard_associations=[], autonomous_database_peers_by_adb_id={},
+        operations=[_empty_ok("database")],
+    )
 
 
 @pytest.fixture
@@ -37,21 +178,17 @@ def patched_collectors(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     monkeypatch.setattr(cli, "build_signer", lambda app_config: MagicMock())
     monkeypatch.setattr(cli, "discover", lambda signer, app_config, retry_policy=None: _discovery())
     monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: _exposed_windows_compute())
-    monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: _storage())
     monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: _networking_allowing_rdp())
-    monkeypatch.setattr(cli, "collect_database_base", lambda *a, **k: _database_base_empty())
     monkeypatch.setattr(cli, "collect_autonomous_database", lambda *a, **k: _autonomous_database())
-    monkeypatch.setattr(cli, "collect_vpn", lambda *a, **k: _vpn_non_redundant())
-    monkeypatch.setattr(cli, "detect_exadata", lambda *a, **k: _exadata_not_detected())
-    upsert = MagicMock()
-    monkeypatch.setattr(cli, "upsert_record", upsert)
+    upsert = MagicMock(return_value=[])
+    monkeypatch.setattr(cli, "upsert_records", upsert)
+    monkeypatch.setattr(cli, "delete_records", MagicMock(return_value=[]))
     return upsert
 
 
 def test_dry_run_never_calls_drata(patched_collectors: MagicMock) -> None:
     app_config = _app_config()
     result = cli.run(app_config, dry_run=True)
-    assert result.snapshot_status == "complete"
     assert result.uploaded is False
     assert result.report["uploadDecision"] == "skipped_dry_run"
     patched_collectors.assert_not_called()
@@ -59,13 +196,25 @@ def test_dry_run_never_calls_drata(patched_collectors: MagicMock) -> None:
 
 
 def test_complete_run_uploads(patched_collectors: MagicMock) -> None:
-    patched_collectors.return_value = MagicMock(uploaded=True, created=True, attempts=1, error_class=None)
+    patched_collectors.return_value = [
+        DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1)
+    ]
     app_config = _app_config()
     result = cli.run(app_config, dry_run=False)
     assert result.uploaded is True
     assert result.report["uploadDecision"] == "uploaded"
     patched_collectors.assert_called_once()
     assert result.exit_code == cli.EXIT_OK
+
+
+def test_delivery_failure_blocks_exit_code(patched_collectors: MagicMock) -> None:
+    patched_collectors.return_value = [
+        DeliveryResult(uploaded=False, created=None, status_code=500, attempts=5, error_class="unexpected")
+    ]
+    result = cli.run(_app_config(), dry_run=False)
+    assert result.uploaded is False
+    assert result.report["uploadDecision"] == "delivery_failed"
+    assert result.exit_code == cli.EXIT_BLOCKED
 
 
 # -- _access_summary: distinguishes real access gaps from compartments with no data --
@@ -135,55 +284,95 @@ def test_access_summary_empty_operations() -> None:
 def test_run_report_includes_access_summary_with_real_auth_gap(
     monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
 ) -> None:
-    from oci_drata.collection.storage import StorageCollectionResult
-    from oci_drata.pagination import OperationResult
-
-    failed_storage = StorageCollectionResult(
-        boot_volumes=[], block_volumes=[], boot_volume_attachments=[], volume_attachments=[],
+    failed_networking = NetworkingCollectionResult(
+        vcns=[], subnets=[], route_tables=[], internet_gateways=[], security_lists=[],
+        network_security_groups=[], nsg_security_rules_by_nsg_id={}, nsg_vnics_by_nsg_id={},
         operations=[
             OperationResult(
-                service="blockstorage", operation="list_boot_volumes", region="us-ashburn-1",
+                service="virtual_network", operation="list_subnets", region="us-ashburn-1",
                 compartment_id="c1", status="failed", error_code="NotAuthorizedOrNotFound",
             )
         ],
     )
-    monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: failed_storage)
+    monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: failed_networking)
 
     result = cli.run(_app_config(), dry_run=True)
     assert result.report["accessSummary"]["compartmentsWithAuthGap"] == ["c1"]
 
 
-def test_incomplete_run_blocks_upload(monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock) -> None:
-    from oci_drata.collection.storage import StorageCollectionResult
-    from oci_drata.pagination import OperationResult
+def test_domain_failure_withholds_only_that_domains_evidence(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    """One failed domain must not zero out delivery for every other domain -- only the
+    evidenceTypes that depend on it (see EVIDENCE_TYPE_REQUIRED_DOMAINS) are withheld."""
 
-    failed_storage = StorageCollectionResult(
-        boot_volumes=[], block_volumes=[], boot_volume_attachments=[], volume_attachments=[],
-        operations=[OperationResult(service="blockstorage", operation="list_boot_volumes", region="us-ashburn-1", compartment_id="c1", status="failed")],
+    failed_networking = NetworkingCollectionResult(
+        vcns=[], subnets=[], route_tables=[], internet_gateways=[], security_lists=[],
+        network_security_groups=[], nsg_security_rules_by_nsg_id={}, nsg_vnics_by_nsg_id={},
+        operations=[OperationResult(service="virtual_network", operation="list_subnets", region="us-ashburn-1", compartment_id="c1", status="failed")],
     )
-    monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: failed_storage)
+    monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: failed_networking)
+    patched_collectors.return_value = [DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1)]
 
-    app_config = _app_config()
-    result = cli.run(app_config, dry_run=False)
-    assert result.snapshot_status == "incomplete"
-    assert result.uploaded is False
+    result = cli.run(_app_config(), dry_run=False)
+
+    assert result.report["uploadDecision"] == "uploaded_partial"
+    assert result.report["domainsWithheld"] == ["networking"]
+    delivered_ids = {r["id"] for r in patched_collectors.call_args.args[1]}
+    assert delivered_ids == {"ocid1.autonomousdatabase.oc1..adb1"}  # instance withheld, ADB still delivered
+    assert result.exit_code == cli.EXIT_OK
+
+
+def test_all_domains_failing_blocks_upload_entirely(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    monkeypatch.setattr(cli, "discover", lambda signer, app_config, retry_policy=None: _discovery(complete=False))
+
+    result = cli.run(_app_config(), dry_run=False)
+
+    assert result.report["uploadDecision"] == "blocked"
+    assert "discovery incomplete" in result.report["blockedReasons"]
     patched_collectors.assert_not_called()
     assert result.exit_code == cli.EXIT_BLOCKED
 
 
-def test_dry_run_writes_sanitized_snapshot_and_report(
+def test_unresolved_relationship_withholds_only_compute(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    """A dangling vnic_attachment (references an instance outside the collected set)
+    folds into compute's own completeness -- it must not withhold unrelated domains
+    like autonomousDatabase."""
+
+    dangling = oci.core.models.VnicAttachment(
+        id="att-dangling", instance_id="i-does-not-exist", vnic_id="v1", compartment_id="c1",
+    )
+    compute_with_dangling_attachment = ComputeCollectionResult(
+        instances=[], images={}, vnic_attachments=[dangling], vnics={}, private_ips=[],
+        public_ips_by_private_ip_id={},
+        operations=[OperationResult(service="compute", operation="list_instances", region="us-ashburn-1", compartment_id="c1", status="success")],
+    )
+    monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: compute_with_dangling_attachment)
+    patched_collectors.return_value = [DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1)]
+
+    result = cli.run(_app_config(), dry_run=False)
+
+    assert result.report["domainsWithheld"] == ["compute"]
+    assert result.report["unresolvedRelationships"] == 1
+    delivered_ids = {r["id"] for r in patched_collectors.call_args.args[1]}
+    assert delivered_ids == {"ocid1.autonomousdatabase.oc1..adb1"}
+
+
+def test_dry_run_writes_report_and_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
 ) -> None:
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.yaml"
     import yaml
 
-
     sample = Path(__file__).resolve().parent.parent.parent / "config.example.yaml"
     raw = yaml.safe_load(sample.read_text())
     raw["oci"]["expectedTenancyOcid"] = "ocid1.tenancy.oc1..aaaaaaaatest"
     raw["oci"]["regions"]["allow"] = ["us-ashburn-1"]
-    raw["drata"]["recordId"] = "oci-snapshot-test0123456789abcdef01234567"
     raw["drata"]["connectionId"] = 101
     raw["drata"]["resourceId"] = 202
     config_path.write_text(yaml.safe_dump(raw))
@@ -194,14 +383,11 @@ def test_dry_run_writes_sanitized_snapshot_and_report(
 
     report = json.loads((tmp_path / "out" / "collection-report.json").read_text())
     assert report["uploadDecision"] == "skipped_dry_run"
-    snapshot = json.loads((tmp_path / "out" / "snapshot.json").read_text())
-    assert snapshot["id"] == "oci-snapshot-test0123456789abcdef01234567"
     patched_collectors.assert_not_called()
 
     out_dir = tmp_path / "out"
     assert stat.S_IMODE(out_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE((out_dir / "collection-report.json").stat().st_mode) == 0o600
-    assert stat.S_IMODE((out_dir / "snapshot.json").stat().st_mode) == 0o600
 
 
 def test_prepare_restricted_output_dir_tightens_preexisting_permissive_dir(tmp_path: Path) -> None:
@@ -244,8 +430,8 @@ def test_run_test_mode_sets_a_deadline_every_collector_shares(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deadline flows through one retry_policy shared by discover() and every collector
-    via paginate()/call_once(). Asserted on what discover() receives, not cli.py's local
-    variable, so a refactor can't silently drop the threading."""
+    via paginate()/call_once() (pagination.py). Asserted on what discover() receives, not
+    cli.py's local variable, so a refactor can't silently drop the threading."""
 
     seen_policies: list[RetryPolicy] = []
 
@@ -256,12 +442,10 @@ def test_run_test_mode_sets_a_deadline_every_collector_shares(
     monkeypatch.setattr(cli, "build_signer", lambda app_config: MagicMock())
     monkeypatch.setattr(cli, "discover", _capture_discover)
     monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: _exposed_windows_compute())
-    monkeypatch.setattr(cli, "collect_storage", lambda *a, **k: _storage())
     monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: _networking_allowing_rdp())
-    monkeypatch.setattr(cli, "collect_database_base", lambda *a, **k: _database_base_empty())
     monkeypatch.setattr(cli, "collect_autonomous_database", lambda *a, **k: _autonomous_database())
-    monkeypatch.setattr(cli, "collect_vpn", lambda *a, **k: _vpn_non_redundant())
-    monkeypatch.setattr(cli, "detect_exadata", lambda *a, **k: _exadata_not_detected())
+    monkeypatch.setattr(cli, "upsert_records", MagicMock(return_value=[]))
+    monkeypatch.setattr(cli, "delete_records", MagicMock(return_value=[]))
 
     before = time.monotonic()
     cli.run(_app_config(), dry_run=True, test_mode=True)
@@ -275,129 +459,27 @@ def test_run_test_mode_sets_a_deadline_every_collector_shares(
     assert seen_policies[0].deadline is None
 
 
-def test_main_test_mode_skips_nested_upload_even_if_config_says_upload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
-) -> None:
-    """Nested-path upload must stay blocked under --test regardless of runtime.dryRun --
-    a partial scan is never a complete tenancy picture. Flat-record path is unaffected:
-    each record is standalone evidence."""
-
-    monkeypatch.chdir(tmp_path)
-    config_path = tmp_path / "config.yaml"
-    import yaml
-
-    sample = Path(__file__).resolve().parent.parent.parent / "config.example.yaml"
-    raw = yaml.safe_load(sample.read_text())
-    raw["oci"]["expectedTenancyOcid"] = "ocid1.tenancy.oc1..aaaaaaaatest"
-    raw["oci"]["regions"]["allow"] = ["us-ashburn-1"]
-    raw["drata"]["recordId"] = "oci-snapshot-test0123456789abcdef01234567"
-    raw["drata"]["connectionId"] = 101
-    raw["drata"]["resourceId"] = 202
-    raw["runtime"]["dryRun"] = False
-    config_path.write_text(yaml.safe_dump(raw))
-    monkeypatch.setenv("DRATA_API_TOKEN", "unused")
-
-    exit_code = cli.main(["--config", str(config_path), "--test", "--out-dir", "out"])
-    report = json.loads((tmp_path / "out" / "collection-report.json").read_text())
-    assert report["dryRun"] is False
-    assert report["uploadDecision"] == "skipped_test_mode"
-    patched_collectors.assert_not_called()
-    assert exit_code == cli.EXIT_BLOCKED  # nested path didn't upload and this wasn't a dry run
-
-
-# -- Flat-record architecture -- opt-in via drata.flatResourceId --
-
-
-def _app_config_with_flat_resource(flat_resource_id: int = 99):
-    app_config = _app_config()
-    return dataclasses.replace(
-        app_config, drata=dataclasses.replace(app_config.drata, flat_resource_id=flat_resource_id)
-    )
-
-
-def test_flat_records_disabled_by_default(patched_collectors: MagicMock) -> None:
-    result = cli.run(_app_config(), dry_run=True)
-    assert result.flat_records is None
-    assert "flatRecords" not in result.report
-
-
-def test_flat_records_dry_run_never_uploads(monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock) -> None:
-    upsert_records = MagicMock()
-    monkeypatch.setattr(cli, "upsert_records", upsert_records)
-
-    result = cli.run(_app_config_with_flat_resource(), dry_run=True)
-
-    assert result.flat_records is not None
-    assert len(result.flat_records) == 2  # one instance, one autonomous database
-    instance_record = next(r for r in result.flat_records if r["evidenceType"] == "instance")
-    assert instance_record["id"] == "ocid1.instance.oc1..vm1"
-    assert "status" not in instance_record  # raw facts only -- no precomputed verdict
-    assert instance_record["hasPublicAddress"] is True
-    assert instance_record["publicIngressPorts"] == [3389]
-
-    adb_record = next(r for r in result.flat_records if r["evidenceType"] == "autonomous_database")
-    assert adb_record["id"] == "ocid1.autonomousdatabase.oc1..adb1"
-    assert "status" not in adb_record
-    assert adb_record["kmsKeyId"] == "ocid1.key.oc1..key2"
-    assert adb_record["publicEndpointHostname"] == "adb1.adb.us-ashburn-1.oraclecloudapps.com"
-
-    assert result.report["flatRecords"]["uploadDecision"] == "skipped_dry_run"
-    upsert_records.assert_not_called()
-
-
-def test_flat_records_uploads_to_configured_resource_id(
+def test_test_mode_skips_stale_record_deletion(
     monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
 ) -> None:
-    upsert_records = MagicMock(return_value=[DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1)])
-    monkeypatch.setattr(cli, "upsert_records", upsert_records)
+    """A sampled run's absences aren't confirmed deletions -- cleanup must not run
+    even when there are excluded ids and the owning domain is deliverable."""
 
-    result = cli.run(_app_config_with_flat_resource(flat_resource_id=99), dry_run=False)
-
-    assert result.report["flatRecords"]["uploadDecision"] == "uploaded"
-    assert result.report["flatRecords"]["recordCount"] == 2
-    upsert_records.assert_called_once()
-    called_config = upsert_records.call_args.args[0]
-    assert called_config.resource_id == 99
-    # the nested-schema resourceId (drata.resourceId) must be untouched by the flat path
-    assert called_config.resource_id != _app_config().drata.resource_id
-
-
-def test_flat_records_delivery_failure_does_not_affect_nested_path_exit_code(
-    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
-) -> None:
-    patched_collectors.return_value = MagicMock(uploaded=True, created=True, attempts=1, error_class=None)
-    monkeypatch.setattr(
-        cli, "upsert_records",
-        MagicMock(return_value=[DeliveryResult(uploaded=False, created=None, status_code=500, attempts=5, error_class="unexpected")]),
+    compute_with_terminated_only = ComputeCollectionResult(
+        instances=[
+            _stamp(oci.core.models.Instance(id="i-gone", compartment_id="c1", lifecycle_state="TERMINATED"))
+        ],
+        images={}, vnic_attachments=[], vnics={}, private_ips=[], public_ips_by_private_ip_id={},
+        operations=[_empty_ok("compute")],
     )
+    monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: compute_with_terminated_only)
+    delete_mock = MagicMock(return_value=[])
+    monkeypatch.setattr(cli, "delete_records", delete_mock)
+    patched_collectors.return_value = [DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1)]
 
-    result = cli.run(_app_config_with_flat_resource(), dry_run=False)
+    cli.run(_app_config(), dry_run=False, test_mode=True)
 
-    assert result.report["flatRecords"]["uploadDecision"] == "delivery_failed"
-    assert result.uploaded is True  # nested path succeeded independently
-    assert result.exit_code == cli.EXIT_OK
-
-
-def test_flat_records_blocked_when_networking_incomplete(
-    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
-) -> None:
-    from oci_drata.collection.networking import NetworkingCollectionResult
-    from oci_drata.pagination import OperationResult
-
-    incomplete_networking = NetworkingCollectionResult(
-        vcns=[], subnets=[], route_tables=[], internet_gateways=[], security_lists=[],
-        network_security_groups=[], nsg_security_rules_by_nsg_id={}, nsg_vnics_by_nsg_id={},
-        operations=[OperationResult(service="virtual_network", operation="list_subnets", region="us-ashburn-1", compartment_id="c1", status="failed")],
-    )
-    monkeypatch.setattr(cli, "collect_networking", lambda *a, **k: incomplete_networking)
-    upsert_records = MagicMock()
-    monkeypatch.setattr(cli, "upsert_records", upsert_records)
-
-    result = cli.run(_app_config_with_flat_resource(), dry_run=False)
-
-    assert result.report["flatRecords"]["uploadDecision"] == "blocked"
-    assert "compute/networking collection incomplete" in result.report["flatRecords"]["blockedReasons"]
-    upsert_records.assert_not_called()
+    delete_mock.assert_not_called()
 
 
 def test_domain_all_skipped_true_only_when_every_op_is_the_skip_marker() -> None:
@@ -408,47 +490,17 @@ def test_domain_all_skipped_true_only_when_every_op_is_the_skip_marker() -> None
     assert cli._domain_all_skipped([]) is False  # no ops at all is not the same claim as "disabled by config"
 
 
-def test_flat_records_report_distinguishes_disabled_from_empty_domains(
-    patched_collectors: MagicMock,
-) -> None:
+def test_report_distinguishes_disabled_from_empty_domains(patched_collectors: MagicMock) -> None:
     """domainComplete=true only means nothing failed, not that the service ran at all.
-    identity/objectStorage/etc are off by default (_app_config_with_flat_resource ->
-    _app_config), so they must show skipped; compute is on and ran, so it must not."""
+    identity/objectStorage/etc are off by default, so they must show skipped; compute
+    is on and ran, so it must not."""
 
-    result = cli.run(_app_config_with_flat_resource(), dry_run=True)
-    domain_skipped = result.report["flatRecords"]["domainSkipped"]
+    result = cli.run(_app_config(), dry_run=True)
+    domain_skipped = result.report["domainSkipped"]
     assert domain_skipped["identity"] is True
     assert domain_skipped["compute"] is False
-    assert result.report["flatRecords"]["excludedByLifecycle"]["kmsKey"] == 0
-    assert result.report["flatRecords"]["unresolvedRelationships"] == 0
-
-
-def test_flat_records_blocked_when_unresolved_relationships_exist(
-    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
-) -> None:
-    """A dangling vnic_attachment (references an instance outside the collected set)
-    must block upload on the flat path, same as decide_completeness() enforces for
-    the nested path."""
-
-    from oci_drata.collection.compute import ComputeCollectionResult
-
-    dangling = oci.core.models.VnicAttachment(
-        id="att-dangling", instance_id="i-does-not-exist", vnic_id="v1", compartment_id="c1",
-    )
-    compute_with_dangling_attachment = ComputeCollectionResult(
-        instances=[], images={}, vnic_attachments=[dangling], vnics={}, private_ips=[],
-        public_ips_by_private_ip_id={},
-        operations=[OperationResult(service="compute", operation="list_instances", region="us-ashburn-1", compartment_id="c1", status="success")],
-    )
-    monkeypatch.setattr(cli, "collect_compute", lambda *a, **k: compute_with_dangling_attachment)
-    upsert_records = MagicMock()
-    monkeypatch.setattr(cli, "upsert_records", upsert_records)
-
-    result = cli.run(_app_config_with_flat_resource(), dry_run=False)
-
-    assert result.report["flatRecords"]["uploadDecision"] == "blocked"
-    assert "unresolved relationships" in result.report["flatRecords"]["blockedReasons"]
-    upsert_records.assert_not_called()
+    assert result.report["excludedByLifecycle"]["kmsKey"] == 0
+    assert result.report["unresolvedRelationships"] == 0
 
 
 def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock) -> None:
@@ -460,10 +512,8 @@ def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.Mo
     raw = yaml.safe_load(sample.read_text())
     raw["oci"]["expectedTenancyOcid"] = "ocid1.tenancy.oc1..aaaaaaaatest"
     raw["oci"]["regions"]["allow"] = ["us-ashburn-1"]
-    raw["drata"]["recordId"] = "oci-snapshot-test0123456789abcdef01234567"
     raw["drata"]["connectionId"] = 101
     raw["drata"]["resourceId"] = 202
-    raw["drata"]["flatResourceId"] = 303
     config_path.write_text(yaml.safe_dump(raw))
     monkeypatch.setenv("DRATA_API_TOKEN", "unused")
 
@@ -479,27 +529,18 @@ def test_dry_run_writes_flat_records_file(tmp_path: Path, monkeypatch: pytest.Mo
 
 # -- Full integration: every opt-in evidenceType enabled at once --
 #
-# Exercises all 7 opt-in domains simultaneously: no id collisions across
-# evidenceTypes, every record schema-valid, nothing crashes.
+# Exercises all 10 domains simultaneously: no id collisions across evidenceTypes, every
+# record schema-valid, nothing crashes.
 
 
 def _app_config_with_everything_enabled():
-    app_config = _app_config_with_flat_resource(flat_resource_id=99)
+    app_config = _app_config()
     services = dataclasses.replace(
         app_config.oci.services,
         identity=True, object_storage=True, cloud_guard=True, monitoring=True,
         load_balancer=True, waf=True, kms_vault=True,
     )
     return dataclasses.replace(app_config, oci=dataclasses.replace(app_config.oci, services=services))
-
-
-def _stamp(raw, region="us-ashburn-1"):
-    """Mimics pagination.stamp_region(), which every real collector calls -- fixtures
-    should look like real collector output even though aggregate.py's flatteners
-    tolerate a missing region as null."""
-
-    raw.region = region
-    return raw
 
 
 def _all_domains_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -604,30 +645,29 @@ def test_all_evidence_types_together_no_id_collisions(
 
     result = cli.run(_app_config_with_everything_enabled(), dry_run=True)
 
-    assert result.flat_records is not None
-    evidence_types = {r["evidenceType"] for r in result.flat_records}
+    evidence_types = {r["evidenceType"] for r in result.records}
     assert evidence_types == {
         "instance", "autonomous_database", "iam_user", "api_key", "iam_policy",
         "bucket", "cloud_guard_configuration", "monitoring_alarm",
         "load_balancer", "load_balancer_backend_set", "waf", "kms_key",
     }, f"missing or unexpected evidenceTypes: {evidence_types}"
 
-    ids = [r["id"] for r in result.flat_records]
+    ids = [r["id"] for r in result.records]
     assert len(ids) == len(set(ids)), f"duplicate ids across evidenceTypes: {ids}"
 
     schema = load_flat_schema()
-    invalid = [(r["id"], validate_record(r, schema).errors) for r in result.flat_records]
+    invalid = [(r["id"], validate_record(r, schema).errors) for r in result.records]
     invalid = [(rid, errs) for rid, errs in invalid if errs]
     assert not invalid, f"schema-invalid records: {invalid}"
 
-    assert result.report["flatRecords"]["uploadDecision"] == "skipped_dry_run"
-    assert result.report["flatRecords"]["schemaValid"] is True
+    assert result.report["uploadDecision"] == "skipped_dry_run"
+    assert result.report["schemaValid"] is True
 
     # Confirms these fixtures look like real collector output (real region), not
     # just schema-valid nulls.
     stamped_types = {
         "bucket", "monitoring_alarm", "load_balancer", "load_balancer_backend_set", "waf", "kms_key",
     }
-    for record in result.flat_records:
+    for record in result.records:
         if record["evidenceType"] in stamped_types:
             assert record["region"] == "us-ashburn-1", record

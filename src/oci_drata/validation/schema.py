@@ -1,9 +1,4 @@
-"""Validates a record against oci_drata/schemas/oci-snapshot-1.0.0.json (jsonschema Draft-07).
-
-Resource definitions are flattened, not allOf-composed: additionalProperties: false does not
-restrict fields across allOf branches, so composing over commonResource left every resource
-type accepting arbitrary extra fields.
-"""
+"""Validates a flat record against oci_drata/schemas/flat-record.schema.json (jsonschema Draft-07)."""
 
 from __future__ import annotations
 
@@ -16,7 +11,6 @@ from typing import Any
 import jsonschema
 
 SCHEMA_RESOURCE_PACKAGE = "oci_drata.schemas"
-SCHEMA_RESOURCE_NAME = "oci-snapshot-1.0.0.json"
 FLAT_SCHEMA_RESOURCE_NAME = "flat-record.schema.json"
 
 
@@ -35,17 +29,6 @@ class SchemaValidationResult:
     errors: tuple[SchemaValidationError, ...]
 
 
-def load_schema(path: Path | str | None = None) -> dict[str, Any]:
-    if path is not None:
-        with Path(path).open("r", encoding="utf-8") as fh:
-            schema = json.load(fh)
-    else:
-        resource = importlib.resources.files(SCHEMA_RESOURCE_PACKAGE).joinpath(SCHEMA_RESOURCE_NAME)
-        schema = json.loads(resource.read_text(encoding="utf-8"))
-    jsonschema.Draft7Validator.check_schema(schema)
-    return schema
-
-
 def load_flat_schema(path: Path | str | None = None) -> dict[str, Any]:
     if path is not None:
         with Path(path).open("r", encoding="utf-8") as fh:
@@ -59,9 +42,8 @@ def load_flat_schema(path: Path | str | None = None) -> dict[str, Any]:
     return schema
 
 
-def validate_record(record: dict[str, Any], schema: dict[str, Any] | None = None) -> SchemaValidationResult:
-    active_schema = schema if schema is not None else load_schema()
-    validator = jsonschema.Draft7Validator(active_schema)
+def validate_record(record: dict[str, Any], schema: dict[str, Any]) -> SchemaValidationResult:
+    validator = jsonschema.Draft7Validator(schema)
     errors = sorted(validator.iter_errors(record), key=lambda e: list(e.absolute_path))
     if not errors:
         return SchemaValidationResult(valid=True, errors=())

@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from oci_drata.config import DrataConfig, SecretRef
-from oci_drata.delivery.drata import upsert_record, upsert_records
+from oci_drata.delivery.drata import delete_records, upsert_record, upsert_records
 
 
 @pytest.fixture
@@ -422,3 +422,103 @@ def test_upsert_records_internally_created_session_is_closed(
     monkeypatch.setattr("oci_drata.delivery.drata.requests.Session", lambda: created_session)
     upsert_records(drata_config, [{"id": "a"}])
     created_session.close.assert_called_once()
+
+
+def test_upsert_records_splits_oversized_batch_to_fit_budget(drata_config: DrataConfig) -> None:
+    """500-record batching is count-based only; max_payload_bytes is a separate,
+    independent ceiling on the serialized body actually sent."""
+
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    records = [{"id": str(i), "blob": "x" * 100} for i in range(10)]
+    one_batch_bytes = len(str(records))  # comfortably bigger than any per-record share
+    result = upsert_records(
+        drata_config, records, session=session, max_payload_bytes=one_batch_bytes // 3
+    )
+    assert len(result) > 1
+    assert all(r.uploaded for r in result)
+    sent_ids = {
+        record["id"] for call in session.post.call_args_list for record in call.kwargs["json"]["data"]
+    }
+    assert sent_ids == {r["id"] for r in records}
+
+
+def test_upsert_records_single_oversized_record_is_still_sent(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    records = [{"id": "only-one", "blob": "x" * 1000}]
+    result = upsert_records(drata_config, records, session=session, max_payload_bytes=1)
+    assert len(result) == 1
+    assert result[0].uploaded is True
+
+
+def test_upsert_records_no_size_budget_does_not_split(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.post.return_value = _response(201)
+    records = [{"id": str(i)} for i in range(10)]
+    upsert_records(drata_config, records, session=session)
+    assert session.post.call_count == 1
+
+
+def test_delete_records_empty_list_makes_no_request(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    result = delete_records(drata_config, [], session=session)
+    assert result == []
+    session.delete.assert_not_called()
+
+
+def test_delete_records_204_is_success(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.delete.return_value = _response(204, text="")
+    result = delete_records(drata_config, ["rec-1"], session=session)
+    assert len(result) == 1
+    assert result[0].uploaded is True
+    assert result[0].status_code == 204
+
+
+def test_delete_records_404_counts_as_success_already_gone(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.delete.return_value = _response(404, text="not found")
+    result = delete_records(drata_config, ["rec-1"], session=session)
+    assert result[0].uploaded is True
+    assert result[0].status_code == 404
+
+
+def test_delete_records_auth_error_is_not_retried(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.delete.return_value = _response(401, text="unauthorized")
+    result = delete_records(drata_config, ["rec-1"], session=session)
+    assert result[0].uploaded is False
+    assert result[0].error_class == "auth"
+    assert session.delete.call_count == 1
+
+
+def test_delete_records_one_failure_does_not_block_the_rest(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.delete.side_effect = [_response(500, text="down"), _response(204, text="")]
+    result = delete_records(
+        drata_config, ["rec-1", "rec-2"], session=session,
+        max_attempts=1, base_delay_seconds=0.001, max_delay_seconds=0.002,
+    )
+    assert len(result) == 2
+    assert result[0].uploaded is False
+    assert result[1].uploaded is True
+
+
+def test_delete_records_url_encodes_ids_with_embedded_slash(drata_config: DrataConfig) -> None:
+    """api_key ids are "user_id/fingerprint" -- the slash is part of the id, not a path
+    separator, and must be percent-encoded so the id stays one path segment."""
+
+    session = MagicMock()
+    session.delete.return_value = _response(204, text="")
+    delete_records(drata_config, ["ocid1.user.oc1..u1/aa:bb:cc"], session=session)
+    called_url = session.delete.call_args.args[0]
+    assert "ocid1.user.oc1..u1/aa:bb:cc" not in called_url
+    assert called_url.endswith("aa%3Abb%3Acc") or "%2F" in called_url
+
+
+def test_delete_records_caller_provided_session_is_never_closed(drata_config: DrataConfig) -> None:
+    session = MagicMock()
+    session.delete.return_value = _response(204, text="")
+    delete_records(drata_config, ["rec-1"], session=session)
+    session.close.assert_not_called()

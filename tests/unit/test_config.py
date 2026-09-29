@@ -265,7 +265,7 @@ def test_invalid_log_level_rejected(tmp_path: Path) -> None:
 
 # --------------------------------------------------------------------------
 # publicSourceCidrs: malformed/empty entries must fail before collection --
-# an empty reference set makes ExposureConfig treat everything as not_exposed.
+# an empty reference set makes every rule's source fail to resolve as public.
 # --------------------------------------------------------------------------
 
 
