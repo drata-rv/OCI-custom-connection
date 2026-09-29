@@ -55,7 +55,13 @@ class SecretRef:
             value = os.environ.get(self.name)
             if not value:
                 raise ConfigError(
-                    f"required secret environment variable is missing or empty: {self.name}"
+                    f"drata.apiTokenSecretRef points at environment variable {self.name!r}, "
+                    f"but it is not set (or is empty) in this shell. The token itself is "
+                    f"never written into config.yaml -- export it in the same shell before "
+                    f"running: export {self.name}=\"<your Drata API token>\". To persist it "
+                    f"across shells, add that export to your shell profile "
+                    f"(~/.zshrc or ~/.bashrc), or switch apiTokenSecretRef to "
+                    f"{{provider: file, path: ...}} and put the token in that file instead."
                 )
             return value
         if self.provider == "file":
@@ -63,15 +69,20 @@ class SecretRef:
                 raise ConfigError("secretRef provider 'file' requires 'path'")
             file_path = Path(self.path).expanduser()
             if not file_path.is_file():
-                raise ConfigError(f"secret file does not exist: {self.path}")
+                raise ConfigError(
+                    f"drata.apiTokenSecretRef points at file {self.path!r}, but it does not "
+                    f"exist. Create it with the token as its only contents, e.g.: "
+                    f"install -m 600 /path/to/your/token/file {self.path}"
+                )
             mode = file_path.stat().st_mode
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
                 raise ConfigError(
-                    f"secret file must not be group- or world-accessible: {self.path}"
+                    f"secret file {self.path!r} must not be group- or world-accessible -- "
+                    f"chmod 600 {self.path}"
                 )
             value = file_path.read_text(encoding="utf-8").strip()
             if not value:
-                raise ConfigError(f"secret file is empty: {self.path}")
+                raise ConfigError(f"secret file {self.path!r} exists but is empty: {self.path}")
             return value
         raise ConfigError(f"unsupported secretRef provider: {self.provider!r}")
 

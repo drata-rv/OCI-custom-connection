@@ -119,7 +119,7 @@ def test_env_override_unknown_path_rejected() -> None:
 
 
 def test_secret_ref_env_provider_missing_raises() -> None:
-    with pytest.raises(ConfigError, match="missing or empty"):
+    with pytest.raises(ConfigError, match="is not set"):
         SecretRef(provider="env", name="DOES_NOT_EXIST_XYZ").resolve()
 
 
