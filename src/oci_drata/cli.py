@@ -477,6 +477,20 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(app_config.runtime.log_level)
     dry_run = app_config.runtime.dry_run if args.dry_run is None else args.dry_run
 
+    if not dry_run:
+        # Fail fast on a missing/misconfigured Drata token before spending possibly tens of
+        # minutes on OCI collection: api_token_secret_ref.resolve() is otherwise only called
+        # at the point of actually POSTing, deep inside upsert_records/delete_records -- by
+        # then a real run has already thrown away a full collection pass with no artifact
+        # written, since this exception unwinds straight out of main() before the
+        # report-writing step below ever runs. Dry runs never resolve the token at all
+        # (nothing is ever sent to Drata), so this check is skipped for them.
+        try:
+            app_config.drata.api_token_secret_ref.resolve()
+        except ConfigError as exc:
+            logger.error("configuration error: Drata API token", extra={"error": str(exc)})
+            return EXIT_CONFIG_ERROR
+
     try:
         result = run(app_config, dry_run=dry_run, test_mode=args.test)
     except AuthError as exc:
