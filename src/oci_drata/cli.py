@@ -142,6 +142,32 @@ def _write_restricted(path: Path, data: bytes) -> None:
         os.close(fd)
 
 
+def _write_failure_report(
+    out_dir: Path, *, dry_run: bool, error_type: str, error_message: str
+) -> None:
+    """Best-effort trace for a run that raised before run() could return a RunResult at
+    all (auth/config error, or a genuine bug) -- so a failure this early still leaves
+    something on disk instead of nothing. Never raises itself: a failure here must not
+    mask the original error already being logged/returned by the caller."""
+
+    try:
+        _prepare_restricted_output_dir(out_dir)
+        _write_restricted(
+            out_dir / "collection-report.json",
+            json.dumps(
+                {
+                    "dryRun": dry_run,
+                    "uploadDecision": "failed",
+                    "errorType": error_type,
+                    "error": error_message,
+                },
+                indent=2, sort_keys=True,
+            ).encode("utf-8"),
+        )
+    except Exception:
+        logger.exception("failed to write failure report to out_dir")
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="oci-drata",
@@ -410,51 +436,65 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         report["blockedReasons"] = reasons
         logger.warning("upload blocked: nothing deliverable this run", extra={"reasons": reasons})
     else:
-        delivery_results = upsert_records(
-            app_config.drata, deliverable_records, max_payload_bytes=app_config.runtime.max_payload_bytes
-        )
-        uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
-        report["batchesAttempted"] = len(delivery_results)
-        report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
-        error_classes = sorted({r.error_class for r in delivery_results if r.error_class})
-        if error_classes:
-            report["deliveryErrorClasses"] = error_classes
-        if not uploaded:
-            report["uploadDecision"] = "delivery_failed"
-            logger.error("upload failed", extra={"errorClasses": error_classes})
-        else:
-            report["uploadDecision"] = "uploaded_partial" if domains_withheld else "uploaded"
-            logger.info(
-                "upload succeeded",
-                extra={"records": len(deliverable_records), "domainsWithheld": domains_withheld},
+        # Collection has already succeeded and produced real records by this point --
+        # possibly after a long, expensive run across many compartments/regions. An
+        # unexpected failure anywhere in delivery/cleanup below (a bad secret, a network
+        # surprise, a bug) must not un-return that work: caught broadly and folded into
+        # the report instead of raised, so main() still writes collection-report.json
+        # and flat-records.json with everything this run actually collected.
+        try:
+            delivery_results = upsert_records(
+                app_config.drata, deliverable_records, max_payload_bytes=app_config.runtime.max_payload_bytes
             )
-            if domains_withheld:
-                logger.warning(
-                    "some domains withheld this run -- their prior records were left "
-                    "untouched, not deleted or overwritten",
-                    extra={"domainsWithheld": domains_withheld},
+            uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
+            report["batchesAttempted"] = len(delivery_results)
+            report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
+            error_classes = sorted({r.error_class for r in delivery_results if r.error_class})
+            if error_classes:
+                report["deliveryErrorClasses"] = error_classes
+            if not uploaded:
+                report["uploadDecision"] = "delivery_failed"
+                logger.error("upload failed", extra={"errorClasses": error_classes})
+            else:
+                report["uploadDecision"] = "uploaded_partial" if domains_withheld else "uploaded"
+                logger.info(
+                    "upload succeeded",
+                    extra={"records": len(deliverable_records), "domainsWithheld": domains_withheld},
                 )
+                if domains_withheld:
+                    logger.warning(
+                        "some domains withheld this run -- their prior records were left "
+                        "untouched, not deleted or overwritten",
+                        extra={"domainsWithheld": domains_withheld},
+                    )
 
-            # Cleanup only runs for domains that actually delivered this run -- deleting
-            # a stale id from a withheld domain would be a guess, not a confirmed absence.
-            # Skipped in --test: a sampled run's absences aren't confirmed deletions.
-            if not test_mode:
-                delete_ids = [
-                    record_id
-                    for evidence_type, ids in flat_result.excluded_ids.items()
-                    for record_id in ids
-                    if all(d in deliverable_domains for d in EVIDENCE_TYPE_REQUIRED_DOMAINS[evidence_type])
-                ]
-                if delete_ids:
-                    delete_results = delete_records(app_config.drata, delete_ids)
-                    failed_deletes = [r for r in delete_results if not r.uploaded]
-                    report["staleRecordsDeleted"] = len(delete_results) - len(failed_deletes)
-                    report["staleRecordDeleteFailures"] = len(failed_deletes)
-                    if failed_deletes:
-                        logger.warning(
-                            "some stale-record deletes failed -- will retry next run",
-                            extra={"failures": len(failed_deletes)},
+                # Cleanup only runs for domains that actually delivered this run -- deleting
+                # a stale id from a withheld domain would be a guess, not a confirmed absence.
+                # Skipped in --test: a sampled run's absences aren't confirmed deletions.
+                if not test_mode:
+                    delete_ids = [
+                        record_id
+                        for evidence_type, ids in flat_result.excluded_ids.items()
+                        for record_id in ids
+                        if all(
+                            d in deliverable_domains for d in EVIDENCE_TYPE_REQUIRED_DOMAINS[evidence_type]
                         )
+                    ]
+                    if delete_ids:
+                        delete_results = delete_records(app_config.drata, delete_ids)
+                        failed_deletes = [r for r in delete_results if not r.uploaded]
+                        report["staleRecordsDeleted"] = len(delete_results) - len(failed_deletes)
+                        report["staleRecordDeleteFailures"] = len(failed_deletes)
+                        if failed_deletes:
+                            logger.warning(
+                                "some stale-record deletes failed -- will retry next run",
+                                extra={"failures": len(failed_deletes)},
+                            )
+        except Exception as exc:
+            uploaded = False
+            report["uploadDecision"] = "delivery_failed"
+            report["deliveryError"] = f"{type(exc).__name__}: {exc}"
+            logger.exception("upload/cleanup failed unexpectedly -- collected data is not lost")
 
     exit_code = EXIT_OK if dry_run or uploaded else EXIT_BLOCKED
     return RunResult(
@@ -491,29 +531,38 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("configuration error: Drata API token", extra={"error": str(exc)})
             return EXIT_CONFIG_ERROR
 
+    out_dir = Path(args.out_dir)
+
     try:
         result = run(app_config, dry_run=dry_run, test_mode=args.test)
     except AuthError as exc:
         logger.error("authentication failed", extra={"error": str(exc)})
+        _write_failure_report(out_dir, dry_run=dry_run, error_type="AuthError", error_message=str(exc))
         return EXIT_CONFIG_ERROR
     except ConfigError as exc:
         logger.error("configuration error", extra={"error": str(exc)})
+        _write_failure_report(out_dir, dry_run=dry_run, error_type="ConfigError", error_message=str(exc))
         return EXIT_CONFIG_ERROR
-    except Exception:
+    except Exception as exc:
         logger.exception("unexpected failure during collection run")
+        _write_failure_report(
+            out_dir, dry_run=dry_run, error_type=type(exc).__name__, error_message=str(exc)
+        )
         return EXIT_UNEXPECTED
 
-    out_dir = Path(args.out_dir)
     _prepare_restricted_output_dir(out_dir)
     _write_restricted(
         out_dir / "collection-report.json",
         json.dumps(result.report, indent=2, sort_keys=True).encode("utf-8"),
     )
-    if dry_run:
-        _write_restricted(
-            out_dir / "flat-records.json",
-            json.dumps(result.records, indent=2, sort_keys=True).encode("utf-8"),
-        )
+    # Always written, not just on dry runs -- whatever this run actually collected stays on
+    # disk regardless of what happened to it afterward (upload succeeded, failed, or was
+    # never attempted), so a delivery failure never means the collected evidence itself is
+    # unrecoverable.
+    _write_restricted(
+        out_dir / "flat-records.json",
+        json.dumps(result.records, indent=2, sort_keys=True).encode("utf-8"),
+    )
 
     print(json.dumps(result.report, indent=2, sort_keys=True))
     return result.exit_code
