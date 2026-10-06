@@ -6,6 +6,7 @@ and a per-operation result feeding the run report's operation counts. Every
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import dataclasses
 import functools
@@ -44,6 +45,42 @@ def is_retryable_service_error(exc: oci.exceptions.ServiceError) -> bool:
 
 OperationStatus = str  # "success" | "failed" | "unsupported" | "skipped"
 
+class FairSemaphore:
+    """Counting semaphore that serves waiters strictly in arrival order. ``threading.Semaphore``
+    wakes an arbitrary waiter, so with hundreds of queued threads some requests starve for
+    seconds while newer ones overtake them -- which spreads a deadline's casualties over every
+    domain instead of finishing the early ones, and stretches the gap between listing a
+    compartment's instances and its VNIC attachments. A releasing thread hands its slot straight
+    to the longest waiter."""
+
+    def __init__(self, value: int) -> None:
+        self._lock = threading.Lock()
+        self._value = value
+        self._waiters: collections.deque[threading.Event] = collections.deque()
+
+    def acquire(self) -> None:
+        with self._lock:
+            if self._value > 0 and not self._waiters:
+                self._value -= 1
+                return
+            turn = threading.Event()
+            self._waiters.append(turn)
+        turn.wait()  # release() passed this thread the slot
+
+    def release(self) -> None:
+        with self._lock:
+            if self._waiters:
+                self._waiters.popleft().set()
+            else:
+                self._value += 1
+
+    def __enter__(self) -> None:
+        self.acquire()
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.release()
+
+
 # error_code for RetryPolicy.deadline cutting an operation short (--test, or a hosting
 # time limit such as Lambda's); operations_complete() treats it as incomplete, same as any
 # other failure, so the affected domain is withheld rather than delivered partial.
@@ -65,10 +102,10 @@ class RetryPolicy:
     # Caps concurrent in-flight OCI requests across every collector of the run (one
     # semaphore shared by all of them); None means unbounded. Held only for the request
     # itself, never while sleeping between retries.
-    call_slots: threading.BoundedSemaphore | None = None
+    call_slots: FairSemaphore | None = None
     # Tighter caps for services with documented per-tenancy rate limits (e.g. Monitoring, KMS:
     # 10 requests/s), keyed by the ``service`` label of the operation.
-    service_slots: Mapping[str, threading.BoundedSemaphore] = dataclasses.field(default_factory=dict)
+    service_slots: Mapping[str, FairSemaphore] = dataclasses.field(default_factory=dict)
     # Threads per fan-out stage. call_slots, not this, bounds real concurrency; this only
     # needs to be enough to keep every slot busy.
     fanout: int = 8
@@ -402,6 +439,8 @@ def list_in_scope(
     operation in one concurrent pass. Returns one result list per listing, each in scope
     order, so callers zip it back against ``scope``."""
 
+    # Scope-major, so every listing of one compartment is issued back to back (instances and
+    # their VNIC attachments are then a consistent snapshot, not seconds apart).
     results = policy.run(
         [
             functools.partial(
@@ -414,9 +453,8 @@ def list_in_scope(
                 retry_policy=policy,
                 **call_kwargs,
             )
-            for service, operation, clients in listings
             for region, compartment_id in scope
+            for service, operation, clients in listings
         ]
     )
-    width = len(scope)
-    return [results[i * width : (i + 1) * width] for i in range(len(listings))]
+    return [results[i :: len(listings)] for i in range(len(listings))]

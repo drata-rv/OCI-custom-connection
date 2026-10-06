@@ -10,7 +10,6 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import logging
-import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +32,7 @@ from oci_drata.collection.waf import collect_waf
 from oci_drata.config import AppConfig, redact_config_for_display
 from oci_drata.delivery.drata import delete_records, upsert_records
 from oci_drata.oci_auth import TenancySigner, build_signer
-from oci_drata.pagination import DEADLINE_EXCEEDED_ERROR_CODE, OperationResult, RetryPolicy
+from oci_drata.pagination import DEADLINE_EXCEEDED_ERROR_CODE, FairSemaphore, OperationResult, RetryPolicy
 from oci_drata.transform import normalize
 from oci_drata.transform.aggregate import (
     EVIDENCE_TYPE_REQUIRED_DOMAINS,
@@ -153,8 +152,8 @@ def _build_policy(app_config: AppConfig, deadline: float | None) -> RetryPolicy:
     max_in_flight = app_config.runtime.max_concurrency
     return RetryPolicy(
         deadline=deadline,
-        call_slots=threading.BoundedSemaphore(max_in_flight),
-        service_slots={name: threading.BoundedSemaphore(n) for name, n in _RATE_LIMITED_SERVICE_SLOTS.items()},
+        call_slots=FairSemaphore(max_in_flight),
+        service_slots={name: FairSemaphore(n) for name, n in _RATE_LIMITED_SERVICE_SLOTS.items()},
         fanout=min(max_in_flight, _MAX_FANOUT),
     )
 
@@ -262,7 +261,8 @@ def _deliver(
             deadline=deadline,
         )
         uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
-        report["batchesAttempted"] = len(delivery_results)
+        report["batchesAttempted"] = sum(1 for r in delivery_results if r.error_class != "deadline")
+        report["batchesNotSentBeforeDeadline"] = sum(1 for r in delivery_results if r.error_class == "deadline")
         report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
         error_classes = sorted({r.error_class for r in delivery_results if r.error_class})
         if error_classes:
@@ -336,13 +336,15 @@ def run(
         extra={"config": redact_config_for_display(dataclasses.asdict(app_config))},
     )
 
-    signer = build_signer(app_config)
+    retry_policy = _build_policy(app_config, None)
+    # Each client's HTTPS pool is sized to the threads that can use it at once.
+    signer = build_signer(app_config, pool_size=retry_policy.fanout)
     if test_mode:
         test_deadline = time.monotonic() + TEST_MODE_TIME_BUDGET_SECONDS
         deadline = test_deadline if deadline is None else min(deadline, test_deadline)
     # Every OCI call routes through paginate()/call_once() (pagination.py), so one deadline on
     # this shared policy bounds wall-clock time uniformly across discovery and all collectors.
-    retry_policy = _build_policy(app_config, deadline)
+    retry_policy = dataclasses.replace(retry_policy, deadline=deadline)
 
     discovery = discover(signer, app_config, retry_policy=retry_policy)
     results = _run_collectors(signer, discovery, app_config, retry_policy)

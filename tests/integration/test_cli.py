@@ -113,7 +113,6 @@ def _discovery(*, complete: bool = True) -> DiscoveryResult:
         approved_compartment_ids=(COMPARTMENT_OCID,),
         excluded_compartment_ids=(),
         inaccessible_compartment_ids=(),
-        availability_domains_by_region={REGION: []},
         operations=[
             OperationResult(service="identity", operation="get_tenancy", region=REGION, compartment_id=None, status="success" if complete else "failed")
         ],
@@ -187,7 +186,7 @@ def _autonomous_database() -> AutonomousDatabaseCollectionResult:
 
 @pytest.fixture
 def patched_collectors(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    monkeypatch.setattr(runner, "build_signer", lambda app_config: MagicMock())
+    monkeypatch.setattr(runner, "build_signer", lambda app_config, **kwargs: MagicMock())
     monkeypatch.setattr(runner, "discover", lambda signer, app_config, retry_policy=None: _discovery())
     monkeypatch.setattr(runner, "collect_compute", lambda *a, **k: _exposed_windows_compute())
     monkeypatch.setattr(runner, "collect_networking", lambda *a, **k: _networking_allowing_rdp())

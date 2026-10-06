@@ -38,6 +38,8 @@ class TenancySigner:
     """
 
     base_config: dict[str, str]
+    # Idle HTTPS connections each client keeps; set to the fan-out width by runner.run().
+    pool_size: int = 8
 
     def region_config(self, region: str) -> dict[str, str]:
         cfg = dict(self.base_config)
@@ -145,7 +147,7 @@ def _check_private_key_loads(config: dict[str, str]) -> None:
         ) from exc
 
 
-def build_signer(app_config: AppConfig) -> TenancySigner:
+def build_signer(app_config: AppConfig, *, pool_size: int = 8) -> TenancySigner:
     """Load and validate the API-signing user's OCI SDK configuration.
 
     Fails closed: raises :class:`AuthError` on any missing file, permission
@@ -181,17 +183,16 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
             f"(config file tenancy={tenancy_ocid!r})"
         )
 
-    return TenancySigner(base_config=raw_config)
+    return TenancySigner(base_config=raw_config, pool_size=pool_size)
 
 
-# One HTTPS pool per client (= per service x region). The SDK default is 10 connections; a run
-# fans out to a few dozen threads, so a bigger pool avoids discarded connections and the extra
-# TLS handshakes that come with them.
-_POOL_SIZE = 32
+def _tune(client: Any, pool_size: int) -> Any:
+    """One HTTPS pool per client (= per service x region). The SDK default keeps 10 connections;
+    a pool as wide as the threads that share the client avoids discarded connections and their
+    extra TLS handshakes, and no wider, so idle sockets stay far below Lambda's 1,024 file
+    descriptors."""
 
-
-def _tune(client: Any) -> Any:
-    client.base_client.session.mount("https://", oci.base_client.OCIHTTPAdapter(pool_maxsize=_POOL_SIZE))
+    client.base_client.session.mount("https://", oci.base_client.OCIHTTPAdapter(pool_maxsize=pool_size))
     return client
 
 
@@ -207,7 +208,7 @@ def regional_client(client_cls: Callable[..., T], signer: TenancySigner, *, regi
     # NoneRetryStrategy: some SDK operations retry by themselves (up to 8 attempts / 600 s),
     # invisibly to our deadline and request-slot accounting. pagination.py is the one retry layer.
     client = client_cls(signer.region_config(region), retry_strategy=oci.retry.NoneRetryStrategy())
-    return cast(T, GuardedOciClient(_tune(client)))
+    return cast(T, GuardedOciClient(_tune(client, signer.pool_size)))
 
 
 def endpoint_client(
@@ -222,4 +223,4 @@ def endpoint_client(
     client = client_cls(
         signer.region_config(region), service_endpoint, retry_strategy=oci.retry.NoneRetryStrategy()
     )
-    return cast(T, GuardedOciClient(_tune(client)))
+    return cast(T, GuardedOciClient(_tune(client, signer.pool_size)))

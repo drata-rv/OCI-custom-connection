@@ -51,7 +51,7 @@ drata:
 
 runtime:
   maxPayloadBytes: 4500000
-  # Concurrent OCI API requests across the whole run (1-64). Simulated 324 compartments x 2 regions:
+  # Concurrent OCI API requests across the whole run (1-32). Simulated 324 compartments x 2 regions:
   # ~6 min at 8, ~3 min at 16. Raise only if runs approach the 15-minute limit (more can trigger 429s).
   maxConcurrency: 8
   logLevel: INFO

@@ -132,3 +132,14 @@ def test_delete_records_url_encodes_ids_with_embedded_slash(drata_config: DrataC
     assert called_url.endswith("aa%3Abb%3Acc") or "%2F" in called_url
 
 
+
+
+def test_batches_after_the_deadline_are_not_sent(drata_config: DrataConfig) -> None:
+    import time
+
+    session = MagicMock()
+
+    (result,) = upsert_records(drata_config, [{"id": "x"}], session=session, deadline=time.monotonic() - 1)
+
+    assert (result.uploaded, result.error_class) == (False, "deadline")
+    session.post.assert_not_called()

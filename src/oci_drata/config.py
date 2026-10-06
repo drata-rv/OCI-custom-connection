@@ -683,7 +683,7 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         )
     runtime = RuntimeConfig(
         max_payload_bytes=_require_int(runtime_raw, "maxPayloadBytes", context="runtime", minimum=1),
-        max_concurrency=_require_int(runtime_raw, "maxConcurrency", context="runtime", minimum=1, maximum=64),
+        max_concurrency=_require_int(runtime_raw, "maxConcurrency", context="runtime", minimum=1, maximum=32),
         log_level=log_level.upper(),
         dry_run=_require_bool(runtime_raw, "dryRun", context="runtime"),
     )

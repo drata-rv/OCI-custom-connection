@@ -62,7 +62,6 @@ def identity_client() -> MagicMock:
     client.list_region_subscriptions.return_value = _response(
         [SimpleNamespace(region_name="us-ashburn-1", status="READY")]
     )
-    client.list_availability_domains.return_value = _response([])
     return client
 
 

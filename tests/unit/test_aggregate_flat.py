@@ -41,7 +41,7 @@ def _build(**overrides) -> FlatRecordsResult:
         discovery=DiscoveryResult(
             tenancy=None, region_subscriptions=[], all_compartments=[], discovery_region="us-ashburn-1",
             approved_regions=("us-ashburn-1",), unready_regions=(), approved_compartment_ids=("c1",),
-            excluded_compartment_ids=(), inaccessible_compartment_ids=(), availability_domains_by_region={},
+            excluded_compartment_ids=(), inaccessible_compartment_ids=(),
             operations=[],
         ),
         compute=ComputeCollectionResult(

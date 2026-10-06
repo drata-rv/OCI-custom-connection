@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import oci
 
-from oci_drata.pagination import RetryPolicy, operations_complete, paginate
+from oci_drata.pagination import FairSemaphore, RetryPolicy, operations_complete, paginate
 
 
 def _response(data, headers=None):
@@ -106,7 +106,7 @@ def test_call_slots_bound_in_flight_requests_across_threads() -> None:
             in_flight -= 1
         return _response([])
 
-    policy = RetryPolicy(call_slots=threading.BoundedSemaphore(3), fanout=12)
+    policy = RetryPolicy(call_slots=FairSemaphore(3), fanout=12)
     results = policy.run(
         [
             functools.partial(paginate, service="s", operation="list_x", call=slow_call, retry_policy=policy)
@@ -126,3 +126,24 @@ def test_expired_deadline_fails_the_operation_without_calling() -> None:
 
     assert (result.status, result.error_code) == ("failed", "DeadlineExceeded")
     call.assert_not_called()
+
+
+def test_fair_semaphore_hands_slots_to_waiters_in_arrival_order() -> None:
+    import threading
+
+    slots = FairSemaphore(1)
+    slots.acquire()
+    order: list[int] = []
+    threads = []
+    for n in range(6):
+        thread = threading.Thread(target=lambda n=n: (slots.acquire(), order.append(n), slots.release()))
+        thread.start()
+        threads.append(thread)
+        while len(slots._waiters) < n + 1:  # wait until this thread is queued before starting the next
+            threading.Event().wait(0.001)
+
+    slots.release()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert order == [0, 1, 2, 3, 4, 5]

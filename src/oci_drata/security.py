@@ -70,7 +70,6 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "get_tenancy",
         "list_region_subscriptions",
         "list_compartments",
-        "list_availability_domains",
         # Compute and Windows classification (collection/compute.py)
         "list_instances",
         "get_image",

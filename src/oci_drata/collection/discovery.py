@@ -33,7 +33,6 @@ class DiscoveryResult:
     approved_compartment_ids: tuple[str, ...]
     excluded_compartment_ids: tuple[str, ...]
     inaccessible_compartment_ids: tuple[str, ...]
-    availability_domains_by_region: dict[str, list[Any]]
     operations: list[OperationResult]
 
     @property
@@ -130,22 +129,6 @@ def discover(
     } | root_ids
     approved_compartment_ids = tuple(sorted(active_ids - excluded))
 
-    availability_domains_by_region: dict[str, list[Any]] = {}
-    for r in approved_regions:
-        ad_client = identity if r == region else regional_client(
-            oci.identity.IdentityClient, signer, region=r
-        )
-        ad_op = paginate(
-            service="identity",
-            operation="list_availability_domains",
-            call=ad_client.list_availability_domains,
-            region=r,
-            compartment_id=tenancy_ocid,
-            retry_policy=retry_policy,
-        )
-        operations.append(ad_op)
-        availability_domains_by_region[r] = ad_op.items
-
     return DiscoveryResult(
         tenancy=tenancy,
         region_subscriptions=region_sub_op.items,
@@ -156,7 +139,6 @@ def discover(
         approved_compartment_ids=approved_compartment_ids,
         excluded_compartment_ids=tuple(sorted(excluded)),
         inaccessible_compartment_ids=inaccessible,
-        availability_domains_by_region=availability_domains_by_region,
         operations=operations,
     )
 
