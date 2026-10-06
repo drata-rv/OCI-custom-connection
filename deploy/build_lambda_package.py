@@ -40,10 +40,11 @@ SDK_BASE_PACKAGES = {"_vendor", "auth", "circuit_breaker", "pagination", "retry"
 
 
 def services_used() -> set[str]:
-    """OCI SDK service packages the collectors reference (``oci.core``, ``oci.identity``, ...)."""
+    """OCI SDK sub-packages anything in oci_drata names: ``oci.core.X``, ``import oci.core``,
+    ``from oci.core import X``."""
 
     used: set[str] = set()
-    for path in (SRC / "collection").glob("*.py"):
+    for path in SRC.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if (
                 isinstance(node, ast.Attribute)
@@ -52,6 +53,10 @@ def services_used() -> set[str]:
                 and node.value.value.id == "oci"
             ):
                 used.add(node.value.attr)
+            elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("oci."):
+                used.add(node.module.split(".")[1])
+            elif isinstance(node, ast.Import):
+                used.update(a.name.split(".")[1] for a in node.names if a.name.startswith("oci."))
     return used
 
 
@@ -59,10 +64,12 @@ def prune_oci_sdk(oci_dir: Path) -> tuple[list[str], list[str]]:
     """Deletes every oci/ sub-package that is neither plumbing nor a service this project uses.
     ``import oci`` is lazy per service, so what stays imports unchanged. Returns (kept, removed)."""
 
-    keep = SDK_BASE_PACKAGES | services_used()
-    missing = {name for name in keep if not (oci_dir / name).is_dir()}
+    used = services_used()
+    # `oci.config`, `oci.exceptions`, `oci.signer`... are plain modules, which are never pruned.
+    missing = {n for n in used | SDK_BASE_PACKAGES if not (oci_dir / n).is_dir() and not (oci_dir / f"{n}.py").is_file()}
     if missing:
         raise SystemExit(f"installed oci SDK has no package(s) {sorted(missing)} -- cannot prune safely")
+    keep = SDK_BASE_PACKAGES | {n for n in used if (oci_dir / n).is_dir()}
     removed = []
     for child in sorted(oci_dir.iterdir()):
         if child.is_dir() and child.name not in keep:
@@ -84,9 +91,13 @@ def main() -> int:
     args = parser.parse_args()
 
     sys.path.insert(0, str(REPO_ROOT / "src"))
-    from oci_drata.config import load_config  # fail on a bad config now, not after deploying
+    from oci_drata.config import ConfigError, load_config  # fail on a bad config now, not after deploying
 
-    load_config(args.config)
+    try:
+        load_config(args.config)
+    except ConfigError as exc:
+        print(f"configuration error in {args.config}: {exc}", file=sys.stderr)
+        return 2
 
     out = Path(args.out)
     package = out / "lambda"
@@ -111,6 +122,11 @@ def main() -> int:
     shutil.copy(args.config, package / "config.yaml")
     for cache in package.rglob("__pycache__"):
         shutil.rmtree(cache)
+    # Lambda runs as an unprivileged user and needs world-readable files: a 0600 config.yaml (or a
+    # restrictive umask) would otherwise be zipped as-is and fail at the first invoke.
+    for path in [package, *package.rglob("*")]:
+        executable = path.is_dir() or path.stat().st_mode & 0o111
+        path.chmod(0o755 if executable else 0o644)
 
     if args.arch == "host":
         env = {**os.environ, "PYTHONPATH": str(package)}

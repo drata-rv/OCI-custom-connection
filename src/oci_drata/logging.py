@@ -33,7 +33,14 @@ def _redact_value(key: str, value: Any) -> Any:
 
 class RedactingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = redact_text(str(record.msg))
+        # Format first, then redact: a secret passed as a %-style argument (as boto3's DEBUG
+        # logging of a Secrets Manager response does) never appears in ``msg`` itself.
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = f"{record.msg} {record.args}"
+        record.msg = redact_text(message)
+        record.args = None
         for attr_name, attr_value in list(record.__dict__.items()):
             if attr_name in _RESERVED_RECORD_ATTRS:
                 continue
@@ -58,6 +65,11 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str, sort_keys=True)
 
 
+# Libraries that log request/response detail at DEBUG -- Secrets Manager responses (the OCI key,
+# the Drata token) and signed request headers among it. Never let runtime.logLevel reach them.
+_QUIET_LIBRARIES = ("boto3", "botocore", "s3transfer", "urllib3", "requests", "oci")
+
+
 def configure_logging(level: str = "INFO", *, stream: Any = None) -> None:
     root = logging.getLogger()
     root.handlers.clear()
@@ -66,3 +78,5 @@ def configure_logging(level: str = "INFO", *, stream: Any = None) -> None:
     handler.addFilter(RedactingFilter())
     root.addHandler(handler)
     root.setLevel(level.upper())
+    for name in _QUIET_LIBRARIES:
+        logging.getLogger(name).setLevel(logging.WARNING)

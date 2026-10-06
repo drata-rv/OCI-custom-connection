@@ -32,8 +32,9 @@ class AuthError(Exception):
 class TenancySigner:
     """Resolved OCI SDK config for the API-signing user.
 
-    Holds only the private key file path, not key material. Do not log
-    ``base_config`` -- may carry a resolved passphrase.
+    ``base_config`` is the private key file path -- or, with ``credentialsSecretRef``, the key
+    itself (``key_content``) -- plus any passphrase. Never log, ``asdict`` or ``vars`` it; the
+    custom ``__repr__`` below is what keeps it out of logs and tracebacks.
     """
 
     base_config: dict[str, str]
@@ -73,9 +74,12 @@ def _config_from_secret(ref: SecretRef) -> dict[str, str]:
             f"oci.authentication.credentialsSecretRef ({ref!r}) must be a JSON object of strings: "
             f"user, fingerprint, tenancy, region, key_content[, pass_phrase]"
         )
-    unexpected = sorted(set(raw) - _SECRET_CONFIG_KEYS)
-    if unexpected:
-        raise AuthError(f"oci.authentication.credentialsSecretRef ({ref!r}) has unsupported field(s) {unexpected}")
+    if set(raw) - _SECRET_CONFIG_KEYS:
+        # Field names are not echoed: they come from the secret, and a mistyped one can be a value.
+        raise AuthError(
+            f"oci.authentication.credentialsSecretRef ({ref!r}) has fields other than "
+            f"{sorted(_SECRET_CONFIG_KEYS)}"
+        )
     config = dict(raw)
     # A PEM pasted into a single-line secret field usually arrives with literal "\n" escapes.
     if "key_content" in config:
@@ -123,6 +127,24 @@ def _config_from_file(auth: Any) -> dict[str, str]:
     return dict(raw_config)
 
 
+def _check_private_key_loads(config: dict[str, str]) -> None:
+    """validate_config accepts an empty or non-PEM key; load it now, so a bad key or passphrase
+    fails here with a clear AuthError (exception type only: never echo key material)."""
+
+    try:
+        if config.get("key_content"):
+            oci.signer.load_private_key(config["key_content"], config.get("pass_phrase"))
+        else:
+            oci.signer.load_private_key_from_file(
+                str(Path(config["key_file"]).expanduser()), config.get("pass_phrase")
+            )
+    except Exception as exc:
+        raise AuthError(
+            f"OCI private key could not be loaded ({type(exc).__name__}) -- check that it is a PEM "
+            f"private key and that pass_phrase / privateKeyPassphraseSecretRef is right"
+        ) from exc
+
+
 def build_signer(app_config: AppConfig) -> TenancySigner:
     """Load and validate the API-signing user's OCI SDK configuration.
 
@@ -150,6 +172,7 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
         oci.config.validate_config(raw_config)
     except Exception as exc:
         raise AuthError(f"OCI SDK config failed validation: {exc}") from exc
+    _check_private_key_loads(raw_config)
 
     tenancy_ocid = raw_config.get("tenancy")
     if tenancy_ocid != app_config.oci.expected_tenancy_ocid:

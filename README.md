@@ -99,7 +99,7 @@ export DRATA_API_TOKEN="$(cat /path/to/token)"
 install -m 600 /path/to/token /run/secrets/drata_api_token
 ```
 
-Secrets Manager (for AWS Lambda, §10) — use `provider: aws_secretsmanager` with the secret's name or ARN; add `key: <field>` to read one field of a JSON secret:
+Secrets Manager (for AWS Lambda, §10) — use `provider: aws_secretsmanager` with the secret's name or ARN; add `key: <field>` to read one field of a JSON secret. `oci.authentication.credentialsSecretRef` takes the same form and replaces `configFile`/`profile` with an OCI SDK config held in a secret (no key file):
 
 ```yaml
 apiTokenSecretRef:
@@ -286,39 +286,41 @@ Evaluation threshold for every test: "All results must pass" (`assertion: "nofai
 
 ## 10. AWS Lambda (scheduled nightly run)
 
-One EventBridge Scheduler rule invokes one Lambda function per night. The function runs the same collection as the CLI (`runner.run()`), reads its credentials from Secrets Manager, and stops by itself before Lambda's 15-minute limit.
+One EventBridge Scheduler schedule invokes one Lambda function per night. The function runs the same collection as the CLI (`runner.run()`), reads its credentials from Secrets Manager, and stops by itself before Lambda's 15-minute limit.
 
-**1. Secrets.** Create two secrets in the function's Region:
+**1. Secrets.** Create two secrets in the function's Region (`file://` keeps the values out of shell history):
 
 ```bash
-aws secretsmanager create-secret --name oci-drata/drata-token --secret-string "$(cat /path/to/drata_token)"
+aws secretsmanager create-secret --name oci-drata/drata-token --secret-string file:///path/to/drata_token
 
-aws secretsmanager create-secret --name oci-drata/oci-credentials --secret-string "$(python3 -c '
+python3 -c '
 import json, sys
 print(json.dumps({
     "user": "ocid1.user.oc1..<user>", "tenancy": "ocid1.tenancy.oc1..<tenancy>",
     "fingerprint": "aa:bb:cc:...", "region": "us-ashburn-1",
     "key_content": open(sys.argv[1]).read(),
-}))' /path/to/oci_api_key.pem)"
+}))' /path/to/oci_api_key.pem > oci-credentials.json
+aws secretsmanager create-secret --name oci-drata/oci-credentials --secret-string file://oci-credentials.json
+rm oci-credentials.json
 ```
 
-Add `"pass_phrase": "..."` to the second secret only if the key is encrypted. Note both ARNs.
+Add `"pass_phrase": "..."` to the second secret only if the key is encrypted. Note both full ARNs (they end in a 6-character suffix).
 
 **2. Config.**
 
 ```bash
-cp deploy/config.lambda.example.yaml config.yaml
+cp deploy/config.lambda.example.yaml lambda.local.yaml
 ```
 
-Edit `expectedTenancyOcid`, `regions.allow`, `drata.connectionId`/`resourceId`, the secret names, and the `oci.services.*` toggles. It holds no secrets. Keep `runtime.dryRun: true` until step 5.
+Edit `expectedTenancyOcid`, `regions.allow`, `drata.connectionId`/`resourceId`, the two secret names, and the `oci.services.*` toggles. It holds no secrets (`*.local.yaml` is git-ignored). Keep `runtime.dryRun: true` until step 5.
 
 **3. Build** (needs PyPI access, not Docker; `--arch` must match step 4's `Architecture`):
 
 ```bash
-python deploy/build_lambda_package.py --config config.yaml --arch x86_64   # or arm64
+python deploy/build_lambda_package.py --config lambda.local.yaml --arch x86_64   # or arm64
 ```
 
-Writes `dist/lambda/` (about 75 MB unzipped, 17 MB zipped; Lambda's limit is 250 MB unzipped).
+Writes `dist/lambda/` (about 97 MB unzipped, 33 MB zipped; Lambda's limit is 250 MB unzipped).
 
 **4. Deploy** (AWS SAM CLI):
 
@@ -326,31 +328,34 @@ Writes `dist/lambda/` (about 75 MB unzipped, 17 MB zipped; Lambda's limit is 250
 sam deploy --template-file deploy/template.yaml --stack-name oci-drata --capabilities CAPABILITY_IAM --guided
 ```
 
-Parameters: `OciCredentialsSecretArn`, `DrataTokenSecretArn`, `Architecture`, `ScheduleExpression` (default `cron(0 8 * * ? *)`, daily 08:00), `ScheduleTimezone`, `AlarmTopicArn` (optional SNS topic for the two alarms). If the stack fails on reserved concurrency (new accounts have a low quota), redeploy with `PreventOverlap=false`.
+Parameters: `OciCredentialsSecretArn`, `DrataTokenSecretArn`, `Architecture`, `ScheduleExpression` (default `cron(0 8 * * ? *)`, daily 08:00), `ScheduleTimezone`, `MemorySize` (default 1769 MB = one vCPU), `LogRetentionDays`, `PreventOverlap`, `ExpectDailyRun`, `AlarmTopicArn` (optional SNS topic for the alarms). If the stack fails on reserved concurrency (new accounts have a low quota), redeploy with `PreventOverlap=false`. If the secrets use a customer-managed KMS key, also grant the function role `kms:Decrypt` on that key.
 
 **5. Test, then go live.**
 
 ```bash
 aws lambda invoke --function-name <FunctionName output> --payload '{"dryRun": true}' \
-  --cli-binary-format raw-in-base64-out --cli-read-timeout 900 /dev/stdout
+  --cli-binary-format raw-in-base64-out --cli-read-timeout 0 /dev/stdout
 ```
 
-Read the function's log group: the `run report` line is the same content as `collection-report.json`. When it looks right, set `runtime.dryRun: false` in `config.yaml`, rebuild (step 3) and redeploy (step 4).
+Read the function's log group: the `run report` line has the same content as `collection-report.json`. When it looks right, set `runtime.dryRun: false` in `lambda.local.yaml`, rebuild (step 3) and redeploy (step 4). An event can only make a run safer: `{"dryRun": true}` forces a dry run, `{"dryRun": false}` is ignored.
 
-Run the same code on your machine, with a fake Lambda context: `python deploy/invoke_local.py --config config.yaml`.
+Run the same code on your machine, with a fake Lambda context: `python deploy/invoke_local.py --config lambda.local.yaml`.
 
 **Behavior**
 
-- Concurrency: at most `runtime.maxConcurrency` (default 8) OCI requests in flight across the whole run; Monitoring and KMS are held to 2. Raise it only if runs approach the 15-minute limit; more can trigger OCI `429` responses, which are retried with backoff.
-- Time limit: collection stops starting OCI calls about 150 s before the timeout and delivery stops about 25 s before it. A domain cut short is withheld, never delivered partial (`deadlineExceeded: true`, and `domainsWithheld` lists it); the next night collects it again.
-- A run that delivers nothing, or whose delivery fails, makes the invocation fail. Lambda does not retry it (the next night runs anyway; every write is an upsert by `id`) and the event goes to the SAM-created SQS on-failure queue.
-- Metrics (CloudWatch Embedded Metric Format, namespace `OciDrata`, per `Deployment` and aggregate): `RunSucceeded`, `RecordsDelivered`, `RecordsWithheld`, `DomainsWithheld`, `DeadlineExceeded`, `OperationsFailed`, `StaleRecordsDeleted`, `ElapsedSeconds`. Alarms: `FailedRunAlarm` (function `Errors`) and `PartialRunAlarm` (`DomainsWithheld`).
-- IAM: the function role may read only the two secrets (`secretsmanager:GetSecretValue`; add `kms:Decrypt` if they use a customer-managed KMS key) and write its log group. The OCI policy is unchanged (§4).
+- Concurrency: at most `runtime.maxConcurrency` (8 in the example config; 1-64) OCI requests in flight across the whole run; Monitoring and KMS are held to 2. Simulated 324 compartments x 2 regions (about 14,500 calls at ~200 ms each): about 6 minutes at 8, 3 minutes at 16. A run needs roughly 15 calls per compartment per region, at `maxConcurrency` / latency calls per second. If runs approach the limit, raise it (more can trigger OCI `429` responses, which are retried with backoff) or narrow `oci.regions.allow` / `oci.compartments.roots`.
+- Time limit: for the 900 s timeout, collection stops starting OCI calls 150 s before it (a fifth of the remaining time for shorter timeouts) and delivery stops 25 s before it. A domain cut short is withheld, never delivered partial (`deadlineExceeded: true`; `domainsWithheld` lists it) and is collected again the next night.
+- A run that delivers nothing, or whose delivery fails, makes the invocation fail. Lambda does not retry it (the next night runs anyway; every write is an upsert by `id`) and the event goes to the SQS on-failure queue SAM creates (find it with `aws cloudformation describe-stack-resources --stack-name oci-drata`).
+- Metrics (CloudWatch Embedded Metric Format, namespace `OciDrata`, per `Deployment` and as a dimensionless aggregate): `RunSucceeded`, `RecordsDelivered`, `RecordsWithheld`, `DomainsWithheld`, `DeadlineExceeded`, `OperationsFailed`, `StaleRecordsDeleted`, `ElapsedSeconds`. Alarms: `FailedRunAlarm` (function `Errors`), `PartialRunAlarm` (`DomainsWithheld`), `DroppedRunAlarm` (`AsyncEventsDropped`), `MissedRunAlarm` (no successful run in a UTC day).
+- IAM: the function role is SAM's default (basic CloudWatch Logs access, plus send to the on-failure queue) and may read exactly the two secrets (`secretsmanager:GetSecretValue`). The OCI policy is unchanged (§4).
+- Logs never contain secret values; third-party libraries (`boto3`, `urllib3`, `oci`) are held at `WARNING` even with `runtime.logLevel: DEBUG`.
 - Networking: do not attach the function to a VPC unless you also give it a NAT gateway; OCI and Drata are public HTTPS endpoints.
 
 | Symptom | Fix |
 |---|---|
-| `could not read Secrets Manager secret ... (AccessDeniedException)` | The secret ARN passed to the stack must be the one named in `config.yaml`; the stack grants read on that ARN only. |
-| `oci.authentication.credentialsSecretRef ... is not valid JSON` / `unsupported field(s)` | The secret must be one JSON object with only `user`, `tenancy`, `fingerprint`, `region`, `key_content`, `pass_phrase`. |
-| Invocation fails with `Task timed out` | Raise `runtime.maxConcurrency`, or narrow `oci.regions.allow` / `oci.compartments.roots`. Timeouts are normally prevented by the time limit above; check `Timeout: 900` in the stack. |
+| `could not read Secrets Manager secret ... (AccessDeniedException)` | The secret name in `config.yaml` must match the secret behind the ARN passed to the stack; the stack grants read on that ARN only. |
+| `oci.authentication.credentialsSecretRef ... is not valid JSON` / `has fields other than` | The secret must be one JSON object with only `user`, `tenancy`, `fingerprint`, `region`, `key_content`, `pass_phrase`. |
+| `OCI private key could not be loaded` | `key_content` is not a PEM private key, or `pass_phrase` is missing or wrong. |
+| Invocation fails with `Task timed out` | Check `Timeout: 900` in the stack, then raise `runtime.maxConcurrency` or narrow the scope. Timeouts are normally prevented by the time limit above. |
 | `PartialRunAlarm` fires every night | `domainsWithheld` in the `run report` line names the domain; §7 explains each cause. A persistent `NotAuthorizedOrNotFound` compartment belongs in `oci.compartments.excludeOcids`. |
+| `MissedRunAlarm` fires | The schedule did not run or every run failed: check `FailedRunAlarm`, the on-failure queue, and the schedule's state. Deploy with `ExpectDailyRun=false` if the schedule is not daily. |

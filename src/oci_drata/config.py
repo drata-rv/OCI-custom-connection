@@ -114,11 +114,15 @@ def _resolve_aws_secret(secret_id: str, key: str | None) -> str:
 
     with _aws_secret_lock:
         cached = _aws_secret_cache.get(secret_id)
-    if cached is not None and time.monotonic() - cached[0] < _AWS_SECRET_TTL_SECONDS:
+        if cached is not None and time.time() - cached[0] >= _AWS_SECRET_TTL_SECONDS:
+            del _aws_secret_cache[secret_id]  # don't keep an expired plaintext around
+            cached = None
+    if cached is not None:
         text = cached[1]
     else:
         try:
             import boto3
+            from botocore.config import Config
             from botocore.exceptions import BotoCoreError, ClientError
         except ImportError as exc:
             raise ConfigError(
@@ -126,7 +130,12 @@ def _resolve_aws_secret(secret_id: str, key: str | None) -> str:
                 "elsewhere: pip install boto3"
             ) from exc
         try:
-            response = boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)
+            # Short, bounded calls: a function with no route to AWS fails fast instead of hanging.
+            client = boto3.client(
+                "secretsmanager",
+                config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 3, "mode": "standard"}),
+            )
+            response = client.get_secret_value(SecretId=secret_id)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "unknown")
             raise ConfigError(
@@ -140,7 +149,7 @@ def _resolve_aws_secret(secret_id: str, key: str | None) -> str:
         if not text.strip():
             raise ConfigError(f"Secrets Manager secret {secret_id!r} has no SecretString (binary secrets are unsupported)")
         with _aws_secret_lock:
-            _aws_secret_cache[secret_id] = (time.monotonic(), text)
+            _aws_secret_cache[secret_id] = (time.time(), text)
 
     if key is None:
         return text.strip()
@@ -172,6 +181,12 @@ def _parse_secret_ref(value: Any, *, context: str) -> SecretRef | None:
     provider = value["provider"]
     if provider not in SECRET_PROVIDERS:
         raise ConfigError(f"{context}: unsupported secretRef provider {provider!r}")
+    unknown = sorted(set(value) - {"provider", "name", "path", "key"})
+    if unknown:
+        raise ConfigError(
+            f"{context}: unrecognized secretRef field(s) {unknown!r} -- a secretRef holds only "
+            f"provider, name, path and key; it never carries the secret itself"
+        )
     return SecretRef(provider=provider, name=value.get("name"), path=value.get("path"), key=value.get("key"))
 
 
@@ -185,6 +200,8 @@ def _scan_for_inline_secrets(node: Any, *, path: str = "$") -> None:
     like an embedded credential rather than a reference to one."""
 
     if isinstance(node, Mapping):
+        if _looks_like_secret_ref(node):
+            return  # its fields are checked, and unknown ones rejected, by _parse_secret_ref
         for key, value in node.items():
             child_path = f"{path}.{key}"
             if is_forbidden_key(key):
@@ -548,7 +565,10 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
 
     dep = _require(raw, "deployment", context="$")
     _check_known_keys(dep, _DEPLOYMENT_KEYS, context="deployment", legacy=_LEGACY_DEPLOYMENT_KEYS)
-    deployment = DeploymentConfig(name=_require(dep, "name", context="deployment"))
+    deployment_name = _require(dep, "name", context="deployment")
+    if not isinstance(deployment_name, str) or not deployment_name.strip() or len(deployment_name) > 200:
+        raise ConfigError("deployment.name must be a non-empty string of at most 200 characters")
+    deployment = DeploymentConfig(name=deployment_name)
 
     oci_raw = _require(raw, "oci", context="$")
     _check_known_keys(oci_raw, _OCI_KEYS, context="oci")

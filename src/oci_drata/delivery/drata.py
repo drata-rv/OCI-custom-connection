@@ -75,6 +75,12 @@ def _expired(deadline: float | None) -> bool:
     return deadline is not None and time.monotonic() > deadline
 
 
+def _remaining(deadline: float | None, cap: float) -> float:
+    """``cap`` clamped to the time left before ``deadline`` (a request or sleep must not outlive it)."""
+
+    return cap if deadline is None else max(0.0, min(cap, deadline - time.monotonic()))
+
+
 def _deadline_result(attempts: int) -> DeliveryResult:
     return DeliveryResult(
         uploaded=False, created=None, status_code=None, attempts=attempts, error_class="deadline",
@@ -235,14 +241,14 @@ def _delete_with_retry(
             return _deadline_result(attempt)
         attempt += 1
         try:
-            response = http.delete(url, headers=headers, timeout=timeout_seconds)
+            response = http.delete(url, headers=headers, timeout=max(1.0, _remaining(deadline, timeout_seconds)))
         except requests.RequestException as exc:
             if attempt >= max_attempts:
                 return DeliveryResult(
                     uploaded=False, created=None, status_code=None, attempts=attempt,
                     error_class="transport", error_message=str(exc),
                 )
-            _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt)
+            _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt, deadline)
             continue
 
         # 404 means the goal state (record absent) already holds -- e.g. a retry of a
@@ -262,9 +268,9 @@ def _delete_with_retry(
         if response.status_code in _RETRYABLE_STATUS and attempt < max_attempts:
             retry_after = _retry_after_seconds(response, max_delay_seconds=max_delay_seconds)
             if retry_after is not None:
-                time.sleep(retry_after)
+                time.sleep(_remaining(deadline, retry_after))
             else:
-                _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt)
+                _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt, deadline)
             continue
 
         return DeliveryResult(
@@ -292,7 +298,7 @@ def _upsert_with_retry(
             return _deadline_result(attempt)
         attempt += 1
         try:
-            response = http.post(url, json=body, headers=headers, timeout=timeout_seconds)
+            response = http.post(url, json=body, headers=headers, timeout=max(1.0, _remaining(deadline, timeout_seconds)))
         except requests.RequestException as exc:
             if attempt >= max_attempts:
                 logger.warning(
@@ -307,7 +313,7 @@ def _upsert_with_retry(
                     error_class="transport",
                     error_message=str(exc),
                 )
-            _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt)
+            _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt, deadline)
             continue
 
         if response.status_code in (200, 201):
@@ -379,9 +385,9 @@ def _upsert_with_retry(
                     "drata upload throttled/unavailable, honoring Retry-After",
                     extra={"status_code": response.status_code, "retry_after_seconds": retry_after},
                 )
-                time.sleep(retry_after)
+                time.sleep(_remaining(deadline, retry_after))
             else:
-                _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt)
+                _sleep_with_jitter(base_delay_seconds, max_delay_seconds, attempt, deadline)
             continue
 
         logger.warning(
@@ -442,6 +448,6 @@ def _safe_body(response: requests.Response) -> str:
         return "<unreadable response body>"
 
 
-def _sleep_with_jitter(base: float, cap: float, attempt: int) -> None:
+def _sleep_with_jitter(base: float, cap: float, attempt: int, deadline: float | None = None) -> None:
     upper = min(cap, base * (2**attempt))
-    time.sleep(random.uniform(0, upper))
+    time.sleep(_remaining(deadline, random.uniform(0, upper)))

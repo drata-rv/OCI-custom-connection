@@ -1,5 +1,5 @@
-# config.yaml for AWS Lambda (see README section 10). Copy to config.yaml, edit, then build:
-#   python deploy/build_lambda_package.py --config config.yaml
+# Config for AWS Lambda (see README section 10). Copy to lambda.local.yaml (git-ignored), edit, then build:
+#   python deploy/build_lambda_package.py --config lambda.local.yaml
 # Holds no secrets: credentials are read from Secrets Manager at run time.
 
 deployment:
@@ -51,8 +51,8 @@ drata:
 
 runtime:
   maxPayloadBytes: 4500000
-  # Concurrent OCI API requests across the whole run. 8 finishes a several-hundred-compartment
-  # tenancy in minutes; raise only if runs approach the 15-minute limit (more can trigger 429s).
+  # Concurrent OCI API requests across the whole run (1-64). Simulated 324 compartments x 2 regions:
+  # ~6 min at 8, ~3 min at 16. Raise only if runs approach the 15-minute limit (more can trigger 429s).
   maxConcurrency: 8
   logLevel: INFO
   dryRun: true      # set false once a dry-run invoke looks right: nothing is sent to Drata while true

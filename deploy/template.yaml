@@ -35,6 +35,11 @@ Parameters:
     Default: 'true'
     AllowedValues: ['true', 'false']
     Description: Reserve concurrency 1 so two runs never overlap. Set 'false' if the account's concurrency quota is too low to reserve (new accounts).
+  ExpectDailyRun:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Alarm when no successful run happens in a UTC day. Set 'false' if the schedule is not daily.
   AlarmTopicArn:
     Type: String
     Default: ''
@@ -43,6 +48,7 @@ Parameters:
 Conditions:
   PreventOverlapEnabled: !Equals [!Ref PreventOverlap, 'true']
   HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
+  HeartbeatEnabled: !Equals [!Ref ExpectDailyRun, 'true']
 
 Resources:
   LogGroup:
@@ -81,6 +87,7 @@ Resources:
         Nightly:
           Type: ScheduleV2
           Properties:
+            OmitName: true  # the default name omits the stack name and would collide across stacks
             ScheduleExpression: !Ref ScheduleExpression
             ScheduleExpressionTimezone: !Ref ScheduleTimezone
             FlexibleTimeWindow:
@@ -118,6 +125,38 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  DroppedRunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A scheduled invoke was dropped without running (throttled past its 60 s event age); see the stack's on-failure SQS queue
+      Namespace: AWS/Lambda
+      MetricName: AsyncEventsDropped
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref Function
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  MissedRunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HeartbeatEnabled
+    Properties:
+      AlarmDescription: No successful oci-drata run in the last UTC day (the schedule did not fire, or every run failed)
+      Namespace: OciDrata
+      MetricName: RunSucceeded
+      Statistic: Sum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
       AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
 
 Outputs:

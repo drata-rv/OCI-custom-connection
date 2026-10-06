@@ -5,7 +5,9 @@ the Lambda task root) plus ``OCI_DRATA__*`` environment overrides. Credentials a
 AWS Secrets Manager through ``aws_secretsmanager`` secretRefs, so nothing sensitive lives in
 the package or the function's environment.
 
-Event (all optional): ``{"dryRun": true}`` collects and reports without contacting Drata.
+Event (optional): ``{"dryRun": true}`` collects and reports without contacting Drata. An event
+can only make a run safer: ``{"dryRun": false}`` is ignored, so whoever may invoke the function
+cannot force a live upload the config did not ask for.
 
 Lambda gives no graceful shutdown on timeout, so the run watches the clock itself: collection
 stops starting new OCI calls ``COLLECT_MARGIN_SECONDS`` before the function would time out
@@ -23,9 +25,8 @@ import os
 import time
 from typing import Any
 
-from oci_drata.config import AppConfig, ConfigError, load_config
+from oci_drata.config import AppConfig, load_config
 from oci_drata.logging import configure_logging
-from oci_drata.oci_auth import AuthError
 from oci_drata.runner import EXIT_OK, RunResult, run
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,8 @@ def _config_path() -> str:
 
 
 def _dry_run(event: Any, app_config: AppConfig) -> bool:
-    if isinstance(event, dict) and isinstance(event.get("dryRun"), bool):
-        return event["dryRun"]
+    if isinstance(event, dict) and event.get("dryRun") is True:
+        return True
     return app_config.runtime.dry_run
 
 
@@ -71,12 +72,8 @@ def _summary(app_config: AppConfig, result: RunResult) -> dict[str, Any]:
     }
 
 
-def _emit_metrics(summary: dict[str, Any], *, succeeded: bool) -> None:
-    """One CloudWatch Embedded Metric Format line: metrics with no PutMetricData call or extra
-    IAM. Printed as a bare JSON line (not via ``logging``) because EMF requires the whole log
-    event to be the JSON object."""
-
-    metrics = {
+def _run_metrics(summary: dict[str, Any], *, succeeded: bool) -> dict[str, tuple[float, str]]:
+    return {
         "RunSucceeded": (int(succeeded), "Count"),
         "RecordsDelivered": (summary["recordCountDelivered"] if summary["uploaded"] else 0, "Count"),
         "RecordsWithheld": (summary["recordCountWithheld"], "Count"),
@@ -86,6 +83,13 @@ def _emit_metrics(summary: dict[str, Any], *, succeeded: bool) -> None:
         "StaleRecordsDeleted": (summary["staleRecordsDeleted"], "Count"),
         "ElapsedSeconds": (summary["elapsedSeconds"], "Seconds"),
     }
+
+
+def _emit_metrics(deployment: str, metrics: dict[str, tuple[float, str]]) -> None:
+    """One CloudWatch Embedded Metric Format line: metrics with no PutMetricData call or extra
+    IAM. Printed as a bare JSON line (not via ``logging``) because EMF requires the whole log
+    event to be the JSON object."""
+
     print(
         json.dumps(
             {
@@ -100,7 +104,7 @@ def _emit_metrics(summary: dict[str, Any], *, succeeded: bool) -> None:
                         }
                     ],
                 },
-                "Deployment": summary["deployment"],
+                "Deployment": deployment,
                 **{name: value for name, (value, _) in metrics.items()},
             }
         ),
@@ -112,9 +116,11 @@ def handler(event: Any, context: Any) -> dict[str, Any]:
     started = time.monotonic()
     remaining = context.get_remaining_time_in_millis() / 1000.0
     configure_logging("INFO")  # replaces the runtime's own log handler with our JSON one
+    deployment = "unknown"
 
     try:
         app_config = load_config(_config_path())
+        deployment = app_config.deployment.name
         configure_logging(app_config.runtime.log_level)
         dry_run = _dry_run(event, app_config)
         if not dry_run:
@@ -126,14 +132,17 @@ def handler(event: Any, context: Any) -> dict[str, Any]:
             deadline=started + remaining - min(COLLECT_MARGIN_SECONDS, 0.2 * remaining),
             delivery_deadline=started + remaining - min(DELIVERY_MARGIN_SECONDS, 0.05 * remaining),
         )
-    except (ConfigError, AuthError) as exc:
-        logger.error("run failed before collection", extra={"errorType": type(exc).__name__, "error": str(exc)})
+    except Exception as exc:
+        # Through the logger (so it is redacted and structured), and with a metric data point,
+        # so an alarm sees a run that never got as far as collecting.
+        logger.exception("run failed before delivery", extra={"errorType": type(exc).__name__})
+        _emit_metrics(deployment, {"RunSucceeded": (0, "Count")})
         raise
 
     summary = _summary(app_config, result)
     logger.info("run report", extra={"report": result.report})
     succeeded = result.exit_code == EXIT_OK
-    _emit_metrics(summary, succeeded=succeeded)
+    _emit_metrics(deployment, _run_metrics(summary, succeeded=succeeded))
     if not succeeded:
         report = result.report
         detail = report.get("blockedReasons") or report.get("deliveryErrorClasses") or report.get("deliveryError")
