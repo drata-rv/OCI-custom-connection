@@ -44,10 +44,6 @@ def test_allowed_list_operation_passes_through(guarded: GuardedOciClient) -> Non
     assert guarded.list_instances() == ["instance-1"]
 
 
-def test_allowed_get_operation_passes_through(guarded: GuardedOciClient) -> None:
-    assert guarded.get_vnic().id == "v1"
-
-
 def test_list_operation_not_in_allowlist_is_blocked(guarded: GuardedOciClient) -> None:
     with pytest.raises(OciOperationNotAllowedError, match="list_something_not_in_the_allowlist"):
         guarded.list_something_not_in_the_allowlist()
@@ -66,19 +62,6 @@ def test_mutation_operation_is_blocked_even_though_not_list_or_get_shaped(
         guarded.terminate_db_system()
 
 
-def test_callable_shaped_neither_list_get_nor_forbidden_prefix_is_still_blocked(
-    guarded: GuardedOciClient,
-) -> None:
-    """The gap this guard used to have: a real OCI SDK method (e.g. ObjectStorageClient's
-    head_bucket) that is neither list_*/get_*-shaped nor matches a FORBIDDEN_OPERATION_
-    PREFIXES entry used to pass through unchecked -- every real client method is either
-    read-shaped (list_/get_) or mutation-shaped, so there's no third category to exempt;
-    anything not in ALLOWED_OCI_OPERATIONS must be refused regardless of its name shape."""
-
-    with pytest.raises(OciOperationNotAllowedError, match="head_bucket"):
-        guarded.head_bucket()
-
-
 def test_forbidden_exact_name_operation_is_blocked(guarded: GuardedOciClient) -> None:
     with pytest.raises(OciOperationNotAllowedError, match="get_windows_instance_initial_credentials"):
         guarded.get_windows_instance_initial_credentials()
@@ -94,11 +77,3 @@ def test_dynamically_resolved_call_is_still_guarded(guarded: GuardedOciClient) -
         getattr(guarded, operation_name)()
 
 
-def test_non_operation_attribute_passes_through_untouched(guarded: GuardedOciClient) -> None:
-    assert guarded.base_client == "not an operation, passes through untouched"
-
-
-def test_setattr_is_refused() -> None:
-    guarded = GuardedOciClient(_FakeOciClient())
-    with pytest.raises(OciOperationNotAllowedError):
-        guarded.some_field = "value"

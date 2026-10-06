@@ -48,7 +48,7 @@ Required before first run:
 - `drata.apiTokenSecretRef` — see §3.
 
 One record per collected resource, upserted to the Custom Connection resource registered
-with `schemas/flat-record.schema.json` (`drata.resourceId`). Records carry raw OCI facts
+with `src/oci_drata/schemas/flat-record.schema.json` (`drata.resourceId`). Records carry raw OCI facts
 only, no precomputed compliance verdict -- the Drata Custom Test evaluates compliance
 against these facts.
 
@@ -122,8 +122,8 @@ Allow group oci-drata-collector to inspect autonomous-database-family in tenancy
 Allow group oci-drata-collector to read autonomous-database-family in tenancy
 ```
 
-`virtual-network-family` above (already required for `networkExposure`) also covers CPEs, DRGs, and
-IPSec connections/tunnels -- Site-to-Site VPN (`siteToSiteVpn`) needs no separate grant.
+`virtual-network-family` above (already required for `networkExposure`) also covers IPSec
+connections/tunnels -- Site-to-Site VPN (`siteToSiteVpn`) needs no separate grant.
 
 Never grant `manage`, `all-resources`, any secret-family/Vault secret-content permission, or any IPSec shared-secret permission.
 
@@ -178,7 +178,7 @@ Allow group oci-drata-collector to read keys in tenancy
 ## 5. Run
 
 ```bash
-# Dry run: writes out/flat-records.json + out/collection-report.json, never contacts Drata.
+# Dry run: never contacts Drata. Every run writes out/flat-records.json + out/collection-report.json.
 oci-drata --config config.yaml --dry-run
 
 # Live run.
@@ -240,7 +240,7 @@ for record in records:
 
 - [ ] API-signing user authenticates; policy in §4 grants no mutation permission.
 - [ ] Collector verifies tenancy and every configured region.
-- [ ] Approved compartments fully enumerated (`scope.compartmentIds` matches the OCI Console).
+- [ ] Approved compartments fully enumerated (`accessSummary.compartmentsSeen` in `collection-report.json` matches the OCI Console).
 - [ ] Enabled services show zero `failed` operations in `collection-report.json`.
 - [ ] Resource counts reconcile against the OCI Console for a sample of compartments.
 - [ ] `out/flat-records.json` validates against the Drata connection's actual schema.
@@ -270,7 +270,7 @@ Evaluation threshold for every test: "All results must pass" (`assertion: "nofai
 | `bucket-no-public-access` | `bucket` | Fails a bucket whose `publicAccessType` isn't `NoPublicAccess`. |
 | `bucket-versioning-enabled` | `bucket` | Fails a bucket whose `versioning` isn't `Enabled`. |
 | `autonomous-database-no-public-endpoint` | `autonomous_database` | Fails a database with a public endpoint hostname present. |
-| `autonomous-database-customer-managed-key` | `autonomous_database` | Fails a database with no customer-managed KMS key. Only meaningful when `decisions.requireCustomerManagedDatabaseKeys` is enabled. |
+| `autonomous-database-customer-managed-key` | `autonomous_database` | Fails a database with no customer-managed KMS key. Skip it if Oracle-managed keys are acceptable. |
 | `cloud-guard-enabled` | `cloud_guard_configuration` | Fails if the tenancy's Cloud Guard status isn't `ENABLED`. |
 | `load-balancer-backend-set-healthy` | `load_balancer_backend_set` | Fails a backend set whose health status isn't `OK`. |
 | `kms-key-auto-rotation-enabled` | `kms_key` | Fails a KMS key with auto-rotation disabled. |

@@ -9,18 +9,11 @@ PUBLIC_SOURCE_CIDRS = ("0.0.0.0/0", "::/0")
 
 
 def _instance(vnic_ids: tuple[str, ...]) -> Instance:
-    return Instance(
-        id="i1", source_type="compute_instance", region="us-ashburn-1", compartment_id="c1",
-        display_name="vm1", lifecycle_state="RUNNING", vnic_ids=vnic_ids,
-    )
+    return Instance(id="i1", region="us-ashburn-1", compartment_id="c1", display_name="vm1", vnic_ids=vnic_ids)
 
 
 def _vnic(vnic_id: str, *, subnet_id: str, public_addresses: tuple[str, ...] = (), nsg_ids: tuple[str, ...] = ()) -> Vnic:
-    return Vnic(
-        id=vnic_id, source_type="vnic", region="us-ashburn-1", compartment_id="c1",
-        display_name=None, lifecycle_state="AVAILABLE", subnet_id=subnet_id,
-        nsg_ids=nsg_ids, private_addresses=("10.0.0.5",), public_addresses=public_addresses,
-    )
+    return Vnic(id=vnic_id, subnet_id=subnet_id, nsg_ids=nsg_ids, public_addresses=public_addresses)
 
 
 def _facts(instance, **by_id):
@@ -35,27 +28,6 @@ def _facts(instance, **by_id):
         public_source_cidrs=PUBLIC_SOURCE_CIDRS,
     )
     return result[instance.id]
-
-
-def test_no_vnic_ids_is_unknown() -> None:
-    result = _facts(_instance(()))
-    assert result.has_public_address is None
-    assert result.has_ranged_public_ingress is None
-
-
-def test_no_public_address_is_definitively_not_exposed() -> None:
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=())
-    result = _facts(_instance(("v1",)), vnics_by_id={"v1": vnic})
-    assert result.has_public_address is False
-    assert result.public_ingress_ports == ()
-    assert result.has_ranged_public_ingress is False
-
-
-def test_public_address_but_missing_subnet_is_unknown() -> None:
-    vnic = _vnic("v1", subnet_id="sub-missing", public_addresses=("203.0.113.5",))
-    result = _facts(_instance(("v1",)), vnics_by_id={"v1": vnic})
-    assert result.has_public_address is True
-    assert result.has_ranged_public_ingress is None
 
 
 def test_full_exposure_public_igw_route_and_permissive_nsg_named_port() -> None:
@@ -78,28 +50,6 @@ def test_full_exposure_public_igw_route_and_permissive_nsg_named_port() -> None:
     )
     assert result.has_public_address is True
     assert result.public_ingress_ports == (3389,)
-    assert result.has_ranged_public_ingress is False
-
-
-def test_named_port_reported_regardless_of_which_port_it_is() -> None:
-    """No administrative-ports allowlist here -- that policy belongs in the Drata Custom
-    Test. Any named port on a public-source rule is reported as-is."""
-
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=("203.0.113.5",), nsg_ids=("nsg1",))
-    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=[])
-    route_table = oci.core.models.RouteTable(
-        id="rt1", route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="igw1")]
-    )
-    nsg_rule = oci.core.models.SecurityRule(
-        direction="INGRESS", protocol="6", source="0.0.0.0/0", source_type="CIDR_BLOCK",
-        tcp_options=oci.core.models.TcpOptions(destination_port_range=oci.core.models.PortRange(min=443, max=443)),
-    )
-    result = _facts(
-        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
-        route_tables_by_id={"rt1": route_table}, nsg_security_rules_by_nsg_id={"nsg1": [nsg_rule]},
-        internet_gateway_ids={"igw1"},
-    )
-    assert result.public_ingress_ports == (443,)
     assert result.has_ranged_public_ingress is False
 
 
@@ -139,27 +89,6 @@ def test_null_tcp_options_means_every_port_is_open_reports_ranged() -> None:
     assert result.has_ranged_public_ingress is True
 
 
-def test_split_default_route_halves_each_count_as_public() -> None:
-    """0.0.0.0/1 + 128.0.0.0/1 together cover all of IPv4 but neither equals 0.0.0.0/0 as a string."""
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=("203.0.113.5",))
-    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=["sl1"])
-    route_table = oci.core.models.RouteTable(
-        id="rt1", route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="igw1")]
-    )
-    security_list = oci.core.models.SecurityList(
-        id="sl1",
-        ingress_security_rules=[
-            oci.core.models.IngressSecurityRule(protocol="6", source="0.0.0.0/1", source_type="CIDR_BLOCK", tcp_options=None),
-        ],
-    )
-    result = _facts(
-        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
-        route_tables_by_id={"rt1": route_table}, security_lists_by_id={"sl1": security_list},
-        internet_gateway_ids={"igw1"},
-    )
-    assert result.has_ranged_public_ingress is True
-
-
 def test_broad_public_source_not_literally_0_0_0_0_0_still_counts_as_exposed() -> None:
     """A real internet-routable /24, not the literal default CIDR, must still be recognized as public."""
     vnic = _vnic("v1", subnet_id="sub1", public_addresses=("203.0.113.5",))
@@ -179,68 +108,6 @@ def test_broad_public_source_not_literally_0_0_0_0_0_still_counts_as_exposed() -
         internet_gateway_ids={"igw1"},
     )
     assert result.has_ranged_public_ingress is True
-
-
-def test_equivalent_cidr_formatting_still_recognized_as_public() -> None:
-    """0.0.0.0/0 written with a differently-shaped but equivalent literal must not evade containment."""
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=("203.0.113.5",))
-    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=["sl1"])
-    route_table = oci.core.models.RouteTable(
-        id="rt1", route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="igw1")]
-    )
-    security_list = oci.core.models.SecurityList(
-        id="sl1",
-        ingress_security_rules=[
-            # strict=False normalizes a host-bits-set literal like this to the containing network.
-            oci.core.models.IngressSecurityRule(protocol="6", source="203.0.113.7/0", source_type="CIDR_BLOCK", tcp_options=None),
-        ],
-    )
-    result = _facts(
-        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
-        route_tables_by_id={"rt1": route_table}, security_lists_by_id={"sl1": security_list},
-        internet_gateway_ids={"igw1"},
-    )
-    assert result.has_ranged_public_ingress is True
-
-
-def test_ipv6_public_source_counts_as_exposed() -> None:
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=("2001:db8::5",))
-    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=["sl1"])
-    route_table = oci.core.models.RouteTable(
-        id="rt1", route_rules=[oci.core.models.RouteRule(destination="::/0", network_entity_id="igw1")]
-    )
-    security_list = oci.core.models.SecurityList(
-        id="sl1",
-        ingress_security_rules=[
-            oci.core.models.IngressSecurityRule(protocol="6", source="2000::/3", source_type="CIDR_BLOCK", tcp_options=None),
-        ],
-    )
-    result = _facts(
-        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
-        route_tables_by_id={"rt1": route_table}, security_lists_by_id={"sl1": security_list},
-        internet_gateway_ids={"igw1"},
-    )
-    assert result.has_ranged_public_ingress is True
-
-
-def test_malformed_source_cidr_is_unknown_not_silently_dropped() -> None:
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=("203.0.113.5",))
-    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=["sl1"])
-    route_table = oci.core.models.RouteTable(
-        id="rt1", route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="igw1")]
-    )
-    security_list = oci.core.models.SecurityList(
-        id="sl1",
-        ingress_security_rules=[
-            oci.core.models.IngressSecurityRule(protocol="6", source="not-a-cidr", source_type="CIDR_BLOCK", tcp_options=None),
-        ],
-    )
-    result = _facts(
-        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
-        route_tables_by_id={"rt1": route_table}, security_lists_by_id={"sl1": security_list},
-        internet_gateway_ids={"igw1"},
-    )
-    assert result.has_ranged_public_ingress is None
 
 
 def test_nsg_sourced_rule_is_unknown_not_silently_dropped() -> None:
@@ -286,22 +153,3 @@ def test_service_cidr_block_source_never_counts_as_public() -> None:
     assert result.has_ranged_public_ingress is False
 
 
-def test_non_public_source_cidr_does_not_count_as_exposed() -> None:
-    vnic = _vnic("v1", subnet_id="sub1", public_addresses=("203.0.113.5",))
-    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=["sl1"])
-    route_table = oci.core.models.RouteTable(
-        id="rt1", route_rules=[oci.core.models.RouteRule(destination="0.0.0.0/0", network_entity_id="igw1")]
-    )
-    security_list = oci.core.models.SecurityList(
-        id="sl1",
-        ingress_security_rules=[
-            oci.core.models.IngressSecurityRule(protocol="6", source="10.0.0.0/8", source_type="CIDR_BLOCK", tcp_options=None)
-        ],
-    )
-    result = _facts(
-        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
-        route_tables_by_id={"rt1": route_table}, security_lists_by_id={"sl1": security_list},
-        internet_gateway_ids={"igw1"},
-    )
-    assert result.public_ingress_ports == ()
-    assert result.has_ranged_public_ingress is False

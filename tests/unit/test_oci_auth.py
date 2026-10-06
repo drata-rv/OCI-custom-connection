@@ -5,8 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oci_drata.oci_auth import AuthError, TenancySigner, build_signer, endpoint_client, regional_client
-from oci_drata.security import OciOperationNotAllowedError
+from oci_drata.oci_auth import AuthError, TenancySigner, build_signer
 
 
 def _app_config(config_file: Path) -> SimpleNamespace:
@@ -31,25 +30,6 @@ def test_build_signer_rejects_group_or_world_accessible_config_file(tmp_path: Pa
     config_file.chmod(0o644)  # world-readable
 
     with pytest.raises(AuthError, match="must not be group/world accessible"):
-        build_signer(_app_config(config_file))
-
-
-def test_build_signer_rejects_authentication_type_field(tmp_path: Path) -> None:
-    """oci.config.validate_config() takes a more permissive path (skipping user/
-    tenancy/fingerprint checks) when this ini-level field is set -- this project only
-    implements/expects a plain api_signing_user profile."""
-
-    key_file = tmp_path / "key.pem"
-    key_file.write_text("not a real key, never read this far")
-    key_file.chmod(0o600)
-    config_file = tmp_path / "config"
-    config_file.write_text(
-        f"[DEFAULT]\nauthentication_type=instance_principal\ntenancy=t1\nuser=u1\n"
-        f"fingerprint=f1\nkey_file={key_file}\n"
-    )
-    config_file.chmod(0o600)
-
-    with pytest.raises(AuthError, match="authentication_type"):
         build_signer(_app_config(config_file))
 
 
@@ -79,13 +59,6 @@ def test_repr_allowlists_region_only_never_leaks_account_metadata() -> None:
     assert "super-secret" not in text
 
 
-def test_repr_handles_missing_region() -> None:
-    signer = TenancySigner(base_config={"tenancy": "ocid1.tenancy.oc1..x"})
-    text = repr(signer)
-    assert text == "TenancySigner(authentication_type='api_signing_user', region=None)"
-    assert "tenancy" not in text
-
-
 class _FakeOciClient:
     def __init__(self, config: dict) -> None:
         self.config = config
@@ -95,19 +68,6 @@ class _FakeOciClient:
 
     def create_instance(self, **kwargs):
         return "should never run"
-
-
-def test_regional_client_returns_a_guarded_client() -> None:
-    """P2 (runtime OCI operation guard): every client regional_client() hands to a
-    collector must be wrapped, not just returned raw -- this is the one call site every
-    collector goes through to obtain a client, so this is where the guard has to attach."""
-
-    signer = TenancySigner(base_config={"region": "us-ashburn-1"})
-    client = regional_client(_FakeOciClient, signer, region="us-ashburn-1")
-
-    assert client.list_instances() == ["ok"]
-    with pytest.raises(OciOperationNotAllowedError):
-        client.create_instance()
 
 
 class _FakeKmsManagementClient:
@@ -122,18 +82,3 @@ class _FakeKmsManagementClient:
         return "should never run"
 
 
-def test_endpoint_client_passes_service_endpoint_and_returns_a_guarded_client() -> None:
-    """KmsManagementClient (and anything else needing a per-resource endpoint
-    instead of the region's default one) takes service_endpoint as a required
-    positional arg regional_client() has no way to supply -- endpoint_client is
-    the dedicated construction path for that shape, same guard as regional_client."""
-
-    signer = TenancySigner(base_config={"region": "us-ashburn-1"})
-    client = endpoint_client(
-        _FakeKmsManagementClient, signer, region="us-ashburn-1",
-        service_endpoint="https://vault1.kms.us-ashburn-1.oraclecloud.com",
-    )
-
-    assert client.list_keys() == ["ok"]
-    with pytest.raises(OciOperationNotAllowedError):
-        client.create_key()

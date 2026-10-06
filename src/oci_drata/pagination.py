@@ -1,5 +1,5 @@
 """Reusable OCI list/get-operation execution: pagination, bounded retry with
-backoff+jitter, and a per-operation result feeding ``manifest.operations``.
+backoff+jitter, and a per-operation result feeding the run report's operation counts.
 Every ``list_*``/``get_*`` call goes through :func:`paginate` or
 :func:`call_once`, except ``compute.py::_lookup_public_ip``, which retries
 itself to treat a 404 (no public IP assigned) as synthetic success.
@@ -42,7 +42,7 @@ def is_retryable_service_error(exc: oci.exceptions.ServiceError) -> bool:
 
 OperationStatus = str  # "success" | "failed" | "unsupported" | "skipped"
 
-# error_code for RetryPolicy.deadline cutting an operation short (--test in cli.py);
+# error_code for RetryPolicy.deadline cutting an operation short (--test, see runner.py);
 # operations_complete() treats it as incomplete, same as any other failure.
 TEST_MODE_DEADLINE_ERROR_CODE = "TestModeDeadlineExceeded"
 
@@ -52,7 +52,7 @@ class RetryPolicy:
     max_attempts: int = 5
     base_delay_seconds: float = 0.5
     max_delay_seconds: float = 20.0
-    # time.monotonic() timestamp; unset means no deadline. Set by cli.py's --test
+    # time.monotonic() timestamp; unset means no deadline. Set by runner.run()'s --test mode
     # to bound wall-clock time; checked once per operation (paginate/call_once)
     # and once per page, so a run winds down within roughly this budget.
     deadline: float | None = None
@@ -68,9 +68,8 @@ class RetryPolicy:
 
 @dataclasses.dataclass
 class OperationResult:
-    """Outcome of one OCI operation, including every page collected. ``items``
-    is excluded from the manifest (only counts/request IDs, see
-    transform/aggregate.py); collectors consume ``items`` directly.
+    """Outcome of one OCI operation, including every page collected. Collectors consume
+    ``items`` directly; the run report carries only counts and request IDs.
     """
 
     service: str
@@ -107,7 +106,7 @@ R = TypeVar("R")
 
 def run_concurrently(items: list[T], fn: Callable[[T], R], *, max_workers: int) -> list[R]:
     """Bounded concurrent map for per-item enrichment calls within one collector --
-    distinct from the cross-collector pool in cli.py::_run_independent_collectors,
+    distinct from the cross-collector pool in runner.py::_run_collectors,
     which bounds concurrency between collectors, not within one.
 
     Each `fn(item)` must be self-contained and not mutate shared state -- the caller
@@ -124,7 +123,7 @@ def operations_complete(operations: Iterable[OperationResult]) -> bool:
     """Domain is complete when nothing failed or was unsupported. ``skipped`` means the
     service was disabled by configuration, not missing evidence. ``unsupported`` is
     treated as a blocking failure like ``failed`` -- fail-closed, since no operation here
-    has a defined force-unknown fallback for its dependent findings."""
+    has a defined fallback for the evidence that depends on it."""
 
     return all(op.status not in ("failed", "unsupported") for op in operations)
 
@@ -235,7 +234,7 @@ def paginate(
             )
             break
         kwargs = dict(call_kwargs)
-        # compartment_id captured separately for the manifest; forwarded here
+        # compartment_id captured separately for the run report; forwarded here
         # since most list_*/get_* ops require it (e.g. get_tenancy doesn't).
         if compartment_id is not None:
             kwargs.setdefault("compartment_id", compartment_id)
@@ -251,7 +250,7 @@ def paginate(
             result.retry_delays_seconds.extend(exc.retry_delays)
             # DEBUG, not WARNING -- a tenancy with many compartments repeats the same
             # (service, operation, error_code) failure once per compartment/region;
-            # cli.py logs one aggregated WARNING per distinct combination instead.
+            # runner.py logs one aggregated WARNING per distinct combination instead.
             logger.debug(
                 "operation failed after retry exhaustion",
                 extra={

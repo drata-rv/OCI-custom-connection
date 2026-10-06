@@ -27,7 +27,7 @@ from oci_drata.collection.storage import StorageCollectionResult
 from oci_drata.collection.vpn import VpnCollectionResult
 from oci_drata.collection.waf import WafCollectionResult
 from oci_drata.config import DecisionsConfig
-from oci_drata.models import DatabaseResource, Instance
+from oci_drata.models import Instance
 from oci_drata.transform import normalize, relationships
 from oci_drata.transform.exposure import PublicIngressFacts, derive_public_ingress_facts
 from oci_drata.transform.lifecycle import (
@@ -77,8 +77,8 @@ class FlatRecordsResult:
     # no entry here; a deleted bucket simply stops appearing in either list, with no
     # local signal to reconcile against (see delivery/drata.py's delete_records caller).
     excluded_ids: dict[str, list[str]]
-    # Unresolved instance<->vnic/storage joins (relationships.py); tracked but not
-    # enforced -- this path has no completeness gate on unresolved relationships.
+    # Unresolved instance<->vnic attachment and private-ip<->vnic joins (relationships.py);
+    # runner._gate treats any as compute-domain incompleteness.
     unresolved_relationship_count: int
 
 
@@ -124,17 +124,18 @@ def _flatten_instance(
     }
 
 
-def _flatten_autonomous_database(resource: DatabaseResource, *, timestamp: str | None) -> dict[str, Any]:
+def _flatten_autonomous_database(adb: Any, *, timestamp: str | None) -> dict[str, Any]:
     return {
         **_FLAT_RECORD_FIELD_DEFAULTS,
-        "id": resource.id,
+        "id": adb.id,
         "evidenceType": "autonomous_database",
-        "name": resource.display_name,
+        "name": getattr(adb, "display_name", None),
         "timestamp": timestamp,
-        "region": resource.region,
-        "compartmentId": resource.compartment_id,
-        "kmsKeyId": resource.kms_key_id,
-        "publicEndpointHostname": resource.public_endpoint_hostname,
+        "region": getattr(adb, "region", None),
+        "compartmentId": adb.compartment_id,
+        "kmsKeyId": getattr(adb, "kms_key_id", None),
+        # A hostname string on the SDK model (never a bool); None when there's no public endpoint.
+        "publicEndpointHostname": getattr(adb, "public_endpoint", None) or None,
     }
 
 
@@ -403,17 +404,13 @@ def build_flat_records(
 
     instances = [normalize.normalize_instance(i) for i in kept_instances_raw]
     instances = relationships.classify_windows(instances, compute.images)
-    instances, unresolved_storage = relationships.resolve_instance_network_and_storage(
-        instances,
-        vnic_attachments=vnic_attachments,
-        boot_volume_attachments=[],
-        volume_attachments=[],
+    instances, unresolved_attachments = relationships.resolve_instance_vnics(
+        instances, vnic_attachments=vnic_attachments
     )
 
     vnics = [normalize.normalize_vnic(v) for v in compute.vnics.values()]
     vnics, unresolved_vnic = relationships.resolve_vnic_addresses(
         vnics,
-        vnic_attachments=vnic_attachments,
         private_ips=compute.private_ips,
         public_ips_by_private_ip_id=compute.public_ips_by_private_ip_id,
     )
@@ -429,17 +426,7 @@ def build_flat_records(
         public_source_cidrs=decisions.public_source_cidrs,
     )
 
-    kept_adb_raw, excluded_adb_raw = exclude_lifecycle_cascade(
-        autonomous_database.autonomous_databases, parent_excluded_ids=set(), parent_id_field=None
-    )
-    autonomous_databases = [
-        normalize.normalize_database_resource(
-            a, database_type="autonomous_database", source_type="autonomous_database",
-            backup_status="not_applicable",
-            detail_fields=normalize.normalize_autonomous_database_posture(a),
-        )
-        for a in kept_adb_raw
-    ]
+    kept_adb_raw, excluded_adb_raw = split_by_lifecycle(autonomous_database.autonomous_databases)
 
     # -- Block storage: boot/block volumes, joined to their attached instance(s) --
     kept_boot_volumes_raw, excluded_boot_volumes_raw = split_by_lifecycle(storage.boot_volumes)
@@ -580,10 +567,7 @@ def build_flat_records(
             )
             for d in kept_databases_raw
         ]
-        + [
-            _flatten_autonomous_database(a, timestamp=timestamp)
-            for a in autonomous_databases
-        ]
+        + [_flatten_autonomous_database(a, timestamp=timestamp) for a in kept_adb_raw]
         + [
             _flatten_ipsec_connection(
                 c, tunnel_count=(counts := _tunnel_counts(c.id))[0], up_tunnel_count=counts[1],
@@ -664,5 +648,5 @@ def build_flat_records(
             "waf": [w.id for w in excluded_wafs],
             "kms_key": [k.id for k in excluded_keys],
         },
-        unresolved_relationship_count=len(unresolved_storage) + len(unresolved_vnic),
+        unresolved_relationship_count=len(unresolved_attachments) + len(unresolved_vnic),
     )

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 ENV_OVERRIDE_PREFIX = "OCI_DRATA__"
 DEFAULT_DRATA_HOSTNAME = "public-api.drata.com"
+DEFAULT_PUBLIC_SOURCE_CIDRS = ("0.0.0.0/0", "::/0")
 
 
 class ConfigError(Exception):
@@ -241,7 +242,6 @@ def _coerce_override_value(current: Any, raw_value: str) -> Any:
 @dataclasses.dataclass(frozen=True)
 class DeploymentConfig:
     name: str
-    snapshot_display_name: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -294,13 +294,7 @@ class OciConfig:
 
 @dataclasses.dataclass(frozen=True)
 class DecisionsConfig:
-    administrative_ports: tuple[int, ...]
-    public_source_cidrs: tuple[str, ...]
-    minimum_vpn_tunnel_count: int
-    minimum_up_vpn_tunnel_count: int
-    freshness_hours: int
-    require_customer_managed_volume_keys: bool
-    require_customer_managed_database_keys: bool
+    public_source_cidrs: tuple[str, ...] = DEFAULT_PUBLIC_SOURCE_CIDRS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -384,18 +378,6 @@ def _optional_bool(mapping: Mapping[str, Any], key: str, *, context: str, defaul
     return value
 
 
-def _require_port_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[int, ...]:
-    raw_list = _require(mapping, key, context=context)
-    if not isinstance(raw_list, list) or not raw_list:
-        raise ConfigError(f"{context}.{key}: must be a non-empty list of ports")
-    ports = []
-    for item in raw_list:
-        if isinstance(item, bool) or not isinstance(item, int) or not (1 <= item <= 65535):
-            raise ConfigError(f"{context}.{key}: {item!r} is not a valid port (1-65535)")
-        ports.append(item)
-    return tuple(ports)
-
-
 def _require_cidr_list(mapping: Mapping[str, Any], key: str, *, context: str) -> tuple[str, ...]:
     """Validates here, before collection -- an empty reference set would silently
     make every exposure check resolve to not_exposed, regardless of actual rules."""
@@ -415,10 +397,17 @@ def _require_cidr_list(mapping: Mapping[str, Any], key: str, *, context: str) ->
     return tuple(cidrs)
 
 
-def _check_known_keys(mapping: Any, allowed: frozenset[str], *, context: str) -> None:
+def _check_known_keys(
+    mapping: Any, allowed: frozenset[str], *, context: str, legacy: frozenset[str] = frozenset()
+) -> None:
     if not isinstance(mapping, Mapping):
         return
-    unknown = set(mapping) - allowed
+    ignored = set(mapping) & legacy
+    if ignored:
+        logger.warning(
+            "%s: ignoring %s -- no longer used, safe to delete from config.yaml", context, sorted(ignored)
+        )
+    unknown = set(mapping) - allowed - legacy
     if unknown:
         raise ConfigError(
             f"{context}: unrecognized field(s) {sorted(unknown)!r} -- check for a typo "
@@ -456,7 +445,16 @@ def _validate_drata_base_url(url: str, *, allow_alternate_host: bool) -> None:
 
 
 _TOP_LEVEL_KEYS = frozenset({"deployment", "oci", "decisions", "drata", "runtime"})
-_DEPLOYMENT_KEYS = frozenset({"name", "snapshotDisplayName"})
+_DEPLOYMENT_KEYS = frozenset({"name"})
+# Keys earlier versions required or accepted that no longer have any effect. Still tolerated
+# so an existing config.yaml keeps loading after an upgrade.
+_LEGACY_DEPLOYMENT_KEYS = frozenset({"snapshotDisplayName"})
+_LEGACY_DECISIONS_KEYS = frozenset(
+    {
+        "administrativePorts", "minimumVpnTunnelCount", "minimumUpVpnTunnelCount",
+        "freshnessHours", "requireCustomerManagedVolumeKeys", "requireCustomerManagedDatabaseKeys",
+    }
+)
 _OCI_KEYS = frozenset(
     {"authentication", "expectedTenancyOcid", "regions", "compartments", "services"}
 )
@@ -470,13 +468,7 @@ _OCI_SERVICES_KEYS = frozenset(
         "objectStorage", "cloudGuard", "monitoring", "loadBalancer", "waf", "kmsVault",
     }
 )
-_DECISIONS_KEYS = frozenset(
-    {
-        "administrativePorts", "publicSourceCidrs", "minimumVpnTunnelCount",
-        "minimumUpVpnTunnelCount", "freshnessHours", "requireCustomerManagedVolumeKeys",
-        "requireCustomerManagedDatabaseKeys",
-    }
-)
+_DECISIONS_KEYS = frozenset({"publicSourceCidrs"})
 _DRATA_KEYS = frozenset(
     {"baseUrl", "connectionId", "resourceId", "apiTokenSecretRef", "allowAlternateHost"}
 )
@@ -488,11 +480,8 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
     _check_known_keys(raw, _TOP_LEVEL_KEYS, context="$")
 
     dep = _require(raw, "deployment", context="$")
-    _check_known_keys(dep, _DEPLOYMENT_KEYS, context="deployment")
-    deployment = DeploymentConfig(
-        name=_require(dep, "name", context="deployment"),
-        snapshot_display_name=_require(dep, "snapshotDisplayName", context="deployment"),
-    )
+    _check_known_keys(dep, _DEPLOYMENT_KEYS, context="deployment", legacy=_LEGACY_DEPLOYMENT_KEYS)
+    deployment = DeploymentConfig(name=_require(dep, "name", context="deployment"))
 
     oci_raw = _require(raw, "oci", context="$")
     _check_known_keys(oci_raw, _OCI_KEYS, context="oci")
@@ -557,28 +546,14 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         services=services,
     )
 
-    decisions_raw = _require(raw, "decisions", context="$")
-    _check_known_keys(decisions_raw, _DECISIONS_KEYS, context="decisions")
+    decisions_raw = raw.get("decisions") or {}
+    _check_known_keys(decisions_raw, _DECISIONS_KEYS, context="decisions", legacy=_LEGACY_DECISIONS_KEYS)
     decisions = DecisionsConfig(
-        administrative_ports=_require_port_list(
-            decisions_raw, "administrativePorts", context="decisions"
-        ),
-        public_source_cidrs=_require_cidr_list(
-            decisions_raw, "publicSourceCidrs", context="decisions"
-        ),
-        minimum_vpn_tunnel_count=_require_int(
-            decisions_raw, "minimumVpnTunnelCount", context="decisions", minimum=0
-        ),
-        minimum_up_vpn_tunnel_count=_require_int(
-            decisions_raw, "minimumUpVpnTunnelCount", context="decisions", minimum=0
-        ),
-        freshness_hours=_require_int(decisions_raw, "freshnessHours", context="decisions", minimum=1),
-        require_customer_managed_volume_keys=_require_bool(
-            decisions_raw, "requireCustomerManagedVolumeKeys", context="decisions"
-        ),
-        require_customer_managed_database_keys=_require_bool(
-            decisions_raw, "requireCustomerManagedDatabaseKeys", context="decisions"
-        ),
+        public_source_cidrs=(
+            _require_cidr_list(decisions_raw, "publicSourceCidrs", context="decisions")
+            if "publicSourceCidrs" in decisions_raw
+            else DEFAULT_PUBLIC_SOURCE_CIDRS
+        )
     )
 
     drata_raw = _require(raw, "drata", context="$")

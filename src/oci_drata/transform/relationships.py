@@ -1,8 +1,5 @@
-"""Joins raw attachment/reference tables onto already-normalized resources;
-an unmatched parent/child pair gets an
-:class:`~oci_drata.models.UnresolvedRelationship` record. Join functions
-correlate raw/normalized lists positionally (zip) -- callers must normalize
-each raw list into its counterpart with a single order-preserving pass."""
+"""Joins raw attachment/reference tables onto already-normalized resources; an unmatched
+parent/child pair gets an :class:`~oci_drata.models.UnresolvedRelationship` record."""
 
 from __future__ import annotations
 
@@ -26,12 +23,8 @@ def classify_windows(instances: list[Instance], images: dict[str, Any]) -> list[
     return classified
 
 
-def resolve_instance_network_and_storage(
-    instances: list[Instance],
-    *,
-    vnic_attachments: list[Any],
-    boot_volume_attachments: list[Any],
-    volume_attachments: list[Any],
+def resolve_instance_vnics(
+    instances: list[Instance], *, vnic_attachments: list[Any]
 ) -> tuple[list[Instance], list[UnresolvedRelationship]]:
     vnic_ids_by_instance: dict[str, list[str]] = {}
     for attachment in vnic_attachments:
@@ -40,23 +33,9 @@ def resolve_instance_network_and_storage(
         if instance_id and vnic_id:
             vnic_ids_by_instance.setdefault(instance_id, []).append(vnic_id)
 
-    volume_ids_by_instance: dict[str, list[str]] = {}
-    for attachment in boot_volume_attachments:
-        instance_id = getattr(attachment, "instance_id", None)
-        boot_volume_id = getattr(attachment, "boot_volume_id", None)
-        if instance_id and boot_volume_id:
-            volume_ids_by_instance.setdefault(instance_id, []).append(boot_volume_id)
-    for attachment in volume_attachments:
-        instance_id = getattr(attachment, "instance_id", None)
-        volume_id = getattr(attachment, "volume_id", None)
-        if instance_id and volume_id:
-            volume_ids_by_instance.setdefault(instance_id, []).append(volume_id)
-
     resolved = [
         dataclasses.replace(
-            instance,
-            vnic_ids=tuple(sorted(set(vnic_ids_by_instance.get(instance.id, [])))),
-            volume_ids=tuple(sorted(set(volume_ids_by_instance.get(instance.id, [])))),
+            instance, vnic_ids=tuple(sorted(set(vnic_ids_by_instance.get(instance.id, []))))
         )
         for instance in instances
     ]
@@ -81,25 +60,16 @@ def resolve_instance_network_and_storage(
 def resolve_vnic_addresses(
     vnics: list[Vnic],
     *,
-    vnic_attachments: list[Any],
     private_ips: list[Any],
     public_ips_by_private_ip_id: dict[str, Any],
 ) -> tuple[list[Vnic], list[UnresolvedRelationship]]:
-    instance_id_by_vnic: dict[str, str] = {
-        attachment.vnic_id: attachment.instance_id
-        for attachment in vnic_attachments
-        if getattr(attachment, "vnic_id", None) and getattr(attachment, "instance_id", None)
-    }
-
-    private_by_vnic: dict[str, list[str]] = {}
     public_by_vnic: dict[str, list[str]] = {}
     unresolved: list[UnresolvedRelationship] = []
     known_vnic_ids = {v.id for v in vnics}
 
     for private_ip in private_ips:
         vnic_id = getattr(private_ip, "vnic_id", None)
-        address = getattr(private_ip, "ip_address", None)
-        if not vnic_id or not address:
+        if not vnic_id or not getattr(private_ip, "ip_address", None):
             continue
         if vnic_id not in known_vnic_ids:
             unresolved.append(
@@ -112,7 +82,6 @@ def resolve_vnic_addresses(
                 )
             )
             continue
-        private_by_vnic.setdefault(vnic_id, []).append(address)
 
         private_ip_id = getattr(private_ip, "id", None)
         public_ip = public_ips_by_private_ip_id.get(private_ip_id) if private_ip_id else None
@@ -121,14 +90,7 @@ def resolve_vnic_addresses(
             public_by_vnic.setdefault(vnic_id, []).append(public_address)
 
     resolved = [
-        dataclasses.replace(
-            vnic,
-            instance_id=instance_id_by_vnic.get(vnic.id),
-            private_addresses=tuple(sorted(set(private_by_vnic.get(vnic.id, ())))),
-            public_addresses=tuple(sorted(set(public_by_vnic.get(vnic.id, ())))),
-        )
+        dataclasses.replace(vnic, public_addresses=tuple(sorted(set(public_by_vnic.get(vnic.id, [])))))
         for vnic in vnics
     ]
     return resolved, unresolved
-
-

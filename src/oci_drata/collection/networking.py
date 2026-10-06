@@ -1,7 +1,7 @@
-"""Network exposure evidence collection.
-
-Returns raw OCI SDK model objects; exposure derivation happens in
-:mod:`oci_drata.transform.normalize`.
+"""Network exposure evidence collection: subnets, route tables, internet gateways,
+security lists, and NSG security rules -- exactly what
+:mod:`oci_drata.transform.exposure` needs to derive an instance's public ingress.
+Returns raw OCI SDK model objects.
 """
 
 from __future__ import annotations
@@ -30,14 +30,11 @@ _PER_NSG_CONCURRENCY = 8
 
 @dataclasses.dataclass
 class NetworkingCollectionResult:
-    vcns: list[Any]
     subnets: list[Any]
     route_tables: list[Any]
     internet_gateways: list[Any]
     security_lists: list[Any]
-    network_security_groups: list[Any]
     nsg_security_rules_by_nsg_id: dict[str, list[Any]]
-    nsg_vnics_by_nsg_id: dict[str, list[Any]]
     operations: list[OperationResult]
 
     @property
@@ -54,14 +51,11 @@ def collect_networking(
 ) -> NetworkingCollectionResult:
     if not services.network_exposure:
         return NetworkingCollectionResult(
-            vcns=[],
             subnets=[],
             route_tables=[],
             internet_gateways=[],
             security_lists=[],
-            network_security_groups=[],
             nsg_security_rules_by_nsg_id={},
-            nsg_vnics_by_nsg_id={},
             operations=[
                 OperationResult(
                     service="virtual_network",
@@ -77,30 +71,16 @@ def collect_networking(
         )
 
     operations: list[OperationResult] = []
-    vcns: list[Any] = []
     subnets: list[Any] = []
     route_tables: list[Any] = []
     internet_gateways: list[Any] = []
     security_lists: list[Any] = []
-    network_security_groups: list[Any] = []
     nsg_security_rules_by_nsg_id: dict[str, list[Any]] = {}
-    nsg_vnics_by_nsg_id: dict[str, list[Any]] = {}
 
     for region in discovery.approved_regions:
         vnet_client = regional_client(oci.core.VirtualNetworkClient, signer, region=region)
 
         for compartment_id in discovery.approved_compartment_ids:
-            vcns_op = paginate(
-                service="virtual_network",
-                operation="list_vcns",
-                call=vnet_client.list_vcns,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(vcns_op)
-            vcns.extend(stamp_region(vcns_op.items, region))
-
             subnets_op = paginate(
                 service="virtual_network",
                 operation="list_subnets",
@@ -155,20 +135,18 @@ def collect_networking(
             )
             operations.append(nsgs_op)
             region_nsgs = stamp_region(nsgs_op.items, region)
-            network_security_groups.extend(region_nsgs)
 
-            # Each NSG's pair of calls is independent -- workers return their own data,
+            # Each NSG's rule listing is independent -- workers return their own data,
             # this thread merges sequentially after, so nothing needs a lock.
             def _process_nsg(
                 nsg: Any, *, _vnet_client: Any = vnet_client, _region: str = region
-            ) -> tuple[list[OperationResult], str | None, list[Any], list[Any]]:
+            ) -> tuple[list[OperationResult], str | None, list[Any]]:
                 nsg_id = getattr(nsg, "id", None)
                 if not nsg_id:
-                    return [], None, [], []
+                    return [], None, []
 
-                ops: list[OperationResult] = []
-                # list_network_security_group_security_rules/_vnics reject
-                # compartment_id -- omit it; passing it raises ValueError.
+                # list_network_security_group_security_rules rejects compartment_id --
+                # omit it; passing it raises ValueError.
                 rules_op = paginate(
                     service="virtual_network",
                     operation="list_network_security_group_security_rules",
@@ -177,36 +155,20 @@ def collect_networking(
                     network_security_group_id=nsg_id,
                     retry_policy=retry_policy,
                 )
-                ops.append(rules_op)
+                return [rules_op], nsg_id, rules_op.items
 
-                nsg_vnics_op = paginate(
-                    service="virtual_network",
-                    operation="list_network_security_group_vnics",
-                    call=_vnet_client.list_network_security_group_vnics,
-                    region=_region,
-                    network_security_group_id=nsg_id,
-                    retry_policy=retry_policy,
-                )
-                ops.append(nsg_vnics_op)
-
-                return ops, nsg_id, rules_op.items, nsg_vnics_op.items
-
-            for ops, nsg_id, rule_items, vnic_items in run_concurrently(
+            for ops, nsg_id, rule_items in run_concurrently(
                 region_nsgs, _process_nsg, max_workers=_PER_NSG_CONCURRENCY
             ):
                 operations.extend(ops)
                 if nsg_id is not None:
                     nsg_security_rules_by_nsg_id[nsg_id] = rule_items
-                    nsg_vnics_by_nsg_id[nsg_id] = vnic_items
 
     return NetworkingCollectionResult(
-        vcns=vcns,
         subnets=subnets,
         route_tables=route_tables,
         internet_gateways=internet_gateways,
         security_lists=security_lists,
-        network_security_groups=network_security_groups,
         nsg_security_rules_by_nsg_id=nsg_security_rules_by_nsg_id,
-        nsg_vnics_by_nsg_id=nsg_vnics_by_nsg_id,
         operations=operations,
     )

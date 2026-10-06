@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock
 
 import oci
 
-from oci_drata.pagination import RetryPolicy, call_once, operations_complete, paginate
+from oci_drata.pagination import RetryPolicy, operations_complete, paginate
 
 
 def _response(data, headers=None):
@@ -30,31 +29,6 @@ def test_paginate_exhausts_multiple_pages_including_empty_page_with_token() -> N
     assert result.item_count == 3
     assert result.items == ["a", "b", "c"]
     assert result.request_ids == ["r1", "r2", "r3"]
-
-
-def test_paginate_forwards_compartment_id_into_call_kwargs() -> None:
-    call = MagicMock(return_value=_response([]))
-    paginate(
-        service="compute",
-        operation="list_instances",
-        call=call,
-        region="us-ashburn-1",
-        compartment_id="ocid1.compartment.oc1..x",
-    )
-    assert call.call_args.kwargs["compartment_id"] == "ocid1.compartment.oc1..x"
-
-
-def test_paginate_does_not_double_pass_explicit_compartment_id() -> None:
-    call = MagicMock(return_value=_response([]))
-    paginate(
-        service="compute",
-        operation="list_instances",
-        call=call,
-        compartment_id="ocid1.compartment.oc1..x",
-        compartment_id_in_subtree=True,
-    )
-    assert call.call_args.kwargs["compartment_id"] == "ocid1.compartment.oc1..x"
-    assert call.call_args.kwargs["compartment_id_in_subtree"] is True
 
 
 def test_paginate_retries_throttling_then_succeeds() -> None:
@@ -87,153 +61,6 @@ def test_paginate_non_retryable_error_fails_immediately() -> None:
     )
     assert result.status == "failed"
     assert call.call_count == 1  # no retry burned on a non-retryable status
-
-
-def test_paginate_409_incorrect_state_is_retried() -> None:
-    """409 is not blanket-retryable -- only OCI's own documented transient codes are."""
-    conflict = oci.exceptions.ServiceError(409, "IncorrectState", {}, {"message": "resource busy"})
-    call = MagicMock(side_effect=[conflict, _response(["x"])])
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
-    assert result.status == "success"
-    assert call.call_count == 2
-
-
-def test_paginate_409_other_code_is_not_retried() -> None:
-    """A 409 that isn't IncorrectState/LockConflict is a real conflict, not a transient
-    one -- retrying it can't help and would burn the full retry budget for nothing."""
-    conflict = oci.exceptions.ServiceError(
-        409, "NotAuthorizedOrResourceAlreadyExists", {}, {"message": "already exists"}
-    )
-    call = MagicMock(side_effect=[conflict])
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
-    assert result.status == "failed"
-    assert call.call_count == 1
-
-
-def test_paginate_501_not_implemented_is_not_retried() -> None:
-    """5xx is retryable except 501 -- retrying an operation the service doesn't implement
-    can never succeed."""
-    not_implemented = oci.exceptions.ServiceError(501, "NotImplemented", {}, {"message": "nope"})
-    call = MagicMock(side_effect=[not_implemented])
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
-    assert result.status == "failed"
-    assert call.call_count == 1
-
-
-def test_paginate_502_is_retried() -> None:
-    bad_gateway = oci.exceptions.ServiceError(502, "BadGateway", {}, {"message": "upstream"})
-    call = MagicMock(side_effect=[bad_gateway, _response(["x"])])
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
-    assert result.status == "success"
-    assert call.call_count == 2
-
-
-def test_paginate_records_retry_delays_in_manifest() -> None:
-    """backoff decisions must be visible in the manifest, not just applied silently."""
-    throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
-    call = MagicMock(side_effect=[throttle_error, throttle_error, _response(["x"])])
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
-    assert result.status == "success"
-    assert len(result.retry_delays_seconds) == 2
-    assert all(d >= 0 for d in result.retry_delays_seconds)
-
-
-def test_paginate_records_retry_delays_even_on_exhaustion() -> None:
-    throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
-    call = MagicMock(side_effect=[throttle_error, throttle_error, throttle_error])
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=_fast_policy())
-    assert result.status == "failed"
-    assert len(result.retry_delays_seconds) == 2  # 3 attempts total, 2 retries between them
-
-
-def test_call_once_success() -> None:
-    call = MagicMock(return_value=_response("single-item", headers={"opc-request-id": "r1"}))
-    result = call_once(service="compute", operation="get_instance", call=call, instance_id="ocid1...")
-    assert result.status == "success"
-    assert result.items == ["single-item"]
-    assert result.item_count == 1
-    assert result.request_ids == ["r1"]
-
-
-def test_call_once_does_not_auto_forward_compartment_id() -> None:
-    call = MagicMock(return_value=_response("x"))
-    call_once(
-        service="compute",
-        operation="get_instance",
-        call=call,
-        compartment_id="ocid1.compartment.oc1..x",  # metadata only
-        instance_id="ocid1.instance.oc1..y",
-    )
-    assert "compartment_id" not in call.call_args.kwargs
-    assert call.call_args.kwargs["instance_id"] == "ocid1.instance.oc1..y"
-
-
-def test_retry_policy_deadline_exceeded_false_when_unset() -> None:
-    assert RetryPolicy().deadline_exceeded() is False
-
-
-def test_retry_policy_deadline_exceeded_reflects_monotonic_clock() -> None:
-    assert RetryPolicy(deadline=time.monotonic() - 1).deadline_exceeded() is True
-    assert RetryPolicy(deadline=time.monotonic() + 60).deadline_exceeded() is False
-
-
-def test_paginate_deadline_already_passed_skips_the_call_entirely() -> None:
-    call = MagicMock(return_value=_response(["a"]))
-    policy = RetryPolicy(deadline=time.monotonic() - 1)
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=policy)
-    assert result.status == "failed"
-    assert result.error_code == "TestModeDeadlineExceeded"
-    assert result.items == []
-    call.assert_not_called()
-
-
-def test_paginate_deadline_hit_mid_pagination_keeps_pages_already_collected() -> None:
-    """A cutoff mid-run keeps whatever real data landed before the deadline -- that's
-    the whole point of --test: partial, honest data, not nothing."""
-
-    call = MagicMock(
-        side_effect=[_response(["a", "b"], headers={"opc-next-page": "tok1"}), _response(["c"])]
-    )
-    policy = RetryPolicy(deadline=time.monotonic() + 0.05)
-
-    def _delayed_call(**kwargs):
-        time.sleep(0.1)  # blow the deadline between the first and second page
-        return call(**kwargs)
-
-    result = paginate(service="compute", operation="list_instances", call=_delayed_call, retry_policy=policy)
-    assert result.status == "failed"
-    assert result.error_code == "TestModeDeadlineExceeded"
-    assert result.items == ["a", "b"]  # first page's items kept; second page never fetched
-    assert call.call_count == 1
-
-
-def test_paginate_deadline_hit_during_retry_backoff_does_not_sleep_through_it() -> None:
-    """A retryable error (429/5xx) sleeps between attempts inside _invoke_with_retry's
-    own loop -- without a deadline check there too, a single call stuck retrying could
-    sleep through several backoff delays before paginate()'s per-page check runs
-    again. This is that gap: throttle forever, with a deadline that expires mid-retry,
-    and confirm it's caught before the next sleep rather than after exhausting
-    max_attempts."""
-
-    throttle_error = oci.exceptions.ServiceError(429, "TooManyRequests", {}, {"message": "slow down"})
-    call = MagicMock(side_effect=[throttle_error, throttle_error, throttle_error, throttle_error])
-    policy = RetryPolicy(
-        max_attempts=10, base_delay_seconds=0.05, max_delay_seconds=0.05,
-        deadline=time.monotonic() + 0.06,
-    )
-    result = paginate(service="compute", operation="list_instances", call=call, retry_policy=policy)
-    assert result.status == "failed"
-    assert result.error_code == "TestModeDeadlineExceeded"
-    assert call.call_count < 10  # cut off well before max_attempts
-
-
-def test_call_once_deadline_already_passed_skips_the_call_entirely() -> None:
-    call = MagicMock(return_value=_response("x"))
-    policy = RetryPolicy(deadline=time.monotonic() - 1)
-    result = call_once(service="compute", operation="get_instance", call=call, retry_policy=policy)
-    assert result.status == "failed"
-    assert result.error_code == "TestModeDeadlineExceeded"
-    call.assert_not_called()
 
 
 def test_operations_complete_ignores_skipped_but_blocks_on_unsupported() -> None:

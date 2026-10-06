@@ -63,7 +63,7 @@ def collect_cloud_guard(
     client = regional_client(oci.cloud_guard.CloudGuardClient, signer, region=region)
 
     # call_once's compartment_id is metadata-only (not forwarded to `call`); the
-    # real argument is bound via closure, this one just feeds the operation manifest.
+    # real argument is bound via closure, this one just feeds the run report.
     op = call_once(
         service="cloud_guard",
         operation="get_configuration",

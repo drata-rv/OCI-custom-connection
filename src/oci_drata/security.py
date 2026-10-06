@@ -73,7 +73,6 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_availability_domains",
         # Compute and Windows classification (collection/compute.py)
         "list_instances",
-        "get_instance",
         "get_image",
         "list_vnic_attachments",
         "get_vnic",
@@ -85,50 +84,23 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_volumes",
         "list_volume_attachments",
         # Network exposure (collection/networking.py)
-        "list_vcns",
         "list_subnets",
         "list_route_tables",
         "list_internet_gateways",
         "list_security_lists",
         "list_network_security_groups",
         "list_network_security_group_security_rules",
-        "list_network_security_group_vnics",
         # Base Database Service (collection/database_base.py)
         "list_db_systems",
-        "get_db_system",
         "list_db_homes",
-        "get_db_home",
         "list_databases",
-        "get_database",
-        "list_backups",
-        "get_backup",
         "list_data_guard_associations",
-        "get_data_guard_association",
         # Autonomous Database (collection/database_autonomous.py)
         "list_autonomous_databases",
-        "get_autonomous_database",
-        "list_autonomous_database_backups",
-        "get_autonomous_database_backup",
-        "list_autonomous_database_dataguard_associations",
-        "get_autonomous_database_dataguard_association",
-        "list_autonomous_database_peers",
-        # Exadata detection, minimal, no drill-down (collection/exadata_detection.py)
-        "list_cloud_vm_clusters",
-        "list_exadata_infrastructures",
-        "list_cloud_exadata_infrastructures",
-        "list_autonomous_exadata_infrastructures",
         # Site-to-Site VPN (collection/vpn.py)
         "list_ip_sec_connections",
-        "get_ip_sec_connection",
         "list_ip_sec_connection_tunnels",
         "get_ip_sec_connection_tunnel",
-        "list_cpes",
-        "get_cpe",
-        "list_drgs",
-        "get_drg",
-        "list_drg_attachments",
-        "list_drg_route_rules",
-        "list_drg_route_tables",
         # Identity, opt-in only (collection/identity.py) -- reads user MFA status, API key
         # ages, and raw IAM policy text. list_api_keys returns only each key's public
         # fingerprint/value; no auth-token/credential-retrieval call is allowlisted here.

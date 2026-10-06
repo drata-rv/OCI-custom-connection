@@ -1,6 +1,7 @@
 """Drata Custom Connection upsert/delete client.
 
-Upsert POSTs to ``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
+Upsert POSTs ``{"data": [...]}`` batches to
+``{baseUrl}/custom-connections/{connectionId}/resources/{resourceId}/records``;
 200/201 both mean success (upsert by each record's own ``id``). Delete issues one
 ``DELETE .../records/{recordId}`` per id (204 or 404 both mean success -- already gone is
 the goal). Failures never raise -- returned as ``DeliveryResult``, with auth/validation
@@ -9,6 +10,7 @@ non-retryable and 429/5xx retried with backoff.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import email.utils
@@ -17,6 +19,7 @@ import logging
 import random
 import time
 import urllib.parse
+from collections.abc import Iterator
 from typing import Any
 
 import requests
@@ -45,6 +48,27 @@ class DeliveryResult:
     @property
     def ok(self) -> bool:
         return self.uploaded
+
+
+def _records_url(drata_config: DrataConfig) -> str:
+    return (
+        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
+        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
+    )
+
+
+@contextlib.contextmanager
+def _http_session(session: requests.Session | None) -> Iterator[requests.Session]:
+    """The caller's session untouched, or a private one closed on exit."""
+
+    if session is not None:
+        yield session
+        return
+    owned = requests.Session()
+    try:
+        yield owned
+    finally:
+        owned.close()
 
 
 def _request_id(response: requests.Response) -> str | None:
@@ -76,38 +100,6 @@ def _retry_after_seconds(response: requests.Response, *, max_delay_seconds: floa
     return max(0.0, min(delay, max_delay_seconds))
 
 
-def upsert_record(
-    drata_config: DrataConfig,
-    record: dict[str, Any],
-    *,
-    max_attempts: int = 5,
-    base_delay_seconds: float = 1.0,
-    max_delay_seconds: float = 30.0,
-    timeout_seconds: float = 30.0,
-    session: requests.Session | None = None,
-) -> DeliveryResult:
-    token = drata_config.api_token_secret_ref.resolve()
-    url = (
-        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
-        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
-    )
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    body = {"data": record}
-    # Only close a session created here -- one the caller passed in is theirs to manage.
-    owns_session = session is None
-    http = session if session is not None else requests.Session()
-
-    try:
-        return _upsert_with_retry(
-            http, url, body, headers,
-            max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
-            max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
-        )
-    finally:
-        if owns_session:
-            http.close()
-
-
 def upsert_records(
     drata_config: DrataConfig,
     records: list[dict[str, Any]],
@@ -129,16 +121,11 @@ def upsert_records(
         return []
 
     token = drata_config.api_token_secret_ref.resolve()
-    url = (
-        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
-        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
-    )
+    url = _records_url(drata_config)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     batches = _split_batches_by_size(records, max_payload_bytes=max_payload_bytes)
-    owns_session = session is None
-    http = session if session is not None else requests.Session()
 
-    try:
+    with _http_session(session) as http:
         return [
             _upsert_with_retry(
                 http, url, {"data": batch}, headers,
@@ -147,9 +134,6 @@ def upsert_records(
             )
             for batch in batches
         ]
-    finally:
-        if owns_session:
-            http.close()
 
 
 def _batch_body_size(batch: list[dict[str, Any]]) -> int:
@@ -201,15 +185,10 @@ def delete_records(
         return []
 
     token = drata_config.api_token_secret_ref.resolve()
-    base_url = (
-        f"{drata_config.base_url.rstrip('/')}/custom-connections/"
-        f"{drata_config.connection_id}/resources/{drata_config.resource_id}/records"
-    )
+    base_url = _records_url(drata_config)
     headers = {"Authorization": f"Bearer {token}"}
-    owns_session = session is None
-    http = session if session is not None else requests.Session()
 
-    try:
+    with _http_session(session) as http:
         return [
             _delete_with_retry(
                 http, f"{base_url}/{urllib.parse.quote(record_id, safe='')}", headers,
@@ -218,9 +197,6 @@ def delete_records(
             )
             for record_id in record_ids
         ]
-    finally:
-        if owns_session:
-            http.close()
 
 
 def _delete_with_retry(

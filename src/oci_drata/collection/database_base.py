@@ -1,6 +1,6 @@
 """Base Database Service collection: list_db_systems -> list_db_homes -> list_databases
--> {list_backups, list_data_guard_associations}. Summary objects are full-fidelity; no
-get_* enrichment call is made.
+-> list_data_guard_associations. Summary objects are full-fidelity; no get_* enrichment
+call is made.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ class DatabaseBaseCollectionResult:
     db_systems: list[Any]
     db_homes: list[Any]
     databases: list[Any]
-    backups: list[Any]
     data_guard_associations: list[Any]
     operations: list[OperationResult]
 
@@ -46,7 +45,6 @@ def _skip_result() -> DatabaseBaseCollectionResult:
         db_systems=[],
         db_homes=[],
         databases=[],
-        backups=[],
         data_guard_associations=[],
         operations=[
             OperationResult(
@@ -77,7 +75,6 @@ def collect_database_base(
     db_systems: list[Any] = []
     db_homes: list[Any] = []
     databases: list[Any] = []
-    backups: list[Any] = []
     data_guard_associations: list[Any] = []
 
     for region in discovery.approved_regions:
@@ -141,20 +138,11 @@ def collect_database_base(
             region_databases.extend(items)
         databases.extend(region_databases)
 
-        def _list_backups_and_dg(
+        def _list_data_guard(
             database: Any, *, _client: Any = client, _region: str = region
-        ) -> tuple[list[OperationResult], list[Any], list[Any]]:
-            # list_backups: database_id alone is sufficient scope.
+        ) -> tuple[OperationResult, list[Any]]:
             # list_data_guard_associations rejects compartment_id (unknown-kwargs ValueError) -- never pass it.
-            backup_op = paginate(
-                service="database",
-                operation="list_backups",
-                call=_client.list_backups,
-                region=_region,
-                database_id=database.id,
-                retry_policy=retry_policy,
-            )
-            dg_op = paginate(
+            op = paginate(
                 service="database",
                 operation="list_data_guard_associations",
                 call=_client.list_data_guard_associations,
@@ -162,24 +150,18 @@ def collect_database_base(
                 database_id=database.id,
                 retry_policy=retry_policy,
             )
-            return (
-                [backup_op, dg_op],
-                stamp_region(backup_op.items, _region),
-                stamp_region(dg_op.items, _region),
-            )
+            return op, stamp_region(op.items, _region)
 
-        for ops, backup_items, dg_items in run_concurrently(
-            region_databases, _list_backups_and_dg, max_workers=_PER_ITEM_CONCURRENCY
+        for op, items in run_concurrently(
+            region_databases, _list_data_guard, max_workers=_PER_ITEM_CONCURRENCY
         ):
-            operations.extend(ops)
-            backups.extend(backup_items)
-            data_guard_associations.extend(dg_items)
+            operations.append(op)
+            data_guard_associations.extend(items)
 
     return DatabaseBaseCollectionResult(
         db_systems=db_systems,
         db_homes=db_homes,
         databases=databases,
-        backups=backups,
         data_guard_associations=data_guard_associations,
         operations=operations,
     )

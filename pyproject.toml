@@ -18,12 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0,<10",  # >=9.0.3 fixes PYSEC-2026-1845 (predictable /tmp/pytest-of-{user} path)
-    "pytest-cov>=5.0,<6",
-    "responses>=0.25,<1",
     "mypy>=1.10,<2",
     "types-PyYAML",
     "types-jsonschema",
-    "build>=1.2,<2",
     "ruff>=0.6,<1",
     "pip-audit>=2.7,<3",
 ]
