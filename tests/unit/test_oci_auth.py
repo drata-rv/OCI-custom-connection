@@ -13,7 +13,7 @@ def _app_config(config_file: Path) -> SimpleNamespace:
         oci=SimpleNamespace(
             authentication=SimpleNamespace(
                 type="api_signing_user", config_file=str(config_file), profile="DEFAULT",
-                private_key_passphrase_secret_ref=None,
+                private_key_passphrase_secret_ref=None, credentials_secret_ref=None,
             ),
             expected_tenancy_ocid="ocid1.tenancy.oc1..t1",
         )

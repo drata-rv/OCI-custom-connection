@@ -10,6 +10,7 @@ full ``Key`` model, not on ``KeySummary``).
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -21,15 +22,11 @@ from oci_drata.pagination import (
     OperationResult,
     RetryPolicy,
     call_once,
+    list_in_scope,
     operations_complete,
     paginate,
-    run_concurrently,
     stamp_region,
 )
-
-# Fan-out concurrency for get_key calls, independent of runtime.maxConcurrency
-# (see pagination.run_concurrently).
-_PER_KEY_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -73,71 +70,70 @@ def collect_kms_vault(
     if not services.kms_vault:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    vault_clients = {r: regional_client(oci.key_management.KmsVaultClient, signer, region=r) for r in discovery.approved_regions}
+
+    (vault_ops,) = list_in_scope(policy, scope, [("kms_vault", "list_vaults", vault_clients)])
+    operations: list[OperationResult] = list(vault_ops)
     vaults: list[Any] = []
-    keys: list[Any] = []
+    for (region, _), op in zip(scope, vault_ops, strict=True):
+        vaults.extend(stamp_region(op.items, region))
 
-    for region in discovery.approved_regions:
-        vault_client = regional_client(oci.key_management.KmsVaultClient, signer, region=region)
-
-        region_vaults: list[Any] = []
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
-                service="kms_vault",
-                operation="list_vaults",
-                call=vault_client.list_vaults,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(op)
-            region_vaults.extend(stamp_region(op.items, region))
-        vaults.extend(region_vaults)
-
-        # (management_client, key_summary) pairs -- each vault has its own
-        # management_client, needed for get_key below.
-        key_summary_pairs: list[tuple[Any, Any]] = []
-        for vault in region_vaults:
-            management_endpoint = getattr(vault, "management_endpoint", None)
-            if not management_endpoint:
-                # No endpoint means list_keys/get_key can't be scoped to this vault --
-                # skip silently, same "nothing to scope to" convention as
-                # identity.py/cloud_guard.py.
-                continue
-            management_client = endpoint_client(
+    # (vault, management_client) pairs -- each vault has its own management endpoint, and so
+    # its own client, for list_keys/get_key. A vault with no endpoint can't be scoped to --
+    # skipped silently, same "nothing to scope to" convention as identity.py/cloud_guard.py.
+    managed = [
+        (
+            vault,
+            endpoint_client(
                 oci.key_management.KmsManagementClient,
                 signer,
-                region=region,
-                service_endpoint=management_endpoint,
-            )
-            keys_op = paginate(
+                region=vault.region,
+                service_endpoint=vault.management_endpoint,
+            ),
+        )
+        for vault in vaults
+        if getattr(vault, "management_endpoint", None)
+    ]
+    key_list_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="kms_management",
                 operation="list_keys",
-                call=management_client.list_keys,
-                region=region,
+                call=client.list_keys,
+                region=vault.region,
                 compartment_id=vault.compartment_id,
-                retry_policy=retry_policy,
+                retry_policy=policy,
             )
-            operations.append(keys_op)
-            for key_summary in stamp_region(keys_op.items, region):
-                key_summary_pairs.append((management_client, key_summary))
+            for vault, client in managed
+        ]
+    )
+    operations.extend(key_list_ops)
+    key_summaries: list[tuple[Any, Any]] = []  # (management_client, key_summary)
+    for (vault, client), op in zip(managed, key_list_ops, strict=True):
+        key_summaries.extend((client, summary) for summary in stamp_region(op.items, vault.region))
 
-        def _get_key(
-            pair: tuple[Any, Any], *, _region: str = region
-        ) -> OperationResult:
-            management_client, key_summary = pair
-            return call_once(
+    # auto_key_rotation_details exists only on the full Key model, not on KeySummary.
+    key_ops = policy.run(
+        [
+            functools.partial(
+                call_once,
                 service="kms_management",
                 operation="get_key",
-                call=management_client.get_key,
-                region=_region,
-                key_id=key_summary.id,
-                retry_policy=retry_policy,
+                call=client.get_key,
+                region=summary.region,
+                key_id=summary.id,
+                retry_policy=policy,
             )
-
-        for op in run_concurrently(key_summary_pairs, _get_key, max_workers=_PER_KEY_CONCURRENCY):
-            operations.append(op)
-            if op.ok and op.items:
-                keys.extend(stamp_region(op.items, region))
+            for client, summary in key_summaries
+        ]
+    )
+    operations.extend(key_ops)
+    keys: list[Any] = []
+    for (_, summary), op in zip(key_summaries, key_ops, strict=True):
+        if op.ok and op.items:
+            keys.extend(stamp_region(op.items, summary.region))
 
     return KmsVaultCollectionResult(vaults=vaults, keys=keys, operations=operations)

@@ -7,6 +7,7 @@ omits public_access_type/kms_key_id/versioning, hence the get_bucket step.
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -20,13 +21,8 @@ from oci_drata.pagination import (
     call_once,
     operations_complete,
     paginate,
-    run_concurrently,
     stamp_region,
 )
-
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently).
-_PER_BUCKET_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -67,58 +63,70 @@ def collect_object_storage(
     if not services.object_storage:
         return _skip_result()
 
-    operations: list[OperationResult] = []
-    buckets: list[Any] = []
+    policy = retry_policy or RetryPolicy()
+    regions = discovery.approved_regions
+    clients = {r: regional_client(oci.object_storage.ObjectStorageClient, signer, region=r) for r in regions}
 
-    for region in discovery.approved_regions:
-        client = regional_client(oci.object_storage.ObjectStorageClient, signer, region=region)
+    namespace_ops = policy.run(
+        [
+            functools.partial(
+                call_once,
+                service="object_storage",
+                operation="get_namespace",
+                call=clients[region].get_namespace,
+                region=region,
+                retry_policy=policy,
+            )
+            for region in regions
+        ]
+    )
+    operations: list[OperationResult] = list(namespace_ops)
+    # No namespace means list_buckets/get_bucket can't be scoped for that region; the
+    # namespace op above already records the failure.
+    namespaces = {
+        region: op.items[0] for region, op in zip(regions, namespace_ops, strict=True) if op.ok and op.items
+    }
 
-        namespace_op = call_once(
-            service="object_storage",
-            operation="get_namespace",
-            call=client.get_namespace,
-            region=region,
-            retry_policy=retry_policy,
-        )
-        operations.append(namespace_op)
-        if not namespace_op.ok or not namespace_op.items:
-            # No namespace means list_buckets/get_bucket can't be scoped for this
-            # region; namespace_op above already records the failure.
-            continue
-        namespace_name = namespace_op.items[0]
-
-        region_bucket_summaries: list[Any] = []
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
+    bucket_scope = [(region, compartment_id) for region, compartment_id in discovery.scope if region in namespaces]
+    list_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="object_storage",
                 operation="list_buckets",
-                call=client.list_buckets,
+                call=clients[region].list_buckets,
                 region=region,
                 compartment_id=compartment_id,
-                namespace_name=namespace_name,
-                retry_policy=retry_policy,
+                namespace_name=namespaces[region],
+                retry_policy=policy,
             )
-            operations.append(op)
-            region_bucket_summaries.extend(stamp_region(op.items, region))
+            for region, compartment_id in bucket_scope
+        ]
+    )
+    operations.extend(list_ops)
+    summaries: list[tuple[str, Any]] = []
+    for (region, _), op in zip(bucket_scope, list_ops, strict=True):
+        summaries.extend((region, summary) for summary in stamp_region(op.items, region))
 
-        def _get_bucket(
-            summary: Any, *, _client: Any = client, _namespace: str = namespace_name, _region: str = region
-        ) -> OperationResult:
-            return call_once(
+    bucket_ops = policy.run(
+        [
+            functools.partial(
+                call_once,
                 service="object_storage",
                 operation="get_bucket",
-                call=_client.get_bucket,
-                region=_region,
-                namespace_name=_namespace,
+                call=clients[region].get_bucket,
+                region=region,
+                namespace_name=namespaces[region],
                 bucket_name=summary.name,
-                retry_policy=retry_policy,
+                retry_policy=policy,
             )
-
-        for op in run_concurrently(
-            region_bucket_summaries, _get_bucket, max_workers=_PER_BUCKET_CONCURRENCY
-        ):
-            operations.append(op)
-            if op.ok and op.items:
-                buckets.extend(stamp_region(op.items, region))
+            for region, summary in summaries
+        ]
+    )
+    operations.extend(bucket_ops)
+    buckets: list[Any] = []
+    for (region, _), op in zip(summaries, bucket_ops, strict=True):
+        if op.ok and op.items:
+            buckets.extend(stamp_region(op.items, region))
 
     return ObjectStorageCollectionResult(buckets=buckets, operations=operations)

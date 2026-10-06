@@ -1,17 +1,19 @@
 """Reusable OCI list/get-operation execution: pagination, bounded retry with
-backoff+jitter, and a per-operation result feeding the run report's operation counts.
-Every ``list_*``/``get_*`` call goes through :func:`paginate` or
-:func:`call_once`, except ``compute.py::_lookup_public_ip``, which retries
-itself to treat a 404 (no public IP assigned) as synthetic success.
+backoff+jitter, a run-wide cap on concurrent in-flight requests, a wall-clock deadline,
+and a per-operation result feeding the run report's operation counts. Every
+``list_*``/``get_*`` call goes through :func:`paginate` or :func:`call_once`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import functools
 import logging
 import random
+import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
@@ -42,20 +44,34 @@ def is_retryable_service_error(exc: oci.exceptions.ServiceError) -> bool:
 
 OperationStatus = str  # "success" | "failed" | "unsupported" | "skipped"
 
-# error_code for RetryPolicy.deadline cutting an operation short (--test, see runner.py);
-# operations_complete() treats it as incomplete, same as any other failure.
-TEST_MODE_DEADLINE_ERROR_CODE = "TestModeDeadlineExceeded"
+# error_code for RetryPolicy.deadline cutting an operation short (--test, or a hosting
+# time limit such as Lambda's); operations_complete() treats it as incomplete, same as any
+# other failure, so the affected domain is withheld rather than delivered partial.
+DEADLINE_EXCEEDED_ERROR_CODE = "DeadlineExceeded"
 
 
 @dataclasses.dataclass(frozen=True)
 class RetryPolicy:
-    max_attempts: int = 5
-    base_delay_seconds: float = 0.5
-    max_delay_seconds: float = 20.0
-    # time.monotonic() timestamp; unset means no deadline. Set by runner.run()'s --test mode
-    # to bound wall-clock time; checked once per operation (paginate/call_once)
-    # and once per page, so a run winds down within roughly this budget.
+    """How every OCI call of a run is executed: bounded retry with backoff, an optional
+    wall-clock deadline, and a cap on concurrent in-flight requests."""
+
+    max_attempts: int = 6
+    base_delay_seconds: float = 1.0
+    max_delay_seconds: float = 30.0
+    # time.monotonic() timestamp; unset means no deadline. Checked once per operation
+    # (paginate/call_once), once per page, before each retry sleep, and again after
+    # winning a request slot, so a run winds down within roughly this budget.
     deadline: float | None = None
+    # Caps concurrent in-flight OCI requests across every collector of the run (one
+    # semaphore shared by all of them); None means unbounded. Held only for the request
+    # itself, never while sleeping between retries.
+    call_slots: threading.BoundedSemaphore | None = None
+    # Tighter caps for services with documented per-tenancy rate limits (e.g. Monitoring, KMS:
+    # 10 requests/s), keyed by the ``service`` label of the operation.
+    service_slots: Mapping[str, threading.BoundedSemaphore] = dataclasses.field(default_factory=dict)
+    # Threads per fan-out stage. call_slots, not this, bounds real concurrency; this only
+    # needs to be enough to keep every slot busy.
+    fanout: int = 8
 
     def delay_seconds(self, attempt: int) -> float:
         """Full-jitter exponential backoff: uniform(0, min(cap, base*2^attempt))."""
@@ -64,6 +80,12 @@ class RetryPolicy:
 
     def deadline_exceeded(self) -> bool:
         return self.deadline is not None and time.monotonic() > self.deadline
+
+    def run(self, tasks: Sequence[Callable[[], R]]) -> list[R]:
+        """Runs zero-argument tasks (typically ``functools.partial(paginate, ...)``)
+        concurrently and returns their results in input order."""
+
+        return run_concurrently(list(tasks), _call_task, max_workers=self.fanout)
 
 
 @dataclasses.dataclass
@@ -105,18 +127,22 @@ R = TypeVar("R")
 
 
 def run_concurrently(items: list[T], fn: Callable[[T], R], *, max_workers: int) -> list[R]:
-    """Bounded concurrent map for per-item enrichment calls within one collector --
-    distinct from the cross-collector pool in runner.py::_run_collectors,
-    which bounds concurrency between collectors, not within one.
+    """Bounded concurrent map; results come back in input order.
 
     Each `fn(item)` must be self-contained and not mutate shared state -- the caller
-    merges every result back sequentially after each future completes, so no lock is
-    needed anywhere in this module or its callers."""
+    merges every result back sequentially afterwards, so no lock is needed anywhere in
+    this module or its callers. Must not be called from inside another fan-out's `fn`
+    that shares its pool -- each call here owns a fresh pool, so nesting is safe, just
+    thread-hungry."""
 
     if not items:
         return []
     with ThreadPoolExecutor(max_workers=max(1, min(len(items), max_workers))) as pool:
         return list(pool.map(fn, items))
+
+
+def _call_task(task: Callable[[], R]) -> R:
+    return task()
 
 
 def operations_complete(operations: Iterable[OperationResult]) -> bool:
@@ -130,24 +156,54 @@ def operations_complete(operations: Iterable[OperationResult]) -> bool:
 
 class _RetryExhausted(Exception):
     def __init__(
-        self, error_code: str, error_message: str, request_ids: list[str], retry_delays: list[float]
+        self,
+        error_code: str,
+        error_message: str,
+        request_ids: list[str],
+        retry_delays: list[float],
+        status: int | None = None,
     ) -> None:
         super().__init__(error_message)
         self.error_code = error_code
         self.error_message = error_message
         self.request_ids = request_ids
         self.retry_delays = retry_delays
+        self.status = status  # HTTP status of the final ServiceError; None for transport/deadline
+
+
+class _DeadlineExceeded(Exception):
+    """Raised inside a held request slot when the deadline passed while waiting for it."""
+
+
+def _send(call: Callable[..., Any], policy: RetryPolicy, call_kwargs: dict[str, Any], service: str) -> Any:
+    # Service slot first, then the run-wide slot: a thread queued behind a scarce per-service
+    # limit holds nothing, so it can't starve every other service of run-wide slots.
+    with contextlib.ExitStack() as stack:
+        for slots in (policy.service_slots.get(service), policy.call_slots):
+            if slots is not None:
+                stack.enter_context(slots)
+        # A thread can queue for a slot for a long time; don't spend one after the deadline.
+        if policy.deadline_exceeded():
+            raise _DeadlineExceeded
+        return call(**call_kwargs)
 
 
 def _invoke_with_retry(
-    call: Callable[..., Any], policy: RetryPolicy, call_kwargs: dict[str, Any]
+    call: Callable[..., Any], policy: RetryPolicy, call_kwargs: dict[str, Any], service: str
 ) -> tuple[Any, list[str], list[float]]:
     request_ids: list[str] = []
     retry_delays: list[float] = []
     attempt = 0
     while True:
         try:
-            response = call(**call_kwargs)
+            response = _send(call, policy, call_kwargs, service)
+        except _DeadlineExceeded as exc:
+            raise _RetryExhausted(
+                error_code=DEADLINE_EXCEEDED_ERROR_CODE,
+                error_message="time budget exceeded while waiting for a request slot",
+                request_ids=request_ids,
+                retry_delays=retry_delays,
+            ) from exc
         except oci.exceptions.ServiceError as exc:
             request_id = getattr(exc, "request_id", None)
             if request_id:
@@ -159,6 +215,7 @@ def _invoke_with_retry(
                     error_message=str(getattr(exc, "message", str(exc))),
                     request_ids=request_ids,
                     retry_delays=retry_delays,
+                    status=exc.status,
                 ) from exc
         except (oci.exceptions.ConnectTimeout, oci.exceptions.RequestException) as exc:
             if attempt >= policy.max_attempts - 1:
@@ -179,10 +236,10 @@ def _invoke_with_retry(
 
         if policy.deadline_exceeded():
             # Checked inside the retry loop too: a single call retrying 429/5xx could
-            # otherwise sleep through several backoff delays (~7.5s at default policy)
-            # past --test's deadline before paginate()/call_once()'s own check runs again.
+            # otherwise sleep through several backoff delays past the deadline before
+            # paginate()/call_once()'s own check runs again.
             raise _RetryExhausted(
-                error_code=TEST_MODE_DEADLINE_ERROR_CODE,
+                error_code=DEADLINE_EXCEEDED_ERROR_CODE,
                 error_message="time budget exceeded during retry backoff",
                 request_ids=request_ids,
                 retry_delays=retry_delays,
@@ -220,12 +277,12 @@ def paginate(
     page_token: str | None = None
     while True:
         if policy.deadline_exceeded():
-            # Partial pages already in result.items stay -- useful for --test -- but
-            # status stays failed so operations_complete() sees this domain as incomplete.
+            # Partial pages already in result.items stay, but status stays failed so
+            # operations_complete() sees this domain as incomplete.
             result.status = "failed"
-            result.error_code = TEST_MODE_DEADLINE_ERROR_CODE
-            logger.warning(
-                "test mode: time budget exceeded, stopping here",
+            result.error_code = DEADLINE_EXCEEDED_ERROR_CODE
+            logger.debug(
+                "time budget exceeded, stopping here",
                 extra={
                     "service": service, "operation": operation,
                     "region": region, "compartment_id": compartment_id,
@@ -241,7 +298,7 @@ def paginate(
         if page_token is not None:
             kwargs["page"] = page_token
         try:
-            response, request_ids, retry_delays = _invoke_with_retry(call, policy, kwargs)
+            response, request_ids, retry_delays = _invoke_with_retry(call, policy, kwargs, service)
         except _RetryExhausted as exc:
             result.status = "failed"
             result.error_code = exc.error_code
@@ -286,10 +343,12 @@ def call_once(
     region: str | None = None,
     compartment_id: str | None = None,
     retry_policy: RetryPolicy | None = None,
+    missing_ok: bool = False,
     **call_kwargs: Any,
 ) -> OperationResult:
     """Execute a single (non-paginated) OCI SDK ``get_*`` bound method with the
-    same bounded retry/backoff as :func:`paginate`.
+    same bounded retry/backoff as :func:`paginate`. ``missing_ok`` makes a 404 a success
+    with no items (e.g. a private IP with no public IP assigned) instead of a failure.
 
     ``compartment_id`` is metadata-only, never auto-forwarded -- most ``get_*``
     ops take a resource id, not a compartment filter, so forwarding could shadow
@@ -308,20 +367,19 @@ def call_once(
     )
     if policy.deadline_exceeded():
         result.status = "failed"
-        result.error_code = TEST_MODE_DEADLINE_ERROR_CODE
-        logger.warning(
-            "test mode: time budget exceeded, skipping operation",
-            extra={"service": service, "operation": operation, "region": region, "compartment_id": compartment_id},
-        )
+        result.error_code = DEADLINE_EXCEEDED_ERROR_CODE
         return result
     try:
-        response, request_ids, retry_delays = _invoke_with_retry(call, policy, dict(call_kwargs))
+        response, request_ids, retry_delays = _invoke_with_retry(call, policy, dict(call_kwargs), service)
     except _RetryExhausted as exc:
+        result.request_ids.extend(exc.request_ids)
+        result.retry_delays_seconds.extend(exc.retry_delays)
+        if missing_ok and exc.status == 404:
+            result.page_count = 1
+            return result
         result.status = "failed"
         result.error_code = exc.error_code
         result.error_message = exc.error_message
-        result.request_ids.extend(exc.request_ids)
-        result.retry_delays_seconds.extend(exc.retry_delays)
         return result
 
     result.request_ids.extend(request_ids)
@@ -331,3 +389,34 @@ def call_once(
         result.items.append(response.data)
         result.item_count = 1
     return result
+
+
+def list_in_scope(
+    policy: RetryPolicy,
+    scope: Sequence[tuple[str, str]],
+    listings: Sequence[tuple[str, str, Mapping[str, Any]]],
+    **call_kwargs: Any,
+) -> list[list[OperationResult]]:
+    """For each ``(service, operation, clients_by_region)`` in ``listings``, one paginated
+    listing per ``(region, compartment_id)`` in ``scope`` -- every listing of every
+    operation in one concurrent pass. Returns one result list per listing, each in scope
+    order, so callers zip it back against ``scope``."""
+
+    results = policy.run(
+        [
+            functools.partial(
+                paginate,
+                service=service,
+                operation=operation,
+                call=getattr(clients[region], operation),
+                region=region,
+                compartment_id=compartment_id,
+                retry_policy=policy,
+                **call_kwargs,
+            )
+            for service, operation, clients in listings
+            for region, compartment_id in scope
+        ]
+    )
+    width = len(scope)
+    return [results[i * width : (i + 1) * width] for i in range(len(listings))]

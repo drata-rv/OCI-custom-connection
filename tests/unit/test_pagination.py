@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import time
 from unittest.mock import MagicMock
 
 import oci
@@ -85,3 +87,42 @@ def test_operations_complete_ignores_skipped_but_blocks_on_unsupported() -> None
         service="s", operation="c", region=None, compartment_id=None, status="failed"
     )
     assert operations_complete(ops) is False
+
+
+def test_call_slots_bound_in_flight_requests_across_threads() -> None:
+    import threading
+
+    in_flight = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_call(**kwargs):
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        threading.Event().wait(0.01)  # conftest no-ops time.sleep; really yield to the other threads
+        with lock:
+            in_flight -= 1
+        return _response([])
+
+    policy = RetryPolicy(call_slots=threading.BoundedSemaphore(3), fanout=12)
+    results = policy.run(
+        [
+            functools.partial(paginate, service="s", operation="list_x", call=slow_call, retry_policy=policy)
+            for _ in range(24)
+        ]
+    )
+
+    assert all(r.status == "success" for r in results)
+    assert 1 < peak <= 3
+
+
+def test_expired_deadline_fails_the_operation_without_calling() -> None:
+    call = MagicMock()
+    policy = RetryPolicy(deadline=time.monotonic() - 1)
+
+    result = paginate(service="s", operation="list_x", call=call, retry_policy=policy)
+
+    assert (result.status, result.error_code) == ("failed", "DeadlineExceeded")
+    call.assert_not_called()

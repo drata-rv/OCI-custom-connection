@@ -1,6 +1,7 @@
 """Deployment config loading and secretRef resolution.
 
-Inline credentials are rejected; secrets resolve only via secretRef, lazily, per caller.
+Inline credentials are rejected; secrets resolve only via secretRef (env var, file, or AWS
+Secrets Manager), lazily, per caller.
 OCI_DRATA__-prefixed env vars override non-secret settings after YAML load, before secret resolution.
 """
 
@@ -8,9 +9,12 @@ from __future__ import annotations
 
 import dataclasses
 import ipaddress
+import json
 import logging
 import os
 import stat
+import threading
+import time
 import urllib.parse
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
@@ -28,6 +32,12 @@ from oci_drata.redaction import (
 logger = logging.getLogger(__name__)
 
 ENV_OVERRIDE_PREFIX = "OCI_DRATA__"
+SECRET_PROVIDERS = ("env", "file", "aws_secretsmanager")
+# A secret fetched from AWS Secrets Manager is reused for this long within one process, so a run
+# that resolves the same token several times (early check, upsert, delete) calls AWS once.
+_AWS_SECRET_TTL_SECONDS = 300.0
+_aws_secret_cache: dict[str, tuple[float, str]] = {}
+_aws_secret_lock = threading.Lock()
 DEFAULT_DRATA_HOSTNAME = "public-api.drata.com"
 DEFAULT_PUBLIC_SOURCE_CIDRS = ("0.0.0.0/0", "::/0")
 
@@ -45,9 +55,10 @@ class ConfigError(Exception):
 class SecretRef:
     """Pointer to a secret value. Never carries the value itself."""
 
-    provider: str  # "env" | "file"
-    name: str | None = None
+    provider: str  # "env" | "file" | "aws_secretsmanager"
+    name: str | None = None  # env var name, or Secrets Manager secret name/ARN
     path: str | None = None
+    key: str | None = None  # aws_secretsmanager only: field to read when the secret is a JSON object
 
     def resolve(self) -> str:
         if self.provider == "env":
@@ -85,18 +96,68 @@ class SecretRef:
             if not value:
                 raise ConfigError(f"secret file {self.path!r} exists but is empty: {self.path}")
             return value
+        if self.provider == "aws_secretsmanager":
+            if not self.name:
+                raise ConfigError("secretRef provider 'aws_secretsmanager' requires 'name' (secret name or ARN)")
+            return _resolve_aws_secret(self.name, self.key)
         raise ConfigError(f"unsupported secretRef provider: {self.provider!r}")
 
     def __repr__(self) -> str:  # never leak name/path ambiguity into logs as a value
-        target = self.name if self.provider == "env" else self.path
+        target = self.path if self.provider == "file" else self.name
         return f"SecretRef(provider={self.provider!r}, target={target!r})"
+
+
+def _resolve_aws_secret(secret_id: str, key: str | None) -> str:
+    """Reads one secret from AWS Secrets Manager (boto3 ships with the Lambda Python runtime).
+    Needs ``secretsmanager:GetSecretValue`` on the secret, plus ``kms:Decrypt`` if it uses a
+    customer-managed key."""
+
+    with _aws_secret_lock:
+        cached = _aws_secret_cache.get(secret_id)
+    if cached is not None and time.monotonic() - cached[0] < _AWS_SECRET_TTL_SECONDS:
+        text = cached[1]
+    else:
+        try:
+            import boto3
+            from botocore.exceptions import BotoCoreError, ClientError
+        except ImportError as exc:
+            raise ConfigError(
+                "secretRef provider 'aws_secretsmanager' needs boto3 -- it is preinstalled in AWS Lambda; "
+                "elsewhere: pip install boto3"
+            ) from exc
+        try:
+            response = boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "unknown")
+            raise ConfigError(
+                f"could not read Secrets Manager secret {secret_id!r} ({code}). Check the name/ARN and "
+                f"region, and that this role is allowed secretsmanager:GetSecretValue on it "
+                f"(plus kms:Decrypt if it uses a customer-managed key)."
+            ) from exc
+        except BotoCoreError as exc:
+            raise ConfigError(f"could not reach Secrets Manager for secret {secret_id!r}: {exc}") from exc
+        text = response.get("SecretString") or ""
+        if not text.strip():
+            raise ConfigError(f"Secrets Manager secret {secret_id!r} has no SecretString (binary secrets are unsupported)")
+        with _aws_secret_lock:
+            _aws_secret_cache[secret_id] = (time.monotonic(), text)
+
+    if key is None:
+        return text.strip()
+    try:
+        value = json.loads(text)[key]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ConfigError(f"Secrets Manager secret {secret_id!r} is not a JSON object with a {key!r} field") from exc
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"field {key!r} of Secrets Manager secret {secret_id!r} must be a non-empty string")
+    return value
 
 
 def _looks_like_secret_ref(value: Any) -> bool:
     return (
         isinstance(value, Mapping)
         and "provider" in value
-        and value.get("provider") in ("env", "file")
+        and value.get("provider") in SECRET_PROVIDERS
     )
 
 
@@ -105,13 +166,13 @@ def _parse_secret_ref(value: Any, *, context: str) -> SecretRef | None:
         return None
     if not _looks_like_secret_ref(value):
         raise ConfigError(
-            f"{context}: expected a secretRef object ({{provider: env|file, ...}}) or null, "
+            f"{context}: expected a secretRef object ({{provider: env|file|aws_secretsmanager, ...}}) or null, "
             f"got a literal value -- inline secrets are rejected"
         )
     provider = value["provider"]
-    if provider not in ("env", "file"):
+    if provider not in SECRET_PROVIDERS:
         raise ConfigError(f"{context}: unsupported secretRef provider {provider!r}")
-    return SecretRef(provider=provider, name=value.get("name"), path=value.get("path"))
+    return SecretRef(provider=provider, name=value.get("name"), path=value.get("path"), key=value.get("key"))
 
 
 # --------------------------------------------------------------------------
@@ -247,9 +308,13 @@ class DeploymentConfig:
 @dataclasses.dataclass(frozen=True)
 class OciAuthenticationConfig:
     type: str
-    config_file: str
-    profile: str
+    # Set when credentials come from an OCI SDK config file; unused with credentials_secret_ref.
+    config_file: str | None
+    profile: str | None
     private_key_passphrase_secret_ref: SecretRef | None
+    # A secret holding the SDK config as JSON ({user, fingerprint, tenancy, region, key_content,
+    # [pass_phrase]}) -- for hosts with no filesystem to keep ~/.oci on, e.g. AWS Lambda.
+    credentials_secret_ref: SecretRef | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -458,7 +523,9 @@ _LEGACY_DECISIONS_KEYS = frozenset(
 _OCI_KEYS = frozenset(
     {"authentication", "expectedTenancyOcid", "regions", "compartments", "services"}
 )
-_OCI_AUTH_KEYS = frozenset({"type", "configFile", "profile", "privateKeyPassphraseSecretRef"})
+_OCI_AUTH_KEYS = frozenset(
+    {"type", "configFile", "profile", "privateKeyPassphraseSecretRef", "credentialsSecretRef"}
+)
 _OCI_REGIONS_KEYS = frozenset({"allow"})
 _OCI_COMPARTMENTS_KEYS = frozenset({"roots", "excludeOcids"})
 _OCI_SERVICES_KEYS = frozenset(
@@ -488,14 +555,24 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
 
     auth_raw = _require(oci_raw, "authentication", context="oci")
     _check_known_keys(auth_raw, _OCI_AUTH_KEYS, context="oci.authentication")
+    credentials_secret_ref = _parse_secret_ref(
+        auth_raw.get("credentialsSecretRef"), context="oci.authentication.credentialsSecretRef"
+    )
+    if credentials_secret_ref is None:
+        config_file = _require(auth_raw, "configFile", context="oci.authentication")
+        profile = _require(auth_raw, "profile", context="oci.authentication")
+    else:
+        config_file = auth_raw.get("configFile")
+        profile = auth_raw.get("profile")
     authentication = OciAuthenticationConfig(
         type=_require(auth_raw, "type", context="oci.authentication"),
-        config_file=_require(auth_raw, "configFile", context="oci.authentication"),
-        profile=_require(auth_raw, "profile", context="oci.authentication"),
+        config_file=config_file,
+        profile=profile,
         private_key_passphrase_secret_ref=_parse_secret_ref(
             auth_raw.get("privateKeyPassphraseSecretRef"),
             context="oci.authentication.privateKeyPassphraseSecretRef",
         ),
+        credentials_secret_ref=credentials_secret_ref,
     )
 
     regions_raw = _require(oci_raw, "regions", context="oci")
@@ -586,7 +663,7 @@ def _build_app_config(raw: Mapping[str, Any]) -> AppConfig:
         )
     runtime = RuntimeConfig(
         max_payload_bytes=_require_int(runtime_raw, "maxPayloadBytes", context="runtime", minimum=1),
-        max_concurrency=_require_int(runtime_raw, "maxConcurrency", context="runtime", minimum=1),
+        max_concurrency=_require_int(runtime_raw, "maxConcurrency", context="runtime", minimum=1, maximum=64),
         log_level=log_level.upper(),
         dry_run=_require_bool(runtime_raw, "dryRun", context="runtime"),
     )

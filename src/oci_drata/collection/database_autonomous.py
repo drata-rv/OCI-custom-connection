@@ -15,8 +15,8 @@ from oci_drata.oci_auth import TenancySigner, regional_client
 from oci_drata.pagination import (
     OperationResult,
     RetryPolicy,
+    list_in_scope,
     operations_complete,
-    paginate,
     stamp_region,
 )
 
@@ -59,25 +59,13 @@ def collect_autonomous_database(
     if not services.autonomous_database:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    clients = {r: regional_client(oci.database.DatabaseClient, signer, region=r) for r in discovery.approved_regions}
+
+    (adb_ops,) = list_in_scope(policy, scope, [("database", "list_autonomous_databases", clients)])
     autonomous_databases: list[Any] = []
+    for (region, _), op in zip(scope, adb_ops, strict=True):
+        autonomous_databases.extend(stamp_region(op.items, region))
 
-    for region in discovery.approved_regions:
-        client = regional_client(oci.database.DatabaseClient, signer, region=region)
-
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
-                service="database",
-                operation="list_autonomous_databases",
-                call=client.list_autonomous_databases,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(op)
-            autonomous_databases.extend(stamp_region(op.items, region))
-
-    return AutonomousDatabaseCollectionResult(
-        autonomous_databases=autonomous_databases,
-        operations=operations,
-    )
+    return AutonomousDatabaseCollectionResult(autonomous_databases=autonomous_databases, operations=list(adb_ops))

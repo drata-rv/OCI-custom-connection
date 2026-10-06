@@ -6,6 +6,7 @@ out per (load balancer, backend set name) for ``get_backend_set_health``.
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -17,15 +18,10 @@ from oci_drata.pagination import (
     OperationResult,
     RetryPolicy,
     call_once,
+    list_in_scope,
     operations_complete,
-    paginate,
-    run_concurrently,
     stamp_region,
 )
-
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently).
-_PER_BACKEND_SET_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -70,62 +66,39 @@ def collect_load_balancer(
     if not services.load_balancer:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    clients = {r: regional_client(oci.load_balancer.LoadBalancerClient, signer, region=r) for r in discovery.approved_regions}
+
+    (lb_ops,) = list_in_scope(policy, scope, [("load_balancer", "list_load_balancers", clients)])
     load_balancers: list[Any] = []
-    backend_set_health_by_key: dict[tuple[str, str], Any] = {}
+    for (region, _), op in zip(scope, lb_ops, strict=True):
+        load_balancers.extend(stamp_region(op.items, region))
 
-    for region in discovery.approved_regions:
-        client = regional_client(oci.load_balancer.LoadBalancerClient, signer, region=region)
-
-        region_load_balancers: list[Any] = []
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
-                service="load_balancer",
-                operation="list_load_balancers",
-                call=client.list_load_balancers,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(op)
-            region_load_balancers.extend(stamp_region(op.items, region))
-        load_balancers.extend(region_load_balancers)
-
-        # Backend set names come free from the list call above; no separate
-        # list_backend_sets call needed.
-        pairs = [
-            (lb, backend_set_name)
-            for lb in region_load_balancers
-            for backend_set_name in (lb.backend_sets or {})
-        ]
-
-        def _get_health(
-            pair: tuple[Any, str], *, _client: Any = client, _region: str = region
-        ) -> tuple[str, str, OperationResult]:
-            lb, backend_set_name = pair
-            # get_backend_set_health takes no compartment_id; call_once's
-            # compartment_id param is metadata-only, never auto-forwarded
-            # (see pagination.py::call_once).
-            op = call_once(
+    # Backend set names come free from the list call above; no separate list_backend_sets
+    # call needed. get_backend_set_health takes no compartment_id.
+    pairs = [(lb, name) for lb in load_balancers for name in (lb.backend_sets or {})]
+    health_ops = policy.run(
+        [
+            functools.partial(
+                call_once,
                 service="load_balancer",
                 operation="get_backend_set_health",
-                call=lambda: _client.get_backend_set_health(
-                    load_balancer_id=lb.id, backend_set_name=backend_set_name
-                ),
-                region=_region,
-                retry_policy=retry_policy,
+                call=clients[lb.region].get_backend_set_health,
+                region=lb.region,
+                load_balancer_id=lb.id,
+                backend_set_name=name,
+                retry_policy=policy,
             )
-            return lb.id, backend_set_name, op
-
-        for lb_id, backend_set_name, op in run_concurrently(
-            pairs, _get_health, max_workers=_PER_BACKEND_SET_CONCURRENCY
-        ):
-            operations.append(op)
-            if op.ok and op.items:
-                backend_set_health_by_key[(lb_id, backend_set_name)] = op.items[0]
+            for lb, name in pairs
+        ]
+    )
+    backend_set_health_by_key = {
+        (lb.id, name): op.items[0] for (lb, name), op in zip(pairs, health_ops, strict=True) if op.ok and op.items
+    }
 
     return LoadBalancerCollectionResult(
         load_balancers=load_balancers,
         backend_set_health_by_key=backend_set_health_by_key,
-        operations=operations,
+        operations=[*lb_ops, *health_ops],
     )

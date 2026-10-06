@@ -401,6 +401,8 @@ def build_flat_records(
     vnic_attachments = exclude_referencing(
         compute.vnic_attachments, excluded_ids=excluded_instance_ids, id_field="instance_id"
     )
+    # A DETACHED VNIC is no longer part of the instance (and may not exist any more).
+    vnic_attachments = [a for a in vnic_attachments if getattr(a, "lifecycle_state", None) != "DETACHED"]
 
     instances = [normalize.normalize_instance(i) for i in kept_instances_raw]
     instances = relationships.classify_windows(instances, compute.images)

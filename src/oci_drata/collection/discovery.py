@@ -40,6 +40,12 @@ class DiscoveryResult:
     def complete(self) -> bool:
         return not self.unready_regions and operations_complete(self.operations)
 
+    @property
+    def scope(self) -> list[tuple[str, str]]:
+        """Every (region, compartment_id) a collector lists resources in."""
+
+        return [(r, c) for r in self.approved_regions for c in self.approved_compartment_ids]
+
 
 def _discovery_region(signer: TenancySigner) -> str:
     """Identity calls return tenancy-wide data from any subscribed region, so

@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Nightly OCI-to-Drata evidence collection (oci-drata)
+
+Parameters:
+  OciCredentialsSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret holding the OCI API key (JSON; see README section 10)
+  DrataTokenSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret holding the Drata API token
+  Architecture:
+    Type: String
+    Default: x86_64
+    AllowedValues: [x86_64, arm64]
+    Description: Must match the --arch the package was built with
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 8 * * ? *)
+    Description: When the nightly run starts (EventBridge Scheduler cron/rate expression)
+  ScheduleTimezone:
+    Type: String
+    Default: UTC
+  MemorySize:
+    Type: Number
+    Default: 1769
+    MinValue: 512
+    MaxValue: 10240
+    Description: 1769 MB is one full vCPU, which is what Python's single-threaded response parsing can use
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+  PreventOverlap:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Reserve concurrency 1 so two runs never overlap. Set 'false' if the account's concurrency quota is too low to reserve (new accounts).
+  AlarmTopicArn:
+    Type: String
+    Default: ''
+    Description: Optional SNS topic notified when a run fails or delivers only part of the evidence
+
+Conditions:
+  PreventOverlapEnabled: !Equals [!Ref PreventOverlap, 'true']
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /oci-drata/${AWS::StackName}
+      RetentionInDays: !Ref LogRetentionDays
+
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/lambda/
+      Handler: oci_drata.lambda_handler.handler
+      Runtime: python3.12
+      Architectures: [!Ref Architecture]
+      Timeout: 900
+      MemorySize: !Ref MemorySize
+      ReservedConcurrentExecutions: !If [PreventOverlapEnabled, 1, !Ref 'AWS::NoValue']
+      # Text (the default) keeps oci-drata's own single-line JSON logs and metric lines exactly as written.
+      LoggingConfig:
+        LogGroup: !Ref LogGroup
+      # A failed or timed-out run is not retried by Lambda (the next night runs again; every write
+      # is an upsert by id), and a duplicate or throttled invoke is dropped after a minute.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        MaximumEventAgeInSeconds: 60
+        DestinationConfig:
+          OnFailure:
+            Type: SQS
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref OciCredentialsSecretArn
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref DrataTokenSecretArn
+      Events:
+        Nightly:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: !Ref ScheduleExpression
+            ScheduleExpressionTimezone: !Ref ScheduleTimezone
+            FlexibleTimeWindow:
+              Mode: 'OFF'
+            RetryPolicy:
+              MaximumRetryAttempts: 2
+              MaximumEventAgeInSeconds: 3600
+
+  FailedRunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The nightly oci-drata run failed (see the function's log group)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref Function
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  PartialRunAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A run finished but withheld some domains (a collector failed, or time ran out)
+      Namespace: OciDrata
+      MetricName: DomainsWithheld
+      Statistic: Maximum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+Outputs:
+  FunctionName:
+    Value: !Ref Function
+  LogGroupName:
+    Value: !Ref LogGroup

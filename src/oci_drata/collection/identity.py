@@ -9,6 +9,7 @@ policy text). Off by default; see README Section 4 for the required policy grant
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -16,11 +17,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate, run_concurrently
-
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently) -- same value used by database_autonomous.py.
-_PER_USER_CONCURRENCY = 8
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    list_in_scope,
+    operations_complete,
+    paginate,
+)
 
 
 @dataclasses.dataclass
@@ -65,11 +68,12 @@ def collect_identity(
     if not services.identity:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
     region = discovery.discovery_region
     client = regional_client(oci.identity.IdentityClient, signer, region=region)
     tenancy_ocid = discovery.tenancy.id if discovery.tenancy is not None else None
 
+    operations: list[OperationResult] = []
     users: list[Any] = []
     if tenancy_ocid is not None:
         users_op = paginate(
@@ -78,43 +82,38 @@ def collect_identity(
             call=client.list_users,
             region=region,
             compartment_id=tenancy_ocid,
-            retry_policy=retry_policy,
+            retry_policy=policy,
         )
         operations.append(users_op)
         users = users_op.items
 
-    def _list_api_keys(user: Any, *, _client: Any = client, _region: str = region) -> tuple[OperationResult, str, list[Any]]:
-        op = paginate(
-            service="identity",
-            operation="list_api_keys",
-            call=_client.list_api_keys,
-            region=_region,
-            user_id=user.id,
-            retry_policy=retry_policy,
-        )
-        return op, user.id, op.items
-
-    api_keys_by_user_id: dict[str, list[Any]] = {}
-    for op, user_id, items in run_concurrently(users, _list_api_keys, max_workers=_PER_USER_CONCURRENCY):
-        operations.append(op)
-        api_keys_by_user_id[user_id] = items
-
-    policies: list[Any] = []
-    for compartment_id in discovery.approved_compartment_ids:
-        policies_op = paginate(
-            service="identity",
-            operation="list_policies",
-            call=client.list_policies,
-            region=region,
-            compartment_id=compartment_id,
-            retry_policy=retry_policy,
-        )
-        operations.append(policies_op)
-        policies.extend(policies_op.items)
+    # Each user's API keys and each compartment's policies are independent: one concurrent
+    # pass. IAM data is tenancy-wide, so everything is read from the discovery region.
+    key_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
+                service="identity",
+                operation="list_api_keys",
+                call=client.list_api_keys,
+                region=region,
+                user_id=user.id,
+                retry_policy=policy,
+            )
+            for user in users
+        ]
+    )
+    (iam_policy_ops,) = list_in_scope(
+        policy,
+        [(region, compartment_id) for compartment_id in discovery.approved_compartment_ids],
+        [("identity", "list_policies", {region: client})],
+    )
+    operations.extend(key_ops)
+    operations.extend(iam_policy_ops)
 
     return IdentityCollectionResult(
         users=users,
-        api_keys_by_user_id=api_keys_by_user_id,
-        policies=policies,
+        api_keys_by_user_id={user.id: op.items for user, op in zip(users, key_ops, strict=True)},
+        policies=[item for op in iam_policy_ops for item in op.items],
         operations=operations,
     )

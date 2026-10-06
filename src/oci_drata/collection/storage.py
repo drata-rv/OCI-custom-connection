@@ -7,6 +7,7 @@ happens in :mod:`oci_drata.transform.normalize`.
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -17,6 +18,7 @@ from oci_drata.oci_auth import TenancySigner, regional_client
 from oci_drata.pagination import (
     OperationResult,
     RetryPolicy,
+    list_in_scope,
     operations_complete,
     paginate,
     stamp_region,
@@ -63,70 +65,65 @@ def collect_storage(
             ],
         )
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    regions = discovery.approved_regions
+    blockstorage = {r: regional_client(oci.core.BlockstorageClient, signer, region=r) for r in regions}
+    compute = {r: regional_client(oci.core.ComputeClient, signer, region=r) for r in regions}
+
+    # list_boot_volumes/list_volumes/list_volume_attachments: availability_domain optional,
+    # one call per compartment covers every AD in the region.
+    boot_volume_ops, volume_ops, volume_attachment_ops = list_in_scope(
+        policy,
+        scope,
+        [
+            ("blockstorage", "list_boot_volumes", blockstorage),
+            ("blockstorage", "list_volumes", blockstorage),
+            ("compute", "list_volume_attachments", compute),
+        ],
+    )
+    operations: list[OperationResult] = [*boot_volume_ops, *volume_ops, *volume_attachment_ops]
+
     boot_volumes: list[Any] = []
     block_volumes: list[Any] = []
-    boot_volume_attachments: list[Any] = []
     volume_attachments: list[Any] = []
+    for index, (region, _) in enumerate(scope):
+        boot_volumes.extend(stamp_region(boot_volume_ops[index].items, region))
+        block_volumes.extend(stamp_region(volume_ops[index].items, region))
+        volume_attachments.extend(stamp_region(volume_attachment_ops[index].items, region))
 
-    for region in discovery.approved_regions:
-        blockstorage_client = regional_client(oci.core.BlockstorageClient, signer, region=region)
-        compute_client = regional_client(oci.core.ComputeClient, signer, region=region)
-        availability_domains = discovery.availability_domains_by_region.get(region, [])
-
-        for compartment_id in discovery.approved_compartment_ids:
-            # list_boot_volumes/list_volumes/list_volume_attachments: availability_domain
-            # optional, one call per compartment covers every AD in the region.
-            boot_volumes_op = paginate(
-                service="blockstorage",
-                operation="list_boot_volumes",
-                call=blockstorage_client.list_boot_volumes,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(boot_volumes_op)
-            boot_volumes.extend(stamp_region(boot_volumes_op.items, region))
-
-            volumes_op = paginate(
-                service="blockstorage",
-                operation="list_volumes",
-                call=blockstorage_client.list_volumes,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(volumes_op)
-            block_volumes.extend(stamp_region(volumes_op.items, region))
-
-            volume_attachments_op = paginate(
+    # list_boot_volume_attachments requires an availability_domain, and an attachment is in
+    # its boot volume's AD -- so only ADs holding at least one boot volume in the region can
+    # have an attachment worth joining. Ask those, not every AD of every compartment.
+    ads_by_region: dict[str, set[str]] = {}
+    for boot_volume in boot_volumes:
+        ad = getattr(boot_volume, "availability_domain", None)
+        if ad:
+            ads_by_region.setdefault(boot_volume.region, set()).add(ad)
+    boot_attachment_scope = [
+        (region, compartment_id, ad)
+        for region, compartment_id in scope
+        for ad in sorted(ads_by_region.get(region, ()))
+    ]
+    boot_attachment_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="compute",
-                operation="list_volume_attachments",
-                call=compute_client.list_volume_attachments,
+                operation="list_boot_volume_attachments",
+                call=compute[region].list_boot_volume_attachments,
                 region=region,
                 compartment_id=compartment_id,
-                retry_policy=retry_policy,
+                availability_domain=ad,
+                retry_policy=policy,
             )
-            operations.append(volume_attachments_op)
-            volume_attachments.extend(stamp_region(volume_attachments_op.items, region))
-
-            # list_boot_volume_attachments requires availability_domain -- one call
-            # per AD per compartment.
-            for ad in availability_domains:
-                ad_name = getattr(ad, "name", None)
-                if not ad_name:
-                    continue
-                boot_attachments_op = paginate(
-                    service="compute",
-                    operation="list_boot_volume_attachments",
-                    call=compute_client.list_boot_volume_attachments,
-                    region=region,
-                    compartment_id=compartment_id,
-                    availability_domain=ad_name,
-                    retry_policy=retry_policy,
-                )
-                operations.append(boot_attachments_op)
-                boot_volume_attachments.extend(stamp_region(boot_attachments_op.items, region))
+            for region, compartment_id, ad in boot_attachment_scope
+        ]
+    )
+    operations.extend(boot_attachment_ops)
+    boot_volume_attachments: list[Any] = []
+    for (region, _, _), op in zip(boot_attachment_scope, boot_attachment_ops, strict=True):
+        boot_volume_attachments.extend(stamp_region(op.items, region))
 
     return StorageCollectionResult(
         boot_volumes=boot_volumes,

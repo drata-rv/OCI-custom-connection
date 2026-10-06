@@ -7,6 +7,7 @@ Returns raw OCI SDK model objects.
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -17,15 +18,11 @@ from oci_drata.oci_auth import TenancySigner, regional_client
 from oci_drata.pagination import (
     OperationResult,
     RetryPolicy,
+    list_in_scope,
     operations_complete,
     paginate,
-    run_concurrently,
     stamp_region,
 )
-
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently).
-_PER_NSG_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -70,99 +67,59 @@ def collect_networking(
             ],
         )
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    vnet = {r: regional_client(oci.core.VirtualNetworkClient, signer, region=r) for r in discovery.approved_regions}
+
+    subnet_ops, route_table_ops, gateway_ops, security_list_ops, nsg_ops = list_in_scope(
+        policy,
+        scope,
+        [
+            ("virtual_network", operation, vnet)
+            for operation in (
+                "list_subnets",
+                "list_route_tables",
+                "list_internet_gateways",
+                "list_security_lists",
+                "list_network_security_groups",
+            )
+        ],
+    )
+    operations: list[OperationResult] = [
+        *subnet_ops, *route_table_ops, *gateway_ops, *security_list_ops, *nsg_ops
+    ]
+
     subnets: list[Any] = []
     route_tables: list[Any] = []
     internet_gateways: list[Any] = []
     security_lists: list[Any] = []
-    nsg_security_rules_by_nsg_id: dict[str, list[Any]] = {}
+    nsgs: list[Any] = []
+    for index, (region, _) in enumerate(scope):
+        subnets.extend(stamp_region(subnet_ops[index].items, region))
+        route_tables.extend(stamp_region(route_table_ops[index].items, region))
+        internet_gateways.extend(stamp_region(gateway_ops[index].items, region))
+        security_lists.extend(stamp_region(security_list_ops[index].items, region))
+        nsgs.extend(stamp_region(nsg_ops[index].items, region))
 
-    for region in discovery.approved_regions:
-        vnet_client = regional_client(oci.core.VirtualNetworkClient, signer, region=region)
-
-        for compartment_id in discovery.approved_compartment_ids:
-            subnets_op = paginate(
+    # list_network_security_group_security_rules rejects compartment_id -- omit it; passing
+    # it raises ValueError.
+    nsgs_with_id = [nsg for nsg in nsgs if getattr(nsg, "id", None)]
+    rule_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="virtual_network",
-                operation="list_subnets",
-                call=vnet_client.list_subnets,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
+                operation="list_network_security_group_security_rules",
+                call=vnet[nsg.region].list_network_security_group_security_rules,
+                region=nsg.region,
+                network_security_group_id=nsg.id,
+                retry_policy=policy,
             )
-            operations.append(subnets_op)
-            subnets.extend(stamp_region(subnets_op.items, region))
-
-            route_tables_op = paginate(
-                service="virtual_network",
-                operation="list_route_tables",
-                call=vnet_client.list_route_tables,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(route_tables_op)
-            route_tables.extend(stamp_region(route_tables_op.items, region))
-
-            internet_gateways_op = paginate(
-                service="virtual_network",
-                operation="list_internet_gateways",
-                call=vnet_client.list_internet_gateways,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(internet_gateways_op)
-            internet_gateways.extend(stamp_region(internet_gateways_op.items, region))
-
-            security_lists_op = paginate(
-                service="virtual_network",
-                operation="list_security_lists",
-                call=vnet_client.list_security_lists,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(security_lists_op)
-            security_lists.extend(stamp_region(security_lists_op.items, region))
-
-            nsgs_op = paginate(
-                service="virtual_network",
-                operation="list_network_security_groups",
-                call=vnet_client.list_network_security_groups,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(nsgs_op)
-            region_nsgs = stamp_region(nsgs_op.items, region)
-
-            # Each NSG's rule listing is independent -- workers return their own data,
-            # this thread merges sequentially after, so nothing needs a lock.
-            def _process_nsg(
-                nsg: Any, *, _vnet_client: Any = vnet_client, _region: str = region
-            ) -> tuple[list[OperationResult], str | None, list[Any]]:
-                nsg_id = getattr(nsg, "id", None)
-                if not nsg_id:
-                    return [], None, []
-
-                # list_network_security_group_security_rules rejects compartment_id --
-                # omit it; passing it raises ValueError.
-                rules_op = paginate(
-                    service="virtual_network",
-                    operation="list_network_security_group_security_rules",
-                    call=_vnet_client.list_network_security_group_security_rules,
-                    region=_region,
-                    network_security_group_id=nsg_id,
-                    retry_policy=retry_policy,
-                )
-                return [rules_op], nsg_id, rules_op.items
-
-            for ops, nsg_id, rule_items in run_concurrently(
-                region_nsgs, _process_nsg, max_workers=_PER_NSG_CONCURRENCY
-            ):
-                operations.extend(ops)
-                if nsg_id is not None:
-                    nsg_security_rules_by_nsg_id[nsg_id] = rule_items
+            for nsg in nsgs_with_id
+        ]
+    )
+    operations.extend(rule_ops)
+    nsg_security_rules_by_nsg_id = {nsg.id: op.items for nsg, op in zip(nsgs_with_id, rule_ops, strict=True)}
 
     return NetworkingCollectionResult(
         subnets=subnets,

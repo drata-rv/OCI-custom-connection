@@ -16,6 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Only for the aws_secretsmanager secretRef provider outside AWS Lambda (the Lambda Python
+# runtime already ships boto3).
+aws = ["boto3>=1.34,<2"]
 dev = [
     "pytest>=9.0,<10",  # >=9.0.3 fixes PYSEC-2026-1845 (predictable /tmp/pytest-of-{user} path)
     "mypy>=1.10,<2",
@@ -59,4 +62,9 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 # The official OCI SDK ships no py.typed marker / stub package.
 module = "oci.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Optional dependency (the "aws" extra / preinstalled in AWS Lambda), imported lazily.
+module = ["boto3", "botocore.*"]
 ignore_missing_imports = true

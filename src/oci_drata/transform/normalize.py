@@ -44,7 +44,7 @@ def normalize_instance(raw: Any) -> Instance:
 
 
 def normalize_vnic(raw: Any) -> Vnic:
-    """subnet_id required, raises if absent. public_addresses filled in later by
+    """subnet_id required, raises if absent. public_addresses are filled in later by
     transform.relationships (a VNIC carries only its primary address)."""
 
     subnet_id = getattr(raw, "subnet_id", None)

@@ -13,6 +13,7 @@ Read-only OCI configuration-evidence collector. Upserts records into a Drata Cus
 7. [Troubleshooting](#7-troubleshooting)
 8. [Deployment checklist](#8-deployment-checklist)
 9. [Custom Tests](#9-custom-tests)
+10. [AWS Lambda (scheduled nightly run)](#10-aws-lambda-scheduled-nightly-run)
 
 ## 1. Setup
 
@@ -96,6 +97,14 @@ apiTokenSecretRef:
 export DRATA_API_TOKEN="$(cat /path/to/token)"
 # file provider:
 install -m 600 /path/to/token /run/secrets/drata_api_token
+```
+
+Secrets Manager (for AWS Lambda, §10) — use `provider: aws_secretsmanager` with the secret's name or ARN; add `key: <field>` to read one field of a JSON secret:
+
+```yaml
+apiTokenSecretRef:
+  provider: aws_secretsmanager
+  name: oci-drata/drata-token
 ```
 
 Non-secret runtime overrides: `OCI_DRATA__` env prefix, e.g. `OCI_DRATA__OCI__REGIONS__ALLOW=us-ashburn-1,eu-frankfurt-1`.
@@ -274,3 +283,74 @@ Evaluation threshold for every test: "All results must pass" (`assertion: "nofai
 | `cloud-guard-enabled` | `cloud_guard_configuration` | Fails if the tenancy's Cloud Guard status isn't `ENABLED`. |
 | `load-balancer-backend-set-healthy` | `load_balancer_backend_set` | Fails a backend set whose health status isn't `OK`. |
 | `kms-key-auto-rotation-enabled` | `kms_key` | Fails a KMS key with auto-rotation disabled. |
+
+## 10. AWS Lambda (scheduled nightly run)
+
+One EventBridge Scheduler rule invokes one Lambda function per night. The function runs the same collection as the CLI (`runner.run()`), reads its credentials from Secrets Manager, and stops by itself before Lambda's 15-minute limit.
+
+**1. Secrets.** Create two secrets in the function's Region:
+
+```bash
+aws secretsmanager create-secret --name oci-drata/drata-token --secret-string "$(cat /path/to/drata_token)"
+
+aws secretsmanager create-secret --name oci-drata/oci-credentials --secret-string "$(python3 -c '
+import json, sys
+print(json.dumps({
+    "user": "ocid1.user.oc1..<user>", "tenancy": "ocid1.tenancy.oc1..<tenancy>",
+    "fingerprint": "aa:bb:cc:...", "region": "us-ashburn-1",
+    "key_content": open(sys.argv[1]).read(),
+}))' /path/to/oci_api_key.pem)"
+```
+
+Add `"pass_phrase": "..."` to the second secret only if the key is encrypted. Note both ARNs.
+
+**2. Config.**
+
+```bash
+cp deploy/config.lambda.example.yaml config.yaml
+```
+
+Edit `expectedTenancyOcid`, `regions.allow`, `drata.connectionId`/`resourceId`, the secret names, and the `oci.services.*` toggles. It holds no secrets. Keep `runtime.dryRun: true` until step 5.
+
+**3. Build** (needs PyPI access, not Docker; `--arch` must match step 4's `Architecture`):
+
+```bash
+python deploy/build_lambda_package.py --config config.yaml --arch x86_64   # or arm64
+```
+
+Writes `dist/lambda/` (about 75 MB unzipped, 17 MB zipped; Lambda's limit is 250 MB unzipped).
+
+**4. Deploy** (AWS SAM CLI):
+
+```bash
+sam deploy --template-file deploy/template.yaml --stack-name oci-drata --capabilities CAPABILITY_IAM --guided
+```
+
+Parameters: `OciCredentialsSecretArn`, `DrataTokenSecretArn`, `Architecture`, `ScheduleExpression` (default `cron(0 8 * * ? *)`, daily 08:00), `ScheduleTimezone`, `AlarmTopicArn` (optional SNS topic for the two alarms). If the stack fails on reserved concurrency (new accounts have a low quota), redeploy with `PreventOverlap=false`.
+
+**5. Test, then go live.**
+
+```bash
+aws lambda invoke --function-name <FunctionName output> --payload '{"dryRun": true}' \
+  --cli-binary-format raw-in-base64-out --cli-read-timeout 900 /dev/stdout
+```
+
+Read the function's log group: the `run report` line is the same content as `collection-report.json`. When it looks right, set `runtime.dryRun: false` in `config.yaml`, rebuild (step 3) and redeploy (step 4).
+
+Run the same code on your machine, with a fake Lambda context: `python deploy/invoke_local.py --config config.yaml`.
+
+**Behavior**
+
+- Concurrency: at most `runtime.maxConcurrency` (default 8) OCI requests in flight across the whole run; Monitoring and KMS are held to 2. Raise it only if runs approach the 15-minute limit; more can trigger OCI `429` responses, which are retried with backoff.
+- Time limit: collection stops starting OCI calls about 150 s before the timeout and delivery stops about 25 s before it. A domain cut short is withheld, never delivered partial (`deadlineExceeded: true`, and `domainsWithheld` lists it); the next night collects it again.
+- A run that delivers nothing, or whose delivery fails, makes the invocation fail. Lambda does not retry it (the next night runs anyway; every write is an upsert by `id`) and the event goes to the SAM-created SQS on-failure queue.
+- Metrics (CloudWatch Embedded Metric Format, namespace `OciDrata`, per `Deployment` and aggregate): `RunSucceeded`, `RecordsDelivered`, `RecordsWithheld`, `DomainsWithheld`, `DeadlineExceeded`, `OperationsFailed`, `StaleRecordsDeleted`, `ElapsedSeconds`. Alarms: `FailedRunAlarm` (function `Errors`) and `PartialRunAlarm` (`DomainsWithheld`).
+- IAM: the function role may read only the two secrets (`secretsmanager:GetSecretValue`; add `kms:Decrypt` if they use a customer-managed KMS key) and write its log group. The OCI policy is unchanged (§4).
+- Networking: do not attach the function to a VPC unless you also give it a NAT gateway; OCI and Drata are public HTTPS endpoints.
+
+| Symptom | Fix |
+|---|---|
+| `could not read Secrets Manager secret ... (AccessDeniedException)` | The secret ARN passed to the stack must be the one named in `config.yaml`; the stack grants read on that ARN only. |
+| `oci.authentication.credentialsSecretRef ... is not valid JSON` / `unsupported field(s)` | The secret must be one JSON object with only `user`, `tenancy`, `fingerprint`, `region`, `key_content`, `pass_phrase`. |
+| Invocation fails with `Task timed out` | Raise `runtime.maxConcurrency`, or narrow `oci.regions.allow` / `oci.compartments.roots`. Timeouts are normally prevented by the time limit above; check `Timeout: 900` in the stack. |
+| `PartialRunAlarm` fires every night | `domainsWithheld` in the `run report` line names the domain; §7 explains each cause. A persistent `NotAuthorizedOrNotFound` compartment belongs in `oci.compartments.excludeOcids`. |

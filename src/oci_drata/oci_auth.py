@@ -1,19 +1,24 @@
 """OCI authentication (API-signing user) and dynamic regional client construction.
 Region/tenancy/client are never hard-coded; region must come from the validated
 config allowlist (see :mod:`oci_drata.collection.discovery`).
+
+Credentials come from an OCI SDK config file + key file, or -- for hosts with no
+filesystem to keep them on, e.g. AWS Lambda -- from a secret holding the same fields as
+JSON, with the PEM inline (``key_content``) so no key ever touches disk.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 import stat
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import oci
 
-from oci_drata.config import AppConfig
+from oci_drata.config import AppConfig, ConfigError, SecretRef
 from oci_drata.security import GuardedOciClient
 
 T = TypeVar("T")
@@ -49,20 +54,36 @@ class TenancySigner:
         )
 
 
-def build_signer(app_config: AppConfig) -> TenancySigner:
-    """Load and validate the API-signing user's OCI SDK configuration.
+_SECRET_CONFIG_KEYS = frozenset({"user", "fingerprint", "tenancy", "region", "key_content", "pass_phrase"})
 
-    Fails closed: raises :class:`AuthError` on any missing file, permission
-    problem, validation error, or tenancy mismatch.
-    """
 
-    auth = app_config.oci.authentication
-    if auth.type != "api_signing_user":
+def _config_from_secret(ref: SecretRef) -> dict[str, str]:
+    """The SDK config dict held in a secret. Only the documented SDK fields are accepted --
+    notably never ``authentication_type`` or a key/token file path -- so a secret can't
+    redirect authentication to anything but a plain API-signing key."""
+
+    try:
+        raw = json.loads(ref.resolve())
+    except ConfigError as exc:
+        raise AuthError(str(exc)) from exc
+    except ValueError as exc:
+        raise AuthError(f"oci.authentication.credentialsSecretRef ({ref!r}) is not valid JSON") from exc
+    if not isinstance(raw, dict) or not all(isinstance(v, str) for v in raw.values()):
         raise AuthError(
-            f"unsupported authentication type {auth.type!r}; only 'api_signing_user' is "
-            f"implemented"
+            f"oci.authentication.credentialsSecretRef ({ref!r}) must be a JSON object of strings: "
+            f"user, fingerprint, tenancy, region, key_content[, pass_phrase]"
         )
+    unexpected = sorted(set(raw) - _SECRET_CONFIG_KEYS)
+    if unexpected:
+        raise AuthError(f"oci.authentication.credentialsSecretRef ({ref!r}) has unsupported field(s) {unexpected}")
+    config = dict(raw)
+    # A PEM pasted into a single-line secret field usually arrives with literal "\n" escapes.
+    if "key_content" in config:
+        config["key_content"] = config["key_content"].replace("\\n", "\n")
+    return config
 
+
+def _config_from_file(auth: Any) -> dict[str, str]:
     config_file = Path(auth.config_file).expanduser()
     if not config_file.is_file():
         raise AuthError(f"OCI SDK config file not found: {config_file}")
@@ -99,6 +120,28 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
     mode = key_file.stat().st_mode
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
         raise AuthError(f"OCI private key file must not be group/world accessible: {key_file}")
+    return dict(raw_config)
+
+
+def build_signer(app_config: AppConfig) -> TenancySigner:
+    """Load and validate the API-signing user's OCI SDK configuration.
+
+    Fails closed: raises :class:`AuthError` on any missing file, permission
+    problem, validation error, or tenancy mismatch.
+    """
+
+    auth = app_config.oci.authentication
+    if auth.type != "api_signing_user":
+        raise AuthError(
+            f"unsupported authentication type {auth.type!r}; only 'api_signing_user' is "
+            f"implemented"
+        )
+
+    raw_config = (
+        _config_from_secret(auth.credentials_secret_ref)
+        if auth.credentials_secret_ref is not None
+        else _config_from_file(auth)
+    )
 
     if auth.private_key_passphrase_secret_ref is not None:
         raw_config["pass_phrase"] = auth.private_key_passphrase_secret_ref.resolve()
@@ -118,7 +161,18 @@ def build_signer(app_config: AppConfig) -> TenancySigner:
     return TenancySigner(base_config=raw_config)
 
 
-def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySigner, *, region: str) -> T:
+# One HTTPS pool per client (= per service x region). The SDK default is 10 connections; a run
+# fans out to a few dozen threads, so a bigger pool avoids discarded connections and the extra
+# TLS handshakes that come with them.
+_POOL_SIZE = 32
+
+
+def _tune(client: Any) -> Any:
+    client.base_client.session.mount("https://", oci.base_client.OCIHTTPAdapter(pool_maxsize=_POOL_SIZE))
+    return client
+
+
+def regional_client(client_cls: Callable[..., T], signer: TenancySigner, *, region: str) -> T:
     """Construct an OCI SDK client bound to one region (caller-supplied, never
     hard-coded).
 
@@ -127,7 +181,10 @@ def regional_client(client_cls: Callable[[dict[str, str]], T], signer: TenancySi
     operations raise at call time, not caught by mypy since attribute access is
     untyped (Any)."""
 
-    return cast(T, GuardedOciClient(client_cls(signer.region_config(region))))
+    # NoneRetryStrategy: some SDK operations retry by themselves (up to 8 attempts / 600 s),
+    # invisibly to our deadline and request-slot accounting. pagination.py is the one retry layer.
+    client = client_cls(signer.region_config(region), retry_strategy=oci.retry.NoneRetryStrategy())
+    return cast(T, GuardedOciClient(_tune(client)))
 
 
 def endpoint_client(
@@ -139,4 +196,7 @@ def endpoint_client(
     collection/kms_vault.py). Still wrapped in GuardedOciClient; only the
     endpoint differs."""
 
-    return cast(T, GuardedOciClient(client_cls(signer.region_config(region), service_endpoint)))
+    client = client_cls(
+        signer.region_config(region), service_endpoint, retry_strategy=oci.retry.NoneRetryStrategy()
+    )
+    return cast(T, GuardedOciClient(_tune(client)))

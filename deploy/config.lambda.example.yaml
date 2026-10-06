@@ -1,0 +1,58 @@
+# config.yaml for AWS Lambda (see README section 10). Copy to config.yaml, edit, then build:
+#   python deploy/build_lambda_package.py --config config.yaml
+# Holds no secrets: credentials are read from Secrets Manager at run time.
+
+deployment:
+  name: example-production
+
+oci:
+  authentication:
+    type: api_signing_user
+    # Secret value: {"user": "ocid1.user...", "tenancy": "ocid1.tenancy...", "fingerprint": "aa:bb:...",
+    #                "region": "us-ashburn-1", "key_content": "-----BEGIN PRIVATE KEY-----\n...", "pass_phrase": "(only if the key is encrypted)"}
+    credentialsSecretRef:
+      provider: aws_secretsmanager
+      name: oci-drata/oci-credentials
+  expectedTenancyOcid: ocid1.tenancy.oc1..replace-me
+  regions:
+    allow:
+      - us-ashburn-1
+  compartments:
+    roots:
+      - tenancy
+    excludeOcids: []
+  services:
+    compute: true
+    networkExposure: true
+    blockStorage: true
+    baseDatabase: true
+    autonomousDatabase: true
+    siteToSiteVpn: true
+    identity: false
+    objectStorage: false
+    cloudGuard: false
+    monitoring: false
+    loadBalancer: false
+    waf: false
+    kmsVault: false
+
+decisions:
+  publicSourceCidrs:
+    - 0.0.0.0/0
+    - ::/0
+
+drata:
+  baseUrl: https://public-api.drata.com/public/v2
+  connectionId: 0   # replace with the Custom Connection's id
+  resourceId: 0     # replace with the flat-schema resource's id
+  apiTokenSecretRef:
+    provider: aws_secretsmanager
+    name: oci-drata/drata-token   # secret value: the token itself (or JSON, with `key: <field>` here)
+
+runtime:
+  maxPayloadBytes: 4500000
+  # Concurrent OCI API requests across the whole run. 8 finishes a several-hundred-compartment
+  # tenancy in minutes; raise only if runs approach the 15-minute limit (more can trigger 429s).
+  maxConcurrency: 8
+  logLevel: INFO
+  dryRun: true      # set false once a dry-run invoke looks right: nothing is sent to Drata while true

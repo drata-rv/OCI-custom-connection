@@ -13,7 +13,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate, stamp_region
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    list_in_scope,
+    operations_complete,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -54,21 +60,13 @@ def collect_monitoring(
     if not services.monitoring:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    clients = {r: regional_client(oci.monitoring.MonitoringClient, signer, region=r) for r in discovery.approved_regions}
+
+    (alarm_ops,) = list_in_scope(policy, scope, [("monitoring", "list_alarms", clients)])
     alarms: list[Any] = []
+    for (region, _), op in zip(scope, alarm_ops, strict=True):
+        alarms.extend(stamp_region(op.items, region))
 
-    for region in discovery.approved_regions:
-        client = regional_client(oci.monitoring.MonitoringClient, signer, region=region)
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
-                service="monitoring",
-                operation="list_alarms",
-                call=client.list_alarms,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(op)
-            alarms.extend(stamp_region(op.items, region))
-
-    return MonitoringCollectionResult(alarms=alarms, operations=operations)
+    return MonitoringCollectionResult(alarms=alarms, operations=list(alarm_ops))

@@ -71,6 +71,17 @@ def _http_session(session: requests.Session | None) -> Iterator[requests.Session
         owned.close()
 
 
+def _expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() > deadline
+
+
+def _deadline_result(attempts: int) -> DeliveryResult:
+    return DeliveryResult(
+        uploaded=False, created=None, status_code=None, attempts=attempts, error_class="deadline",
+        error_message="time budget exhausted before this request could be sent",
+    )
+
+
 def _request_id(response: requests.Response) -> str | None:
     for header in _REQUEST_ID_HEADERS:
         value = response.headers.get(header)
@@ -110,12 +121,15 @@ def upsert_records(
     timeout_seconds: float = 30.0,
     max_payload_bytes: int | None = None,
     session: requests.Session | None = None,
+    deadline: float | None = None,
 ) -> list[DeliveryResult]:
     """Upserts ``records`` in batches of up to ``_BATCH_SIZE``, POSTing ``{"data": [...]}``
-    per batch. When ``max_payload_bytes`` is set, a batch whose serialized body would
-    exceed it is halved repeatedly until each piece fits (or is down to one record, which
-    is sent regardless -- a single oversized record isn't ours to truncate). Returns one
-    DeliveryResult per batch actually sent, in order; a failed batch doesn't stop the rest."""
+    per batch. When ``max_payload_bytes`` is set, a batch whose serialized body would exceed
+    it is halved repeatedly until each piece fits (or is down to one record, which is sent
+    regardless -- a single oversized record isn't ours to truncate). Once ``deadline`` (a
+    ``time.monotonic()`` timestamp) passes, remaining batches aren't sent and come back as
+    ``error_class="deadline"``. Returns one DeliveryResult per batch, in order; a failed
+    batch doesn't stop the rest."""
 
     if not records:
         return []
@@ -127,10 +141,12 @@ def upsert_records(
 
     with _http_session(session) as http:
         return [
-            _upsert_with_retry(
+            _deadline_result(0)
+            if _expired(deadline)
+            else _upsert_with_retry(
                 http, url, {"data": batch}, headers,
                 max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
-                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
+                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds, deadline=deadline,
             )
             for batch in batches
         ]
@@ -174,6 +190,7 @@ def delete_records(
     max_delay_seconds: float = 30.0,
     timeout_seconds: float = 30.0,
     session: requests.Session | None = None,
+    deadline: float | None = None,
 ) -> list[DeliveryResult]:
     """Deletes each id in ``record_ids`` via one ``DELETE .../records/{recordId}`` call
     per id -- best-effort cleanup of records whose underlying OCI resource is gone.
@@ -190,10 +207,12 @@ def delete_records(
 
     with _http_session(session) as http:
         return [
-            _delete_with_retry(
+            _deadline_result(0)
+            if _expired(deadline)
+            else _delete_with_retry(
                 http, f"{base_url}/{urllib.parse.quote(record_id, safe='')}", headers,
                 max_attempts=max_attempts, base_delay_seconds=base_delay_seconds,
-                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds,
+                max_delay_seconds=max_delay_seconds, timeout_seconds=timeout_seconds, deadline=deadline,
             )
             for record_id in record_ids
         ]
@@ -208,9 +227,12 @@ def _delete_with_retry(
     base_delay_seconds: float,
     max_delay_seconds: float,
     timeout_seconds: float,
+    deadline: float | None = None,
 ) -> DeliveryResult:
     attempt = 0
     while True:
+        if attempt and _expired(deadline):
+            return _deadline_result(attempt)
         attempt += 1
         try:
             response = http.delete(url, headers=headers, timeout=timeout_seconds)
@@ -262,9 +284,12 @@ def _upsert_with_retry(
     base_delay_seconds: float,
     max_delay_seconds: float,
     timeout_seconds: float,
+    deadline: float | None = None,
 ) -> DeliveryResult:
     attempt = 0
     while True:
+        if attempt and _expired(deadline):
+            return _deadline_result(attempt)
         attempt += 1
         try:
             response = http.post(url, json=body, headers=headers, timeout=timeout_seconds)

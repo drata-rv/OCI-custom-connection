@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import logging
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -32,7 +33,7 @@ from oci_drata.collection.waf import collect_waf
 from oci_drata.config import AppConfig, redact_config_for_display
 from oci_drata.delivery.drata import delete_records, upsert_records
 from oci_drata.oci_auth import TenancySigner, build_signer
-from oci_drata.pagination import OperationResult, RetryPolicy
+from oci_drata.pagination import DEADLINE_EXCEEDED_ERROR_CODE, OperationResult, RetryPolicy
 from oci_drata.transform import normalize
 from oci_drata.transform.aggregate import (
     EVIDENCE_TYPE_REQUIRED_DOMAINS,
@@ -53,6 +54,13 @@ EXIT_UNEXPECTED = 3
 # data distribution across compartments is unknowable up front, so a fixed cap could land
 # entirely on empty ones.
 TEST_MODE_TIME_BUDGET_SECONDS = 30
+
+# Services with a documented per-tenancy rate limit (10 requests/s for Monitoring alarm reads
+# and KMS reads) get a small in-flight cap of their own, on top of runtime.maxConcurrency.
+_RATE_LIMITED_SERVICE_SLOTS = {"monitoring": 2, "kms_vault": 2, "kms_management": 2}
+
+# Largest number of threads one fan-out stage starts (13 collectors can each run a stage).
+_MAX_FANOUT = 32
 
 # OCI error codes meaning "no access here", distinct from a retried transient failure or
 # a --test deadline cutoff (pagination.py). Grouped by compartment to surface where
@@ -139,6 +147,18 @@ def _access_summary(operations: list[OperationResult]) -> dict[str, Any]:
     }
 
 
+def _build_policy(app_config: AppConfig, deadline: float | None) -> RetryPolicy:
+    """The one retry/concurrency/deadline policy every OCI call of the run shares."""
+
+    max_in_flight = app_config.runtime.max_concurrency
+    return RetryPolicy(
+        deadline=deadline,
+        call_slots=threading.BoundedSemaphore(max_in_flight),
+        service_slots={name: threading.BoundedSemaphore(n) for name, n in _RATE_LIMITED_SERVICE_SLOTS.items()},
+        fanout=min(max_in_flight, _MAX_FANOUT),
+    )
+
+
 def _run_collectors(
     signer: TenancySigner, discovery: DiscoveryResult, app_config: AppConfig, retry_policy: RetryPolicy
 ) -> dict[str, Any]:
@@ -160,8 +180,9 @@ def _run_collectors(
         "waf": collect_waf,
         "kms_vault": collect_kms_vault,
     }
-    max_workers = max(1, min(len(collectors), app_config.runtime.max_concurrency))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    # One thread per collector: they only orchestrate; the shared policy's request slots are
+    # what bound the actual OCI concurrency.
+    with ThreadPoolExecutor(max_workers=len(collectors)) as pool:
         futures = {
             name: pool.submit(collect, signer, discovery, services, retry_policy=retry_policy)
             for name, collect in collectors.items()
@@ -217,7 +238,12 @@ def _gate(flat_result: FlatRecordsResult) -> _Gate:
 
 
 def _deliver(
-    app_config: AppConfig, gate: _Gate, flat_result: FlatRecordsResult, *, test_mode: bool
+    app_config: AppConfig,
+    gate: _Gate,
+    flat_result: FlatRecordsResult,
+    *,
+    test_mode: bool,
+    deadline: float | None,
 ) -> tuple[bool, dict[str, Any]]:
     """Upserts the deliverable records, then deletes stale ones. Returns (uploaded, report
     fields to merge).
@@ -230,7 +256,10 @@ def _deliver(
     report: dict[str, Any] = {}
     try:
         delivery_results = upsert_records(
-            app_config.drata, gate.deliverable_records, max_payload_bytes=app_config.runtime.max_payload_bytes
+            app_config.drata,
+            gate.deliverable_records,
+            max_payload_bytes=app_config.runtime.max_payload_bytes,
+            deadline=deadline,
         )
         uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
         report["batchesAttempted"] = len(delivery_results)
@@ -266,7 +295,7 @@ def _deliver(
                 if all(d in gate.deliverable_domains for d in EVIDENCE_TYPE_REQUIRED_DOMAINS[evidence_type])
             ]
             if delete_ids:
-                delete_results = delete_records(app_config.drata, delete_ids)
+                delete_results = delete_records(app_config.drata, delete_ids, deadline=deadline)
                 failed_deletes = [r for r in delete_results if not r.uploaded]
                 report["staleRecordsDeleted"] = len(delete_results) - len(failed_deletes)
                 report["staleRecordDeleteFailures"] = len(failed_deletes)
@@ -283,8 +312,21 @@ def _deliver(
         return False, report
 
 
-def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> RunResult:
+def run(
+    app_config: AppConfig,
+    *,
+    dry_run: bool,
+    test_mode: bool = False,
+    deadline: float | None = None,
+    delivery_deadline: float | None = None,
+) -> RunResult:
+    """``deadline`` / ``delivery_deadline`` are ``time.monotonic()`` timestamps. Collection
+    stops starting new OCI calls at ``deadline`` -- a domain it cut short is withheld, not
+    delivered partial -- and delivery stops sending at ``delivery_deadline``. A host with a
+    hard time limit (AWS Lambda) sets both so the run ends by itself, with a report."""
+
     started_at = datetime.datetime.now(tz=datetime.UTC)
+    started_monotonic = time.monotonic()
     logger.info(
         "starting collection run",
         extra={"deployment": app_config.deployment.name, "dryRun": dry_run, "testMode": test_mode},
@@ -295,14 +337,12 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
     )
 
     signer = build_signer(app_config)
-    retry_policy = RetryPolicy()
     if test_mode:
-        # Every OCI call routes through paginate()/call_once() (pagination.py), so one
-        # deadline on this shared policy bounds wall-clock time uniformly across
-        # discovery and all collectors.
-        retry_policy = dataclasses.replace(
-            retry_policy, deadline=time.monotonic() + TEST_MODE_TIME_BUDGET_SECONDS
-        )
+        test_deadline = time.monotonic() + TEST_MODE_TIME_BUDGET_SECONDS
+        deadline = test_deadline if deadline is None else min(deadline, test_deadline)
+    # Every OCI call routes through paginate()/call_once() (pagination.py), so one deadline on
+    # this shared policy bounds wall-clock time uniformly across discovery and all collectors.
+    retry_policy = _build_policy(app_config, deadline)
 
     discovery = discover(signer, app_config, retry_policy=retry_policy)
     results = _run_collectors(signer, discovery, app_config, retry_policy)
@@ -377,6 +417,7 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         "discoveryComplete": flat_result.discovery_complete,
         "excludedByLifecycle": flat_result.excluded_counts,
         "unresolvedRelationships": flat_result.unresolved_relationship_count,
+        "deadlineExceeded": any(op.error_code == DEADLINE_EXCEEDED_ERROR_CODE for op in all_operations),
     }
 
     uploaded = False
@@ -395,8 +436,11 @@ def run(app_config: AppConfig, *, dry_run: bool, test_mode: bool = False) -> Run
         report["blockedReasons"] = reasons
         logger.warning("upload blocked: nothing deliverable this run", extra={"reasons": reasons})
     else:
-        uploaded, delivery_report = _deliver(app_config, gate, flat_result, test_mode=test_mode)
+        uploaded, delivery_report = _deliver(
+            app_config, gate, flat_result, test_mode=test_mode, deadline=delivery_deadline
+        )
         report.update(delivery_report)
+    report["elapsedSeconds"] = round(time.monotonic() - started_monotonic, 1)
 
     return RunResult(
         exit_code=EXIT_OK if dry_run or uploaded else EXIT_BLOCKED,

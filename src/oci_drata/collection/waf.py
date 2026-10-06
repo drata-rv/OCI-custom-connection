@@ -13,6 +13,7 @@ expects (same pattern as ``database_autonomous.py``'s ``_unwrap_peers``).
 from __future__ import annotations
 
 import dataclasses
+import types
 from collections.abc import Callable
 from typing import Any
 
@@ -21,7 +22,13 @@ import oci
 from oci_drata.collection.discovery import DiscoveryResult
 from oci_drata.config import OciServicesConfig
 from oci_drata.oci_auth import TenancySigner, regional_client
-from oci_drata.pagination import OperationResult, RetryPolicy, operations_complete, paginate, stamp_region
+from oci_drata.pagination import (
+    OperationResult,
+    RetryPolicy,
+    list_in_scope,
+    operations_complete,
+    stamp_region,
+)
 
 
 @dataclasses.dataclass
@@ -71,22 +78,18 @@ def collect_waf(
     if not services.waf:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    clients = {
+        r: types.SimpleNamespace(
+            list_web_app_firewalls=_unwrap(regional_client(oci.waf.WafClient, signer, region=r))
+        )
+        for r in discovery.approved_regions
+    }
+
+    (waf_ops,) = list_in_scope(policy, scope, [("waf", "list_web_app_firewalls", clients)])
     web_app_firewalls: list[Any] = []
+    for (region, _), op in zip(scope, waf_ops, strict=True):
+        web_app_firewalls.extend(stamp_region(op.items, region))
 
-    for region in discovery.approved_regions:
-        client = regional_client(oci.waf.WafClient, signer, region=region)
-        list_call = _unwrap(client)
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
-                service="waf",
-                operation="list_web_app_firewalls",
-                call=list_call,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(op)
-            web_app_firewalls.extend(stamp_region(op.items, region))
-
-    return WafCollectionResult(web_app_firewalls=web_app_firewalls, operations=operations)
+    return WafCollectionResult(web_app_firewalls=web_app_firewalls, operations=list(waf_ops))

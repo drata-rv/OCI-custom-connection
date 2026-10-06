@@ -6,6 +6,7 @@ call is made.
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 import oci
@@ -16,15 +17,11 @@ from oci_drata.oci_auth import TenancySigner, regional_client
 from oci_drata.pagination import (
     OperationResult,
     RetryPolicy,
+    list_in_scope,
     operations_complete,
     paginate,
-    run_concurrently,
     stamp_region,
 )
-
-# Per-item fan-out concurrency, independent of runtime.maxConcurrency (see
-# pagination.run_concurrently).
-_PER_ITEM_CONCURRENCY = 8
 
 
 @dataclasses.dataclass
@@ -71,92 +68,77 @@ def collect_database_base(
     if not services.base_database:
         return _skip_result()
 
-    operations: list[OperationResult] = []
+    policy = retry_policy or RetryPolicy()
+    scope = discovery.scope
+    clients = {r: regional_client(oci.database.DatabaseClient, signer, region=r) for r in discovery.approved_regions}
+
+    # Each stage needs the previous one's ids, so they run one after another; within a
+    # stage everything is concurrent.
+    (db_system_ops,) = list_in_scope(policy, scope, [("database", "list_db_systems", clients)])
+    operations: list[OperationResult] = list(db_system_ops)
     db_systems: list[Any] = []
-    db_homes: list[Any] = []
-    databases: list[Any] = []
-    data_guard_associations: list[Any] = []
+    for (region, _), op in zip(scope, db_system_ops, strict=True):
+        db_systems.extend(stamp_region(op.items, region))
 
-    for region in discovery.approved_regions:
-        client = regional_client(oci.database.DatabaseClient, signer, region=region)
-
-        region_db_systems: list[Any] = []
-        for compartment_id in discovery.approved_compartment_ids:
-            op = paginate(
-                service="database",
-                operation="list_db_systems",
-                call=client.list_db_systems,
-                region=region,
-                compartment_id=compartment_id,
-                retry_policy=retry_policy,
-            )
-            operations.append(op)
-            region_db_systems.extend(stamp_region(op.items, region))
-        db_systems.extend(region_db_systems)
-
-        def _list_db_homes(
-            db_system: Any, *, _client: Any = client, _region: str = region
-        ) -> tuple[OperationResult, list[Any]]:
-            op = paginate(
+    db_home_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="database",
                 operation="list_db_homes",
-                call=_client.list_db_homes,
-                region=_region,
+                call=clients[db_system.region].list_db_homes,
+                region=db_system.region,
                 compartment_id=db_system.compartment_id,
                 db_system_id=db_system.id,
-                retry_policy=retry_policy,
+                retry_policy=policy,
             )
-            return op, stamp_region(op.items, _region)
+            for db_system in db_systems
+        ]
+    )
+    operations.extend(db_home_ops)
+    db_homes: list[Any] = []
+    for db_system, op in zip(db_systems, db_home_ops, strict=True):
+        db_homes.extend(stamp_region(op.items, db_system.region))
 
-        region_db_homes: list[Any] = []
-        for op, items in run_concurrently(
-            region_db_systems, _list_db_homes, max_workers=_PER_ITEM_CONCURRENCY
-        ):
-            operations.append(op)
-            region_db_homes.extend(items)
-        db_homes.extend(region_db_homes)
-
-        def _list_databases(
-            db_home: Any, *, _client: Any = client, _region: str = region
-        ) -> tuple[OperationResult, list[Any]]:
-            op = paginate(
+    database_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="database",
                 operation="list_databases",
-                call=_client.list_databases,
-                region=_region,
+                call=clients[db_home.region].list_databases,
+                region=db_home.region,
                 compartment_id=db_home.compartment_id,
                 db_home_id=db_home.id,
-                retry_policy=retry_policy,
+                retry_policy=policy,
             )
-            return op, stamp_region(op.items, _region)
+            for db_home in db_homes
+        ]
+    )
+    operations.extend(database_ops)
+    databases: list[Any] = []
+    for db_home, op in zip(db_homes, database_ops, strict=True):
+        databases.extend(stamp_region(op.items, db_home.region))
 
-        region_databases: list[Any] = []
-        for op, items in run_concurrently(
-            region_db_homes, _list_databases, max_workers=_PER_ITEM_CONCURRENCY
-        ):
-            operations.append(op)
-            region_databases.extend(items)
-        databases.extend(region_databases)
-
-        def _list_data_guard(
-            database: Any, *, _client: Any = client, _region: str = region
-        ) -> tuple[OperationResult, list[Any]]:
-            # list_data_guard_associations rejects compartment_id (unknown-kwargs ValueError) -- never pass it.
-            op = paginate(
+    # list_data_guard_associations rejects compartment_id (unknown-kwargs ValueError) -- never pass it.
+    data_guard_ops = policy.run(
+        [
+            functools.partial(
+                paginate,
                 service="database",
                 operation="list_data_guard_associations",
-                call=_client.list_data_guard_associations,
-                region=_region,
+                call=clients[database.region].list_data_guard_associations,
+                region=database.region,
                 database_id=database.id,
-                retry_policy=retry_policy,
+                retry_policy=policy,
             )
-            return op, stamp_region(op.items, _region)
-
-        for op, items in run_concurrently(
-            region_databases, _list_data_guard, max_workers=_PER_ITEM_CONCURRENCY
-        ):
-            operations.append(op)
-            data_guard_associations.extend(items)
+            for database in databases
+        ]
+    )
+    operations.extend(data_guard_ops)
+    data_guard_associations: list[Any] = []
+    for database, op in zip(databases, data_guard_ops, strict=True):
+        data_guard_associations.extend(stamp_region(op.items, database.region))
 
     return DatabaseBaseCollectionResult(
         db_systems=db_systems,

@@ -42,6 +42,20 @@ def test_sample_config_loads(tmp_path: Path) -> None:
     assert cfg.drata.api_token_secret_ref == SecretRef(provider="env", name="DRATA_API_TOKEN")
 
 
+def test_lambda_example_config_loads_with_secrets_manager_refs(tmp_path: Path) -> None:
+    raw = yaml.safe_load((SAMPLE_CONFIG.parent / "deploy" / "config.lambda.example.yaml").read_text())
+    raw["drata"]["connectionId"] = 101
+    raw["drata"]["resourceId"] = 202
+
+    cfg = load_config(_write_config(tmp_path, raw), env={})
+
+    assert cfg.oci.authentication.credentials_secret_ref == SecretRef(
+        provider="aws_secretsmanager", name="oci-drata/oci-credentials"
+    )
+    assert cfg.drata.api_token_secret_ref.provider == "aws_secretsmanager"
+    assert cfg.runtime.max_concurrency == 8
+
+
 @pytest.mark.parametrize(
     "bad_yaml",
     [
