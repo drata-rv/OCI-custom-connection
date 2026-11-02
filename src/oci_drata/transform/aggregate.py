@@ -93,10 +93,12 @@ _FLAT_RECORD_FIELD_DEFAULTS: dict[str, Any] = {
     "id": None, "evidenceType": None, "name": None, "timestamp": None,
     "region": None, "compartmentId": None, "osClassification": None,
     "hasPublicAddress": None, "publicIngressPorts": [], "hasRangedPublicIngress": None,
+    "publicIngressPortRanges": [],
     "kmsKeyId": None, "publicEndpointHostname": None, "mfaActivated": None,
     "userId": None, "keyCreatedAt": None, "statements": [],
     "publicAccessType": None, "versioning": None, "cloudGuardStatus": None,
     "alarmEnabled": None, "alarmNamespace": None, "alarmQuery": None,
+    "alarmSeverity": None, "alarmMetricCompartmentId": None, "alarmDestinations": [],
     "isPrivate": None, "loadBalancerId": None, "backendSetHealthStatus": None,
     "vaultId": None, "autoRotationEnabled": None, "lastRotationAt": None,
     "attachedInstanceIds": [], "shape": None, "version": None,
@@ -121,6 +123,7 @@ def _flatten_instance(
         "hasPublicAddress": ingress.has_public_address,
         "publicIngressPorts": list(ingress.public_ingress_ports),
         "hasRangedPublicIngress": ingress.has_ranged_public_ingress,
+        "publicIngressPortRanges": list(ingress.public_ingress_port_ranges),
     }
 
 
@@ -308,6 +311,9 @@ def _flatten_alarm(alarm: Any, *, timestamp: str | None) -> dict[str, Any]:
         "alarmEnabled": alarm.is_enabled,
         "alarmNamespace": alarm.namespace,
         "alarmQuery": alarm.query,
+        "alarmSeverity": getattr(alarm, "severity", None),
+        "alarmMetricCompartmentId": getattr(alarm, "metric_compartment_id", None),
+        "alarmDestinations": list(getattr(alarm, "destinations", None) or ()),
     }
 
 
@@ -415,6 +421,7 @@ def build_flat_records(
         vnics,
         private_ips=compute.private_ips,
         public_ips_by_private_ip_id=compute.public_ips_by_private_ip_id,
+        ipv6s=compute.ipv6s,
     )
 
     ingress_by_instance_id = derive_public_ingress_facts(

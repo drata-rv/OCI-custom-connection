@@ -16,6 +16,10 @@
       "items": { "type": "number" }
     },
     "hasRangedPublicIngress": { "type": ["boolean", "null"] },
+    "publicIngressPortRanges": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "kmsKeyId": { "type": ["string", "null"] },
     "publicEndpointHostname": { "type": ["string", "null"] },
     "mfaActivated": { "type": ["boolean", "null"] },
@@ -31,6 +35,12 @@
     "alarmEnabled": { "type": ["boolean", "null"] },
     "alarmNamespace": { "type": ["string", "null"] },
     "alarmQuery": { "type": ["string", "null"] },
+    "alarmSeverity": { "type": ["string", "null"] },
+    "alarmMetricCompartmentId": { "type": ["string", "null"] },
+    "alarmDestinations": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "isPrivate": { "type": ["boolean", "null"] },
     "loadBalancerId": { "type": ["string", "null"] },
     "backendSetHealthStatus": { "type": ["string", "null"] },

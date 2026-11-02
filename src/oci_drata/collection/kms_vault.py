@@ -1,9 +1,9 @@
 """KMS vault collection: list_vaults (regional client) -> per-vault
 KmsManagementClient bound to that vault's ``management_endpoint``
 (``service_endpoint`` is a required positional arg; see
-``oci_auth.py::endpoint_client``) -> list_keys (no ``vault_id`` param;
-scoping is by which endpoint the client was built against) -> get_key per
-key, concurrent fan-out (``auto_key_rotation_details`` exists only on the
+``oci_auth.py::endpoint_client``) -> list_keys per approved compartment (no
+``vault_id`` param; scoping is by which endpoint the client was built against) ->
+get_key per key, concurrent fan-out (``auto_key_rotation_details`` exists only on the
 full ``Key`` model, not on ``KeySummary``).
 """
 
@@ -96,6 +96,13 @@ def collect_kms_vault(
         for vault in vaults
         if getattr(vault, "management_endpoint", None)
     ]
+    # A vault's keys may live in any compartment, not just the vault's own, so every approved
+    # compartment is listed against every vault's management endpoint.
+    key_jobs = [
+        (client, vault.region, compartment_id)
+        for vault, client in managed
+        for compartment_id in discovery.approved_compartment_ids
+    ]
     key_list_ops = policy.run(
         [
             functools.partial(
@@ -103,17 +110,17 @@ def collect_kms_vault(
                 service="kms_management",
                 operation="list_keys",
                 call=client.list_keys,
-                region=vault.region,
-                compartment_id=vault.compartment_id,
+                region=region,
+                compartment_id=compartment_id,
                 retry_policy=policy,
             )
-            for vault, client in managed
+            for client, region, compartment_id in key_jobs
         ]
     )
     operations.extend(key_list_ops)
     key_summaries: list[tuple[Any, Any]] = []  # (management_client, key_summary)
-    for (vault, client), op in zip(managed, key_list_ops, strict=True):
-        key_summaries.extend((client, summary) for summary in stamp_region(op.items, vault.region))
+    for (client, region, _), op in zip(key_jobs, key_list_ops, strict=True):
+        key_summaries.extend((client, summary) for summary in stamp_region(op.items, region))
 
     # auto_key_rotation_details exists only on the full Key model, not on KeySummary.
     key_ops = policy.run(

@@ -37,11 +37,23 @@ def _is_effectively_public(source_network: _IpNetwork, public_reference_networks
     )
 
 
-def _has_igw_route(route_rules: Iterable[Any], internet_gateway_ids: set[str]) -> bool:
+_DEFAULT_ROUTE_FAMILY = {"0.0.0.0/0": 4, "::/0": 6}
+_ALL_PORTS = (1, 65535)
+
+
+def _address_families(addresses: Iterable[str]) -> frozenset[int]:
+    return frozenset(6 if ":" in address else 4 for address in addresses)
+
+
+def _has_igw_route(
+    route_rules: Iterable[Any], internet_gateway_ids: set[str], families: frozenset[int]
+) -> bool:
+    """A default route to an internet gateway in the same IP family as a public address."""
+
     for rule in route_rules:
         network_entity_id = getattr(rule, "network_entity_id", None)
-        destination = getattr(rule, "destination", None)
-        if network_entity_id in internet_gateway_ids and destination in ("0.0.0.0/0", "::/0"):
+        family = _DEFAULT_ROUTE_FAMILY.get(getattr(rule, "destination", None) or "")
+        if network_entity_id in internet_gateway_ids and family in families:
             return True
     return False
 
@@ -50,15 +62,17 @@ def _public_ingress_from_rules(
     rules: Iterable[Any],
     *,
     public_reference_networks: tuple[_IpNetwork, ...],
+    families: frozenset[int],
     is_ingress: Callable[[Any], bool] | None = None,
-) -> tuple[set[int], bool, bool]:
+) -> tuple[set[int], set[tuple[int, int]], bool]:
     """Reports every port a public-source rule names, with no administrative-ports allowlist applied
-    (that policy belongs in the Drata Custom Test, not here). An unrestricted or multi-port rule can't
-    be enumerated as discrete ports, so it's folded into has_ranged instead of dropped or truncated.
-    Returns (named ports, has_ranged, evidence_complete)."""
+    (that policy belongs in the Drata Custom Test, not here). A single-port rule is a named port; an
+    unrestricted or multi-port rule is kept as its (min, max) range instead of dropped or truncated.
+    Only rules whose source is in an IP family the VNIC holds a public address in apply.
+    Returns (named ports, ranges, evidence_complete)."""
 
     named_ports: set[int] = set()
-    has_ranged = False
+    ranges: set[tuple[int, int]] = set()
     evidence_complete = True
     for rule in rules:
         if is_ingress is not None and not is_ingress(rule):
@@ -82,18 +96,22 @@ def _public_ingress_from_rules(
         if source_network is None:
             evidence_complete = False
             continue
+        if source_network.version not in families:
+            continue
         if not _is_effectively_public(source_network, public_reference_networks):
             continue
 
         tcp_options = getattr(rule, "tcp_options", None)
         port_range = getattr(tcp_options, "destination_port_range", None) if tcp_options else None
         if port_range is None:
-            has_ranged = True  # no port restriction on this rule: every port is open
-        elif port_range.min is None or port_range.max is None or port_range.min != port_range.max:
-            has_ranged = True  # a real multi-port range, not one specific port
-        else:
+            ranges.add(_ALL_PORTS)  # no port restriction on this rule: every port is open
+        elif port_range.min is not None and port_range.min == port_range.max:
             named_ports.add(port_range.min)
-    return named_ports, has_ranged, evidence_complete
+        else:
+            low = port_range.min if port_range.min is not None else _ALL_PORTS[0]
+            high = port_range.max if port_range.max is not None else _ALL_PORTS[1]
+            ranges.add((low, high))
+    return named_ports, ranges, evidence_complete
 
 
 @dataclasses.dataclass(frozen=True)
@@ -101,6 +119,7 @@ class PublicIngressFacts:
     has_public_address: bool | None
     public_ingress_ports: tuple[int, ...]
     has_ranged_public_ingress: bool | None
+    public_ingress_port_ranges: tuple[str, ...] = ()
 
 
 def derive_public_ingress_facts(
@@ -162,9 +181,10 @@ def _derive_public_ingress_one(
     ingress_evidence_complete = True
     has_igw_route = False
     named_ports: set[int] = set()
-    has_ranged = False
+    ranges: set[tuple[int, int]] = set()
 
     for vnic in public_vnics:
+        families = _address_families(vnic.public_addresses)
         subnet = subnets_by_id.get(vnic.subnet_id)
         if subnet is None:
             route_evidence_complete = False
@@ -175,7 +195,9 @@ def _derive_public_ingress_one(
         route_table = route_tables_by_id.get(route_table_id) if route_table_id else None
         if route_table is None:
             route_evidence_complete = False
-        elif _has_igw_route(getattr(route_table, "route_rules", None) or (), internet_gateway_ids):
+        elif _has_igw_route(
+            getattr(route_table, "route_rules", None) or (), internet_gateway_ids, families
+        ):
             has_igw_route = True
 
         for security_list_id in getattr(subnet, "security_list_ids", None) or ():
@@ -183,32 +205,37 @@ def _derive_public_ingress_one(
             if security_list is None:
                 ingress_evidence_complete = False
                 continue
-            ports, ranged, complete = _public_ingress_from_rules(
+            ports, port_ranges, complete = _public_ingress_from_rules(
                 getattr(security_list, "ingress_security_rules", None) or (),
                 public_reference_networks=public_reference_networks,
+                families=families,
             )
             named_ports |= ports
-            has_ranged = has_ranged or ranged
+            ranges |= port_ranges
             ingress_evidence_complete = ingress_evidence_complete and complete
 
         for nsg_id in vnic.nsg_ids:
             if nsg_id not in nsg_security_rules_by_nsg_id:
                 ingress_evidence_complete = False
                 continue
-            ports, ranged, complete = _public_ingress_from_rules(
+            ports, port_ranges, complete = _public_ingress_from_rules(
                 nsg_security_rules_by_nsg_id[nsg_id],
                 public_reference_networks=public_reference_networks,
+                families=families,
                 is_ingress=lambda rule: getattr(rule, "direction", None) == "INGRESS",
             )
             named_ports |= ports
-            has_ranged = has_ranged or ranged
+            ranges |= port_ranges
             ingress_evidence_complete = ingress_evidence_complete and complete
+
+    range_labels = tuple(f"{low}-{high}" for low, high in sorted(ranges))
 
     if not route_evidence_complete or not ingress_evidence_complete:
         return PublicIngressFacts(
             has_public_address=True,
             public_ingress_ports=tuple(sorted(named_ports)),
             has_ranged_public_ingress=None,
+            public_ingress_port_ranges=range_labels,
         )
 
     if not has_igw_route:
@@ -219,7 +246,8 @@ def _derive_public_ingress_one(
     return PublicIngressFacts(
         has_public_address=True,
         public_ingress_ports=tuple(sorted(named_ports)),
-        has_ranged_public_ingress=has_ranged,
+        has_ranged_public_ingress=bool(ranges),
+        public_ingress_port_ranges=range_labels,
     )
 
 

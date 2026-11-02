@@ -37,6 +37,7 @@ class ComputeCollectionResult:
     private_ips: list[Any]
     public_ips_by_private_ip_id: dict[str, Any]
     operations: list[OperationResult]
+    ipv6s: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -132,7 +133,7 @@ def collect_compute(
 
     def enrich_vnic(
         vnic_id: str, region: str, compartment_id: str
-    ) -> tuple[list[OperationResult], Any, list[Any], dict[str, Any]]:
+    ) -> tuple[list[OperationResult], Any, list[Any], list[Any], dict[str, Any]]:
         client = vnet[region]
         ops: list[OperationResult] = []
         vnic_op = call_once(
@@ -150,6 +151,14 @@ def collect_compute(
         ops.append(private_ips_op)
         private_ips = stamp_region(private_ips_op.items, region)
 
+        # IPv6 addresses are separate objects from private IPs; same filters, no compartment_id.
+        ipv6s_op = paginate(
+            service="virtual_network", operation="list_ipv6s", call=client.list_ipv6s,
+            region=region, vnic_id=vnic_id, retry_policy=policy,
+        )
+        ops.append(ipv6s_op)
+        ipv6s = stamp_region(ipv6s_op.items, region)
+
         public_ips: dict[str, Any] = {}
         for private_ip in private_ips:
             private_ip_id = getattr(private_ip, "id", None)
@@ -166,7 +175,7 @@ def collect_compute(
             ops.append(public_ip_op)
             if public_ip_op.ok and public_ip_op.items:
                 public_ips[private_ip_id] = stamp_region(public_ip_op.items, region)[0]
-        return ops, vnic, private_ips, public_ips
+        return ops, vnic, private_ips, ipv6s, public_ips
 
     vnic_results = policy.run(
         [
@@ -176,12 +185,16 @@ def collect_compute(
     )
     vnics: dict[str, Any] = {}
     private_ips: list[Any] = []
+    ipv6s: list[Any] = []
     public_ips_by_private_ip_id: dict[str, Any] = {}
-    for vnic_id, (ops, vnic, vnic_private_ips, vnic_public_ips) in zip(vnic_sources, vnic_results, strict=True):
+    for vnic_id, (ops, vnic, vnic_private_ips, vnic_ipv6s, vnic_public_ips) in zip(
+        vnic_sources, vnic_results, strict=True
+    ):
         operations.extend(ops)
         if vnic is not None:
             vnics[vnic_id] = vnic
         private_ips.extend(vnic_private_ips)
+        ipv6s.extend(vnic_ipv6s)
         public_ips_by_private_ip_id.update(vnic_public_ips)
 
     return ComputeCollectionResult(
@@ -192,4 +205,5 @@ def collect_compute(
         private_ips=private_ips,
         public_ips_by_private_ip_id=public_ips_by_private_ip_id,
         operations=operations,
+        ipv6s=ipv6s,
     )

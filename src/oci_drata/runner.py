@@ -236,31 +236,44 @@ def _gate(flat_result: FlatRecordsResult) -> _Gate:
     )
 
 
+def _stale_record_ids(gate: _Gate, flat_result: FlatRecordsResult) -> list[str]:
+    """Ids of lifecycle-excluded resources, limited to domains that delivered this run --
+    deleting a stale id from a withheld domain would be a guess, not a confirmed absence."""
+
+    return [
+        record_id
+        for evidence_type, ids in flat_result.excluded_ids.items()
+        for record_id in ids
+        if all(d in gate.deliverable_domains for d in EVIDENCE_TYPE_REQUIRED_DOMAINS[evidence_type])
+    ]
+
+
 def _deliver(
-    app_config: AppConfig,
-    gate: _Gate,
-    flat_result: FlatRecordsResult,
-    *,
-    test_mode: bool,
-    deadline: float | None,
+    app_config: AppConfig, gate: _Gate, delete_ids: list[str], *, deadline: float | None
 ) -> tuple[bool, dict[str, Any]]:
-    """Upserts the deliverable records, then deletes stale ones. Returns (uploaded, report
-    fields to merge).
+    """Upserts the deliverable records (if any), then deletes ``delete_ids``. Returns
+    (uploaded, report fields to merge). A run with nothing to upsert but stale ids to delete
+    is a cleanup-only run, not a blocked one.
 
     Collection has already succeeded and produced real records by this point -- possibly
     after a long, expensive run across many compartments/regions. An unexpected failure
     anywhere in delivery/cleanup (a bad secret, a network surprise, a bug) must not
     un-return that work: caught broadly and folded into the report instead of raised."""
 
-    report: dict[str, Any] = {}
+    report: dict[str, Any] = {"recordCountDelivered": 0}
     try:
-        delivery_results = upsert_records(
-            app_config.drata,
-            gate.deliverable_records,
-            max_payload_bytes=app_config.runtime.max_payload_bytes,
-            deadline=deadline,
+        delivery_results = (
+            upsert_records(
+                app_config.drata,
+                gate.deliverable_records,
+                max_payload_bytes=app_config.runtime.max_payload_bytes,
+                deadline=deadline,
+            )
+            if gate.deliverable_records
+            else []
         )
-        uploaded = bool(delivery_results) and all(r.uploaded for r in delivery_results)
+        report["recordCountDelivered"] = sum(r.record_count for r in delivery_results if r.uploaded)
+        uploaded = all(r.uploaded for r in delivery_results)
         report["batchesAttempted"] = sum(1 for r in delivery_results if r.error_class != "deadline")
         report["batchesNotSentBeforeDeadline"] = sum(1 for r in delivery_results if r.error_class == "deadline")
         report["batchesSucceeded"] = sum(1 for r in delivery_results if r.uploaded)
@@ -272,10 +285,13 @@ def _deliver(
             logger.error("upload failed", extra={"errorClasses": error_classes})
             return False, report
 
-        report["uploadDecision"] = "uploaded_partial" if gate.domains_withheld else "uploaded"
+        if not delivery_results:
+            report["uploadDecision"] = "cleanup_only"
+        else:
+            report["uploadDecision"] = "uploaded_partial" if gate.domains_withheld else "uploaded"
         logger.info(
             "upload succeeded",
-            extra={"records": len(gate.deliverable_records), "domainsWithheld": gate.domains_withheld},
+            extra={"records": report["recordCountDelivered"], "domainsWithheld": gate.domains_withheld},
         )
         if gate.domains_withheld:
             logger.warning(
@@ -284,26 +300,16 @@ def _deliver(
                 extra={"domainsWithheld": gate.domains_withheld},
             )
 
-        # Cleanup only runs for domains that actually delivered this run -- deleting a stale
-        # id from a withheld domain would be a guess, not a confirmed absence. Skipped in
-        # --test: a sampled run's absences aren't confirmed deletions.
-        if not test_mode:
-            delete_ids = [
-                record_id
-                for evidence_type, ids in flat_result.excluded_ids.items()
-                for record_id in ids
-                if all(d in gate.deliverable_domains for d in EVIDENCE_TYPE_REQUIRED_DOMAINS[evidence_type])
-            ]
-            if delete_ids:
-                delete_results = delete_records(app_config.drata, delete_ids, deadline=deadline)
-                failed_deletes = [r for r in delete_results if not r.uploaded]
-                report["staleRecordsDeleted"] = len(delete_results) - len(failed_deletes)
-                report["staleRecordDeleteFailures"] = len(failed_deletes)
-                if failed_deletes:
-                    logger.warning(
-                        "some stale-record deletes failed -- will retry next run",
-                        extra={"failures": len(failed_deletes)},
-                    )
+        if delete_ids:
+            delete_results = delete_records(app_config.drata, delete_ids, deadline=deadline)
+            failed_deletes = [r for r in delete_results if not r.uploaded]
+            report["staleRecordsDeleted"] = len(delete_results) - len(failed_deletes)
+            report["staleRecordDeleteFailures"] = len(failed_deletes)
+            if failed_deletes:
+                logger.warning(
+                    "some stale-record deletes failed -- will retry next run",
+                    extra={"failures": len(failed_deletes)},
+                )
         return True, report
     except Exception as exc:
         report["uploadDecision"] = "delivery_failed"
@@ -408,7 +414,8 @@ def run(
         "accessSummary": access_summary,
         "dryRun": dry_run,
         "recordCount": len(flat_result.records),
-        "recordCountDelivered": len(gate.deliverable_records),
+        "recordCountDeliverable": len(gate.deliverable_records),
+        "recordCountDelivered": 0,
         "recordCountWithheld": gate.records_withheld_count,
         "totalRecordBytes": sum(len(serialize_deterministic(r)) for r in flat_result.records),
         "schemaValid": schema_valid,
@@ -422,11 +429,14 @@ def run(
         "deadlineExceeded": any(op.error_code == DEADLINE_EXCEEDED_ERROR_CODE for op in all_operations),
     }
 
+    # Skipped in --test: a sampled run's absences aren't confirmed deletions.
+    delete_ids = [] if dry_run or test_mode else _stale_record_ids(gate, flat_result)
+
     uploaded = False
     if dry_run:
         report["uploadDecision"] = "skipped_dry_run"
         logger.info("dry run: skipping Drata upload")
-    elif not gate.deliverable_records:
+    elif not gate.deliverable_records and not delete_ids:
         report["uploadDecision"] = "blocked"
         reasons = []
         if not schema_valid:
@@ -438,9 +448,7 @@ def run(
         report["blockedReasons"] = reasons
         logger.warning("upload blocked: nothing deliverable this run", extra={"reasons": reasons})
     else:
-        uploaded, delivery_report = _deliver(
-            app_config, gate, flat_result, test_mode=test_mode, deadline=delivery_deadline
-        )
+        uploaded, delivery_report = _deliver(app_config, gate, delete_ids, deadline=delivery_deadline)
         report.update(delivery_report)
     report["elapsedSeconds"] = round(time.monotonic() - started_monotonic, 1)
 

@@ -44,6 +44,7 @@ class DeliveryResult:
     error_class: str | None = None  # "auth" | "validation" | "transport" | "unexpected"
     error_message: str | None = None
     request_id: str | None = None
+    record_count: int = 0  # records in the batch Drata acknowledged; 0 when not uploaded
 
     @property
     def ok(self) -> bool:
@@ -346,6 +347,7 @@ def _upsert_with_retry(
                 status_code=response.status_code,
                 attempts=attempt,
                 request_id=_request_id(response),
+                record_count=len(body["data"]),
             )
 
         if response.status_code in _AUTH_STATUS:
