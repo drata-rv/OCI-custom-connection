@@ -196,6 +196,24 @@ def _tune(client: Any, pool_size: int) -> Any:
     return client
 
 
+def _client_kwargs() -> dict[str, Any]:
+    """Client options shared by every OCI client of a run.
+
+    NoneRetryStrategy: some SDK operations retry by themselves (up to 8 attempts / 600 s),
+    invisibly to our deadline and request-slot accounting. pagination.py is the one retry layer.
+
+    NoCircuitBreakerStrategy: the SDK's default breaker is one object shared by every client in
+    the process, and it opens after 11 consecutive 429/5xx anywhere -- then every call of every
+    service and region fails instantly with CircuitBreakerError, which no retry layer treats as
+    transient, so one throttled service would abort the whole run. Throttling is handled by
+    pagination.py's backoff and the in-flight caps instead."""
+
+    return {
+        "retry_strategy": oci.retry.NoneRetryStrategy(),
+        "circuit_breaker_strategy": oci.circuit_breaker.NoCircuitBreakerStrategy(),
+    }
+
+
 def regional_client(client_cls: Callable[..., T], signer: TenancySigner, *, region: str) -> T:
     """Construct an OCI SDK client bound to one region (caller-supplied, never
     hard-coded).
@@ -205,9 +223,7 @@ def regional_client(client_cls: Callable[..., T], signer: TenancySigner, *, regi
     operations raise at call time, not caught by mypy since attribute access is
     untyped (Any)."""
 
-    # NoneRetryStrategy: some SDK operations retry by themselves (up to 8 attempts / 600 s),
-    # invisibly to our deadline and request-slot accounting. pagination.py is the one retry layer.
-    client = client_cls(signer.region_config(region), retry_strategy=oci.retry.NoneRetryStrategy())
+    client = client_cls(signer.region_config(region), **_client_kwargs())
     return cast(T, GuardedOciClient(_tune(client, signer.pool_size)))
 
 
@@ -220,7 +236,5 @@ def endpoint_client(
     collection/kms_vault.py). Still wrapped in GuardedOciClient; only the
     endpoint differs."""
 
-    client = client_cls(
-        signer.region_config(region), service_endpoint, retry_strategy=oci.retry.NoneRetryStrategy()
-    )
+    client = client_cls(signer.region_config(region), service_endpoint, **_client_kwargs())
     return cast(T, GuardedOciClient(_tune(client, signer.pool_size)))

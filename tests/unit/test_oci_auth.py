@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import oci
 import pytest
 
-from oci_drata.oci_auth import AuthError, TenancySigner, build_signer
+from oci_drata.oci_auth import AuthError, TenancySigner, build_signer, endpoint_client, regional_client
 
 
 def _app_config(config_file: Path) -> SimpleNamespace:
@@ -82,3 +84,23 @@ class _FakeKmsManagementClient:
         return "should never run"
 
 
+
+
+def test_clients_have_neither_sdk_retries_nor_the_shared_circuit_breaker() -> None:
+    """The SDK's default breaker is one object shared by every client; once throttling opens it,
+    every call of every service fails with CircuitBreakerError and aborts the run."""
+
+    seen: list[dict] = []
+
+    def fake_client(config, *args, **kwargs):
+        seen.append(kwargs)
+        return MagicMock()
+
+    signer = SimpleNamespace(region_config=lambda region: {"region": region}, pool_size=4)
+    regional_client(fake_client, signer, region="us-ashburn-1")
+    endpoint_client(fake_client, signer, region="us-ashburn-1", service_endpoint="https://example.invalid")
+
+    assert len(seen) == 2
+    for kwargs in seen:
+        assert isinstance(kwargs["circuit_breaker_strategy"], oci.circuit_breaker.NoCircuitBreakerStrategy)
+        assert isinstance(kwargs["retry_strategy"], oci.retry.NoneRetryStrategy)

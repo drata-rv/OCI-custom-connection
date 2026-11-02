@@ -56,7 +56,9 @@ TEST_MODE_TIME_BUDGET_SECONDS = 30
 
 # Services with a documented per-tenancy rate limit (10 requests/s for Monitoring alarm reads
 # and KMS reads) get a small in-flight cap of their own, on top of runtime.maxConcurrency.
-_RATE_LIMITED_SERVICE_SLOTS = {"monitoring": 2, "kms_vault": 2, "kms_management": 2}
+# Virtual Network is shared by compute (per-VNIC reads), networking and VPN at once and answers
+# 429 TooManyRequests when all of them run at full concurrency.
+_RATE_LIMITED_SERVICE_SLOTS = {"monitoring": 2, "kms_vault": 2, "kms_management": 2, "virtual_network": 4}
 
 # Largest number of threads one fan-out stage starts (13 collectors can each run a stage).
 _MAX_FANOUT = 32
