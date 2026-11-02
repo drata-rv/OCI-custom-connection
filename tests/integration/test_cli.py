@@ -209,13 +209,44 @@ def test_dry_run_never_calls_drata(patched_collectors: MagicMock) -> None:
 
 def test_complete_run_uploads(patched_collectors: MagicMock) -> None:
     patched_collectors.return_value = [
-        DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1)
+        DeliveryResult(uploaded=True, created=True, status_code=201, attempts=1, record_count=2)
     ]
     app_config = _app_config()
     result = runner.run(app_config, dry_run=False)
     assert result.uploaded is True
     assert result.report["uploadDecision"] == "uploaded"
+    assert result.report["recordCountDeliverable"] == 2
+    assert result.report["recordCountDelivered"] == 2
     patched_collectors.assert_called_once()
+    assert result.exit_code == runner.EXIT_OK
+
+
+def test_run_with_only_terminated_resources_still_deletes_their_stale_records(
+    monkeypatch: pytest.MonkeyPatch, patched_collectors: MagicMock
+) -> None:
+    terminated = _stamp(oci.core.models.Instance(
+        id="ocid1.instance.oc1..gone", compartment_id=COMPARTMENT_OCID, display_name="gone",
+        lifecycle_state="TERMINATED",
+    ))
+    only_terminated = ComputeCollectionResult(
+        instances=[terminated], images={}, vnic_attachments=[], vnics={}, private_ips=[],
+        public_ips_by_private_ip_id={}, operations=[_empty_ok("compute")],
+    )
+    monkeypatch.setattr(runner, "collect_compute", lambda *a, **k: only_terminated)
+    monkeypatch.setattr(
+        runner, "collect_autonomous_database",
+        lambda *a, **k: AutonomousDatabaseCollectionResult(autonomous_databases=[], operations=[_empty_ok("database")]),
+    )
+    delete = MagicMock(return_value=[DeliveryResult(uploaded=True, created=None, status_code=204, attempts=1)])
+    monkeypatch.setattr(runner, "delete_records", delete)
+
+    result = runner.run(_app_config(), dry_run=False)
+
+    patched_collectors.assert_not_called()
+    delete.assert_called_once()
+    assert delete.call_args.args[1] == ["ocid1.instance.oc1..gone"]
+    assert result.report["uploadDecision"] == "cleanup_only"
+    assert result.report["staleRecordsDeleted"] == 1
     assert result.exit_code == runner.EXIT_OK
 
 

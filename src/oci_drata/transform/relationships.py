@@ -4,6 +4,8 @@ parent/child pair gets an :class:`~oci_drata.models.UnresolvedRelationship` reco
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
+from collections.abc import Sequence
 from typing import Any
 
 from oci_drata.models import Instance, UnresolvedRelationship, Vnic
@@ -62,6 +64,7 @@ def resolve_vnic_addresses(
     *,
     private_ips: list[Any],
     public_ips_by_private_ip_id: dict[str, Any],
+    ipv6s: Sequence[Any] = (),
 ) -> tuple[list[Vnic], list[UnresolvedRelationship]]:
     public_by_vnic: dict[str, list[str]] = {}
     unresolved: list[UnresolvedRelationship] = []
@@ -88,6 +91,31 @@ def resolve_vnic_addresses(
         public_address = getattr(public_ip, "ip_address", None) if public_ip is not None else None
         if public_address:
             public_by_vnic.setdefault(vnic_id, []).append(public_address)
+
+    # A globally routable IPv6 address is publicly addressable the same way a public IPv4 is;
+    # reachability still depends on the route table and rules (transform.exposure).
+    for ipv6 in ipv6s:
+        vnic_id = getattr(ipv6, "vnic_id", None)
+        address = getattr(ipv6, "ip_address", None)
+        if not vnic_id or not address or getattr(ipv6, "lifecycle_state", "AVAILABLE") != "AVAILABLE":
+            continue
+        if vnic_id not in known_vnic_ids:
+            unresolved.append(
+                UnresolvedRelationship(
+                    source_type="ipv6",
+                    source_id=getattr(ipv6, "id", "unknown"),
+                    target_type="vnic",
+                    target_id=vnic_id,
+                    reason="ipv6.vnic_id does not match any collected VNIC",
+                )
+            )
+            continue
+        try:
+            is_global = ipaddress.ip_address(address).is_global
+        except ValueError:
+            continue
+        if is_global:
+            public_by_vnic.setdefault(vnic_id, []).append(address)
 
     resolved = [
         dataclasses.replace(vnic, public_addresses=tuple(sorted(set(public_by_vnic.get(vnic.id, [])))))

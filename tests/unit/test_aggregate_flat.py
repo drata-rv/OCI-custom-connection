@@ -169,3 +169,40 @@ def test_deleted_user_and_its_api_keys_are_excluded_and_queued_for_record_deleti
     assert {r["id"] for r in result.records} == {"u1", "u1/aa:bb"}
     assert result.excluded_ids["iam_user"] == ["u2"]
     assert result.excluded_ids["api_key"] == ["u2/dd:ee"]
+
+
+def test_alarm_keeps_destinations_severity_and_metric_compartment() -> None:
+    alarm = _stamp(
+        oci.monitoring.models.AlarmSummary(
+            id="a1", display_name="cpu", compartment_id="c1", metric_compartment_id="c2",
+            namespace="oci_computeagent", query="CpuUtilization[1m].mean() > 90", severity="CRITICAL",
+            destinations=["ocid1.onstopic.oc1..t1"], is_enabled=True, lifecycle_state="ACTIVE",
+        )
+    )
+    result = _build(monitoring=MonitoringCollectionResult(alarms=[alarm], operations=[]))
+
+    (record,) = result.records
+    assert record["alarmSeverity"] == "CRITICAL"
+    assert record["alarmMetricCompartmentId"] == "c2"
+    assert record["alarmDestinations"] == ["ocid1.onstopic.oc1..t1"]
+    assert validate_record(record, load_flat_schema()).valid
+
+
+def test_instance_with_only_a_global_ipv6_address_has_a_public_address() -> None:
+    instance = _stamp(
+        oci.core.models.Instance(id="i-v6", compartment_id="c1", display_name="v6", lifecycle_state="RUNNING")
+    )
+    vnic = oci.core.models.Vnic(id="v1", subnet_id="sub1", nsg_ids=[])
+    result = _build(
+        compute=ComputeCollectionResult(
+            instances=[instance], images={},
+            vnic_attachments=[oci.core.models.VnicAttachment(instance_id="i-v6", vnic_id="v1")],
+            vnics={"v1": vnic}, private_ips=[], public_ips_by_private_ip_id={}, operations=[],
+            ipv6s=[
+                oci.core.models.Ipv6(id="ip6", vnic_id="v1", ip_address="2603:c020::1", lifecycle_state="AVAILABLE")
+            ],
+        ),
+    )
+
+    (record,) = result.records
+    assert record["hasPublicAddress"] is True

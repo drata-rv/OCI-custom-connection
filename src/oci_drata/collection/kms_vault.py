@@ -1,9 +1,9 @@
 """KMS vault collection: list_vaults (regional client) -> per-vault
 KmsManagementClient bound to that vault's ``management_endpoint``
 (``service_endpoint`` is a required positional arg; see
-``oci_auth.py::endpoint_client``) -> list_keys (no ``vault_id`` param;
-scoping is by which endpoint the client was built against) -> get_key per
-key, concurrent fan-out (``auto_key_rotation_details`` exists only on the
+``oci_auth.py::endpoint_client``) -> list_keys per approved compartment (no
+``vault_id`` param; scoping is by which endpoint the client was built against) ->
+get_key per key, concurrent fan-out (``auto_key_rotation_details`` exists only on the
 full ``Key`` model, not on ``KeySummary``).
 """
 
@@ -94,9 +94,11 @@ def collect_kms_vault(
             region_vaults.extend(stamp_region(op.items, region))
         vaults.extend(region_vaults)
 
-        # (management_client, key_summary) pairs -- each vault has its own
-        # management_client, needed for get_key below.
-        key_summary_pairs: list[tuple[Any, Any]] = []
+        # A vault's keys may live in any compartment, not just the vault's own, so every
+        # approved compartment is listed against every vault's management endpoint.
+        # (management_client, compartment_id) jobs; each vault has its own management_client,
+        # needed for get_key below.
+        list_keys_jobs: list[tuple[Any, str]] = []
         for vault in region_vaults:
             management_endpoint = getattr(vault, "management_endpoint", None)
             if not management_endpoint:
@@ -110,14 +112,28 @@ def collect_kms_vault(
                 region=region,
                 service_endpoint=management_endpoint,
             )
-            keys_op = paginate(
+            list_keys_jobs.extend(
+                (management_client, compartment_id) for compartment_id in discovery.approved_compartment_ids
+            )
+
+        def _list_keys(job: tuple[Any, str], *, _region: str = region) -> OperationResult:
+            management_client, compartment_id = job
+            return paginate(
                 service="kms_management",
                 operation="list_keys",
                 call=management_client.list_keys,
-                region=region,
-                compartment_id=vault.compartment_id,
+                region=_region,
+                compartment_id=compartment_id,
                 retry_policy=retry_policy,
             )
+
+        # (management_client, key_summary) pairs for get_key below.
+        key_summary_pairs: list[tuple[Any, Any]] = []
+        for (management_client, _), keys_op in zip(
+            list_keys_jobs,
+            run_concurrently(list_keys_jobs, _list_keys, max_workers=_PER_KEY_CONCURRENCY),
+            strict=True,
+        ):
             operations.append(keys_op)
             for key_summary in stamp_region(keys_op.items, region):
                 key_summary_pairs.append((management_client, key_summary))

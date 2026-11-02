@@ -77,6 +77,7 @@ ALLOWED_OCI_OPERATIONS: frozenset[str] = frozenset(
         "list_vnic_attachments",
         "get_vnic",
         "list_private_ips",
+        "list_ipv6s",
         "get_public_ip_by_private_ip_id",
         # Boot and block storage (collection/storage.py)
         "list_boot_volumes",

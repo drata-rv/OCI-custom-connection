@@ -39,6 +39,7 @@ class ComputeCollectionResult:
     private_ips: list[Any]
     public_ips_by_private_ip_id: dict[str, Any]
     operations: list[OperationResult]
+    ipv6s: list[Any] = dataclasses.field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -80,6 +81,7 @@ def collect_compute(
     vnic_attachments: list[Any] = []
     vnics: dict[str, Any] = {}
     private_ips: list[Any] = []
+    ipv6s: list[Any] = []
     public_ips_by_private_ip_id: dict[str, Any] = {}
 
     for region in discovery.approved_regions:
@@ -140,10 +142,10 @@ def collect_compute(
                 _region: str = region,
                 _compartment_id: str = compartment_id,
                 _vnics_snapshot: dict[str, Any] = vnics,
-            ) -> tuple[list[OperationResult], tuple[str, Any] | None, list[Any], dict[str, Any]]:
+            ) -> tuple[list[OperationResult], tuple[str, Any] | None, list[Any], list[Any], dict[str, Any]]:
                 vnic_id = getattr(attachment, "vnic_id", None)
                 if not vnic_id:
-                    return [], None, [], {}
+                    return [], None, [], [], {}
 
                 ops: list[OperationResult] = []
                 vnic_entry: tuple[str, Any] | None = None
@@ -173,6 +175,18 @@ def collect_compute(
                 ops.append(private_ips_op)
                 attachment_private_ips = stamp_region(private_ips_op.items, _region)
 
+                # IPv6 addresses are separate objects from private IPs; same filters, no compartment_id.
+                ipv6s_op = paginate(
+                    service="virtual_network",
+                    operation="list_ipv6s",
+                    call=_vnet_client.list_ipv6s,
+                    region=_region,
+                    vnic_id=vnic_id,
+                    retry_policy=retry_policy,
+                )
+                ops.append(ipv6s_op)
+                attachment_ipv6s = stamp_region(ipv6s_op.items, _region)
+
                 attachment_public_ips: dict[str, Any] = {}
                 for private_ip in attachment_private_ips:
                     private_ip_id = getattr(private_ip, "id", None)
@@ -190,15 +204,18 @@ def collect_compute(
                         public_ip.region = _region
                         attachment_public_ips[private_ip_id] = public_ip
 
-                return ops, vnic_entry, attachment_private_ips, attachment_public_ips
+                return ops, vnic_entry, attachment_private_ips, attachment_ipv6s, attachment_public_ips
 
-            for ops, vnic_entry, attachment_private_ips, attachment_public_ips in run_concurrently(
+            for (
+                ops, vnic_entry, attachment_private_ips, attachment_ipv6s, attachment_public_ips
+            ) in run_concurrently(
                 region_attachments, _process_attachment, max_workers=_PER_ATTACHMENT_CONCURRENCY
             ):
                 operations.extend(ops)
                 if vnic_entry is not None:
                     vnics[vnic_entry[0]] = vnic_entry[1]
                 private_ips.extend(attachment_private_ips)
+                ipv6s.extend(attachment_ipv6s)
                 public_ips_by_private_ip_id.update(attachment_public_ips)
 
     return ComputeCollectionResult(
@@ -209,6 +226,7 @@ def collect_compute(
         private_ips=private_ips,
         public_ips_by_private_ip_id=public_ips_by_private_ip_id,
         operations=operations,
+        ipv6s=ipv6s,
     )
 
 

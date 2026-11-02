@@ -153,3 +153,47 @@ def test_service_cidr_block_source_never_counts_as_public() -> None:
     assert result.has_ranged_public_ingress is False
 
 
+
+
+def _public_vnic_facts(rules, *, addresses, route_destination="0.0.0.0/0"):
+    vnic = _vnic("v1", subnet_id="sub1", public_addresses=addresses)
+    subnet = oci.core.models.Subnet(id="sub1", route_table_id="rt1", security_list_ids=["sl1"])
+    route_table = oci.core.models.RouteTable(
+        id="rt1", route_rules=[oci.core.models.RouteRule(destination=route_destination, network_entity_id="igw1")]
+    )
+    security_list = oci.core.models.SecurityList(id="sl1", ingress_security_rules=rules)
+    return _facts(
+        _instance(("v1",)), vnics_by_id={"v1": vnic}, subnets_by_id={"sub1": subnet},
+        route_tables_by_id={"rt1": route_table}, security_lists_by_id={"sl1": security_list},
+        internet_gateway_ids={"igw1"},
+    )
+
+
+def _tcp_rule(source, low=None, high=None):
+    options = (
+        oci.core.models.TcpOptions(destination_port_range=oci.core.models.PortRange(min=low, max=high))
+        if low is not None
+        else None
+    )
+    return oci.core.models.IngressSecurityRule(
+        protocol="6", source=source, source_type="CIDR_BLOCK", tcp_options=options
+    )
+
+
+def test_port_ranges_are_preserved_not_collapsed() -> None:
+    result = _public_vnic_facts(
+        [_tcp_rule("0.0.0.0/0", 20, 23), _tcp_rule("0.0.0.0/0"), _tcp_rule("0.0.0.0/0", 443, 443)],
+        addresses=("203.0.113.5",),
+    )
+    assert result.public_ingress_ports == (443,)
+    assert result.public_ingress_port_ranges == ("1-65535", "20-23")
+    assert result.has_ranged_public_ingress is True
+
+
+def test_ipv6_address_is_exposed_only_by_ipv6_route_and_rules() -> None:
+    rules = [_tcp_rule("::/0", 22, 22), _tcp_rule("0.0.0.0/0", 3389, 3389)]
+    routed = _public_vnic_facts(rules, addresses=("2603:c020::1",), route_destination="::/0")
+    assert routed.public_ingress_ports == (22,)
+    unrouted = _public_vnic_facts(rules, addresses=("2603:c020::1",), route_destination="0.0.0.0/0")
+    assert unrouted.public_ingress_ports == ()  # only an IPv4 default route: nothing routes the IPv6 address
+    assert unrouted.has_ranged_public_ingress is False

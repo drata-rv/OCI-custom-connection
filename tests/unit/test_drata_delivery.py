@@ -42,6 +42,7 @@ def test_429_is_retried_then_succeeds(drata_config: DrataConfig) -> None:
     (result,) = upsert_records(drata_config, [{"id": "x"}], session=session)
     assert result.uploaded is True
     assert result.attempts == 2
+    assert result.record_count == 1
 
 
 def test_authorization_header_never_appears_in_result(drata_config: DrataConfig) -> None:
